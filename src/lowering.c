@@ -117,6 +117,12 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
         else if (strcmp(callee->import_name, "vircon_gpu_select_region") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_SelectedRegion, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_point") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingPointX, R1") || !emit(context, "  out GPU_DrawingPointY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_draw_region") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegion")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_set_region_minimum") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_RegionMinX, R1") || !emit(context, "  out GPU_RegionMinY, R2")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_set_region_maximum") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_RegionMaxX, R1") || !emit(context, "  out GPU_RegionMaxY, R2")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_set_region_hotspot") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_RegionHotSpotX, R1") || !emit(context, "  out GPU_RegionHotSpotY, R2")) return false; }
+        else if (strcmp(callee->import_name, "vircon_spu_select_channel") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SelectedChannel, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_spu_set_channel_assigned_sound") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelAssignedSound, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_spu_play_selected_channel") == 0) { if (!emit(context, "  out SPU_Command, SPUCommand_PlaySelectedChannel")) return false; }
         else { diagnostics_error(context->diagnostics, "internal error: unsupported import passed validation"); return false; }
         for (index = expression->child_count; index != 0; --index)
             release(context, arguments[index - 1]);

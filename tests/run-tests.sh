@@ -6,7 +6,9 @@ clang=$2
 wasm_as=$3
 assemble=$4
 packrom=$5
-tests_dir=$6
+png2vircon=$6
+wav2vircon=$7
+tests_dir=$8
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
 
@@ -29,6 +31,9 @@ run_cases() {
     outcome=accept
     extra_sources=
     include_dirs=
+    textures=
+    sounds=
+    xml_expectations_file=
     normalize=false
     while IFS='=' read -r key value || [ -n "$key" ]; do
       case "$key" in
@@ -39,6 +44,9 @@ run_cases() {
         outcome) outcome=$value ;;
         extra_sources) extra_sources=$value ;;
         include_dirs) include_dirs=$value ;;
+        textures) textures=$value ;;
+        sounds) sounds=$value ;;
+        xml_expectations) xml_expectations_file=$value ;;
         normalize) normalize=$value ;;
         *)
           echo "unknown key in $case_file: $key" >&2
@@ -73,13 +81,19 @@ run_cases() {
           for include_dir in $include_dirs; do
             set -- "$@" --include "$case_dir/$include_dir"
           done
+          for texture in $textures; do
+            set -- "$@" --texture "$case_dir/$texture"
+          done
+          for sound in $sounds; do
+            set -- "$@" --sound "$case_dir/$sound"
+          done
           if [ "$normalize" = true ]; then
             set -- "$@" --normalize
           elif [ "$normalize" != false ]; then
             echo "$case_name: normalize must be true or false" >&2
             exit 1
           fi
-          WASM2VIRCON="$tool" CLANG="$clang" ASSEMBLE="$assemble" PACKROM="$packrom" "$@" "$source_path" "$case_output"
+          WASM2VIRCON="$tool" CLANG="$clang" ASSEMBLE="$assemble" PACKROM="$packrom" PNG2VIRCON="$png2vircon" WAV2VIRCON="$wav2vircon" "$@" "$source_path" "$case_output"
         )
         asm_file="$case_output/$program_name.asm"
         test -s "$case_output/$program_name.v32"
@@ -127,6 +141,24 @@ run_cases() {
           exit 1
         fi
       done < "$expectations_path"
+    fi
+
+    if [ -n "$xml_expectations_file" ]; then
+      xml_expectations_path="$case_dir/$xml_expectations_file"
+      xml_file="$case_output/$program_name.xml"
+      if [ ! -f "$xml_expectations_path" ]; then
+        echo "missing XML expectations for $case_file: $xml_expectations_file" >&2
+        exit 1
+      fi
+      while IFS= read -r expected || [ -n "$expected" ]; do
+        case "$expected" in
+          ''|'#'*) continue ;;
+        esac
+        if ! grep -F -- "$expected" "$xml_file" >/dev/null; then
+          echo "$case_name: missing ROM XML fragment: $expected" >&2
+          exit 1
+        fi
+      done < "$xml_expectations_path"
     fi
   done
 

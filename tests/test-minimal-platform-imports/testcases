@@ -1,0 +1,3 @@
+source=minimal-platform-imports.wat
+entry=__original_main
+expectations=expected.asm

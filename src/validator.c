@@ -21,6 +21,12 @@ static const ImportSpec IMPORTS[] = {
     {"env", "vircon_gpu_select_region", {WASM_VALUE_I32}, 1, WASM_VALUE_NONE},
     {"env", "vircon_gpu_set_drawing_point", {WASM_VALUE_I32, WASM_VALUE_I32}, 2, WASM_VALUE_NONE},
     {"env", "vircon_gpu_draw_region", {WASM_VALUE_NONE}, 0, WASM_VALUE_NONE},
+    {"env", "vircon_gpu_set_region_minimum", {WASM_VALUE_I32, WASM_VALUE_I32}, 2, WASM_VALUE_NONE},
+    {"env", "vircon_gpu_set_region_maximum", {WASM_VALUE_I32, WASM_VALUE_I32}, 2, WASM_VALUE_NONE},
+    {"env", "vircon_gpu_set_region_hotspot", {WASM_VALUE_I32, WASM_VALUE_I32}, 2, WASM_VALUE_NONE},
+    {"env", "vircon_spu_select_channel", {WASM_VALUE_I32}, 1, WASM_VALUE_NONE},
+    {"env", "vircon_spu_set_channel_assigned_sound", {WASM_VALUE_I32}, 1, WASM_VALUE_NONE},
+    {"env", "vircon_spu_play_selected_channel", {WASM_VALUE_NONE}, 0, WASM_VALUE_NONE},
 };
 
 static const ImportSpec *find_import_spec(const char *module, const char *name)

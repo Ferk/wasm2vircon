@@ -5,12 +5,16 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage: scripts/build-rom.sh [--entry NAME] [--include DIR] [--extra-source FILE]
-                            [--normalize] INPUT.c OUTPUT_DIR
+                            [--texture PNG] [--sound WAV] [--normalize]
+                            INPUT.c OUTPUT_DIR
 
 Compile INPUT.c plus any --extra-source files as the current freestanding
 VirconWasm profile, then write .wasm, .asm, .vbin, ROM definition XML, and
 .v32 files to OUTPUT_DIR. --normalize retains raw linked Wasm as *.raw.wasm
 and runs the supported Binaryen cleanup profile before wasm2vircon.
+
+Each --texture and --sound is converted with the official PNG/WAV conversion
+tool from PATH and is added to the generated ROM definition in option order.
 
 The default entry export is __original_main. Tool paths may be overridden with
 the CLANG, WASM2VIRCON, ASSEMBLE, and PACKROM environment variables; otherwise
@@ -21,6 +25,8 @@ EOF
 entry=__original_main
 extra_sources=()
 include_dirs=()
+texture_sources=()
+sound_sources=()
 normalize=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -46,6 +52,22 @@ while [ "$#" -gt 0 ]; do
         exit 2
       fi
       include_dirs+=("$2")
+      shift 2
+      ;;
+    --texture)
+      if [ "$#" -lt 2 ]; then
+        echo "build-rom: --texture requires a PNG path" >&2
+        exit 2
+      fi
+      texture_sources+=("$2")
+      shift 2
+      ;;
+    --sound)
+      if [ "$#" -lt 2 ]; then
+        echo "build-rom: --sound requires a WAV path" >&2
+        exit 2
+      fi
+      sound_sources+=("$2")
       shift 2
       ;;
     --normalize)
@@ -89,6 +111,8 @@ clang_tool=${CLANG:-clang}
 compiler=${WASM2VIRCON:-"$project_dir/build/wasm2vircon"}
 assembler=${ASSEMBLE:-assemble}
 rom_packer=${PACKROM:-packrom}
+png_converter=${PNG2VIRCON:-png2vircon}
+wav_converter=${WAV2VIRCON:-wav2vircon}
 normalizer="$project_dir/scripts/normalize-virconwasm.sh"
 
 for tool in "$clang_tool" "$compiler" "$assembler" "$rom_packer"; do
@@ -97,6 +121,14 @@ for tool in "$clang_tool" "$compiler" "$assembler" "$rom_packer"; do
     exit 2
   fi
 done
+if [ "${#texture_sources[@]}" -ne 0 ] && ! command -v "$png_converter" >/dev/null 2>&1; then
+  echo "build-rom: required tool not found: $png_converter" >&2
+  exit 2
+fi
+if [ "${#sound_sources[@]}" -ne 0 ] && ! command -v "$wav_converter" >/dev/null 2>&1; then
+  echo "build-rom: required tool not found: $wav_converter" >&2
+  exit 2
+fi
 
 source_name=${source_file##*/}
 program_name=${source_name%.c}
@@ -151,14 +183,42 @@ if [ "$normalize" = true ]; then
 fi
 "$compiler" "$wasm_file" --entry "$entry" -o "$asm_file"
 "$assembler" -o "$vbin_file" "$asm_file"
-printf '%s\n' \
-  '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>' \
-  '<rom-definition version="1.0">' \
-  '  <rom type="cartridge" title="wasm2vircon ROM" version="1.0" />' \
-  "  <binary path=\"$program_name.vbin\" />" \
-  '  <textures></textures>' \
-  '  <sounds></sounds>' \
-  '</rom-definition>' > "$xml_file"
+texture_outputs=()
+sound_outputs=()
+for texture_source in "${texture_sources[@]}"; do
+  if [ ! -f "$texture_source" ]; then
+    echo "build-rom: texture source file not found: $texture_source" >&2
+    exit 2
+  fi
+  texture_output="texture-${#texture_outputs[@]}.vtex"
+  "$png_converter" "$texture_source" -o "$output_dir/$texture_output"
+  texture_outputs+=("$texture_output")
+done
+for sound_source in "${sound_sources[@]}"; do
+  if [ ! -f "$sound_source" ]; then
+    echo "build-rom: sound source file not found: $sound_source" >&2
+    exit 2
+  fi
+  sound_output="sound-${#sound_outputs[@]}.vsnd"
+  SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-dummy}" "$wav_converter" "$sound_source" -o "$output_dir/$sound_output"
+  sound_outputs+=("$sound_output")
+done
+{
+  printf '%s\n' \
+    '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>' \
+    '<rom-definition version="1.0">' \
+    '  <rom type="cartridge" title="wasm2vircon ROM" version="1.0" />' \
+    "  <binary path=\"$program_name.vbin\" />" \
+    '  <textures>'
+  for texture_output in "${texture_outputs[@]}"; do
+    printf '    <texture path="%s" />\n' "$texture_output"
+  done
+  printf '%s\n' '  </textures>' '  <sounds>'
+  for sound_output in "${sound_outputs[@]}"; do
+    printf '    <sound path="%s" />\n' "$sound_output"
+  done
+  printf '%s\n' '  </sounds>' '</rom-definition>'
+} > "$xml_file"
 "$rom_packer" -o "$rom_file" "$xml_file"
 
 printf 'Built %s\n' "$rom_file"

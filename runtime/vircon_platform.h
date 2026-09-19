@@ -22,5 +22,18 @@ void vircon_gpu_select_region(int region_id)
 void vircon_gpu_set_drawing_point(int x, int y)
     VIRCON_IMPORT("vircon_gpu_set_drawing_point");
 void vircon_gpu_draw_region(void) VIRCON_IMPORT("vircon_gpu_draw_region");
+void vircon_gpu_set_region_minimum(int x, int y)
+    VIRCON_IMPORT("vircon_gpu_set_region_minimum");
+void vircon_gpu_set_region_maximum(int x, int y)
+    VIRCON_IMPORT("vircon_gpu_set_region_maximum");
+void vircon_gpu_set_region_hotspot(int x, int y)
+    VIRCON_IMPORT("vircon_gpu_set_region_hotspot");
+
+void vircon_spu_select_channel(int channel_id)
+    VIRCON_IMPORT("vircon_spu_select_channel");
+void vircon_spu_set_channel_assigned_sound(int sound_id)
+    VIRCON_IMPORT("vircon_spu_set_channel_assigned_sound");
+void vircon_spu_play_selected_channel(void)
+    VIRCON_IMPORT("vircon_spu_play_selected_channel");
 
 #endif
