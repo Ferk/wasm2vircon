@@ -8,7 +8,7 @@
 
 typedef struct ImportSpec {
     const char *module, *name;
-    WasmValueType params[1];
+    WasmValueType params[4];
     size_t param_count;
     WasmValueType result;
 } ImportSpec;
@@ -16,6 +16,11 @@ typedef struct ImportSpec {
 static const ImportSpec IMPORTS[] = {
     {"env", "vircon_set_background_color", {WASM_VALUE_I32}, 1, WASM_VALUE_NONE},
     {"env", "vircon_end_frame", {WASM_VALUE_NONE}, 0, WASM_VALUE_NONE},
+    {"env", "vircon_gpu_get_selected_texture", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
+    {"env", "vircon_gpu_select_texture", {WASM_VALUE_I32}, 1, WASM_VALUE_NONE},
+    {"env", "vircon_gpu_select_region", {WASM_VALUE_I32}, 1, WASM_VALUE_NONE},
+    {"env", "vircon_gpu_set_drawing_point", {WASM_VALUE_I32, WASM_VALUE_I32}, 2, WASM_VALUE_NONE},
+    {"env", "vircon_gpu_draw_region", {WASM_VALUE_NONE}, 0, WASM_VALUE_NONE},
 };
 
 static const ImportSpec *find_import_spec(const char *module, const char *name)
@@ -70,6 +75,9 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
     case WASM_EXPR_UNREACHABLE:
     case WASM_EXPR_I32_CONST:
         return true;
+    case WASM_EXPR_BR_IF:
+        return expression->child_count == 1 &&
+               validate_expression(module, function, expression->children[0], reachable, diagnostics);
     case WASM_EXPR_IF:
         if (expression->child_count != 2) { diagnostics_error(diagnostics, "function '%s' uses an if with else, which VirconWasm v1 does not support", function->name); return false; }
         return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&
@@ -91,6 +99,14 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
         if (expression->binary_op == WASM_BINARY_OTHER) { diagnostics_error(diagnostics, "function '%s' uses an unsupported i32 binary operation", function->name); return false; }
         return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&
                validate_expression(module, function, expression->children[1], reachable, diagnostics);
+    case WASM_EXPR_UNARY:
+        if (expression->unary_op != WASM_UNARY_EQZ) { diagnostics_error(diagnostics, "function '%s' uses an unsupported i32 unary operation", function->name); return false; }
+        return validate_expression(module, function, expression->children[0], reachable, diagnostics);
+    case WASM_EXPR_SELECT:
+        if (expression->child_count != 3) { diagnostics_error(diagnostics, "function '%s' has a malformed select", function->name); return false; }
+        return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&
+               validate_expression(module, function, expression->children[1], reachable, diagnostics) &&
+               validate_expression(module, function, expression->children[2], reachable, diagnostics);
     case WASM_EXPR_RETURN:
         if ((function->result == WASM_VALUE_NONE && expression->child_count != 0) ||
             (function->result == WASM_VALUE_I32 && expression->child_count != 1)) { diagnostics_error(diagnostics, "function '%s' has an incompatible return", function->name); return false; }

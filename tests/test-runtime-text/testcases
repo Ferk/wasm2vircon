@@ -1,0 +1,5 @@
+source=runtime-text-probe.c
+extra_sources=../../runtime/vircon_runtime.c ../../runtime/vircon_text.c
+include_dirs=../../include ../../runtime
+normalize=true
+expectations=expected.asm

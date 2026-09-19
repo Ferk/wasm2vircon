@@ -93,7 +93,13 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
         expression = new_expression(WASM_EXPR_BR, diagnostics); if (expression == NULL) return NULL;
         expression->name = copy_string(BinaryenBreakGetName(source));
         if (expression->name == NULL) { diagnostics_error(diagnostics, "function '%s' has a branch without a target", function_name); goto fail; }
-        if (BinaryenBreakGetCondition(source) != NULL || BinaryenBreakGetValue(source) != NULL) { diagnostics_error(diagnostics, "function '%s' uses conditional or value-carrying br, which is unsupported", function_name); goto fail; }
+        if (BinaryenBreakGetValue(source) != NULL) { diagnostics_error(diagnostics, "function '%s' uses a value-carrying br, which is unsupported", function_name); goto fail; }
+        if (BinaryenBreakGetCondition(source) != NULL) {
+            expression->kind = WASM_EXPR_BR_IF;
+            if (!allocate_children(expression, 1, diagnostics)) goto fail;
+            expression->children[0] = convert_expression(BinaryenBreakGetCondition(source), diagnostics, function_name);
+            if (expression->children[0] == NULL) goto fail;
+        }
         return expression;
     }
     if (id == BinaryenCallId()) {
@@ -141,12 +147,32 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
         if (expression->children[0] == NULL || expression->children[1] == NULL) goto fail;
         return expression;
     }
+    if (id == BinaryenUnaryId()) {
+        BinaryenOp op = BinaryenUnaryGetOp(source);
+        expression = new_expression(WASM_EXPR_UNARY, diagnostics); if (expression == NULL) return NULL;
+        expression->unary_op = op == BinaryenEqZInt32() ? WASM_UNARY_EQZ : WASM_UNARY_OTHER;
+        if (!allocate_children(expression, 1, diagnostics)) goto fail;
+        expression->children[0] = convert_expression(BinaryenUnaryGetValue(source), diagnostics, function_name);
+        if (expression->children[0] == NULL) goto fail;
+        return expression;
+    }
     if (id == BinaryenBinaryId()) {
         BinaryenOp op = BinaryenBinaryGetOp(source); expression = new_expression(WASM_EXPR_BINARY, diagnostics); if (expression == NULL) return NULL;
-        expression->binary_op = op == BinaryenAddInt32() ? WASM_BINARY_ADD : op == BinaryenAndInt32() ? WASM_BINARY_AND : WASM_BINARY_OTHER;
+        expression->binary_op = op == BinaryenAddInt32() ? WASM_BINARY_ADD : op == BinaryenAndInt32() ? WASM_BINARY_AND : op == BinaryenEqInt32() ? WASM_BINARY_EQ : WASM_BINARY_OTHER;
         if (!allocate_children(expression, 2, diagnostics)) goto fail;
         expression->children[0] = convert_expression(BinaryenBinaryGetLeft(source), diagnostics, function_name); expression->children[1] = convert_expression(BinaryenBinaryGetRight(source), diagnostics, function_name);
         if (expression->children[0] == NULL || expression->children[1] == NULL) goto fail;
+        return expression;
+    }
+    if (id == BinaryenSelectId()) {
+        expression = new_expression(WASM_EXPR_SELECT, diagnostics); if (expression == NULL) return NULL;
+        if (BinaryenExpressionGetType(source) != BinaryenTypeInt32()) { diagnostics_error(diagnostics, "function '%s' contains a non-i32 select", function_name); goto fail; }
+        /* Preserve Wasm evaluation order: first value, second value, condition. */
+        if (!allocate_children(expression, 3, diagnostics)) goto fail;
+        expression->children[0] = convert_expression(BinaryenSelectGetIfTrue(source), diagnostics, function_name);
+        expression->children[1] = convert_expression(BinaryenSelectGetIfFalse(source), diagnostics, function_name);
+        expression->children[2] = convert_expression(BinaryenSelectGetCondition(source), diagnostics, function_name);
+        if (expression->children[0] == NULL || expression->children[1] == NULL || expression->children[2] == NULL) goto fail;
         return expression;
     }
     if (id == BinaryenReturnId()) {

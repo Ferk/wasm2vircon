@@ -9,12 +9,16 @@
 
 typedef enum WasmValueType { WASM_VALUE_NONE, WASM_VALUE_I32, WASM_VALUE_OTHER } WasmValueType;
 typedef enum WasmExprKind {
-    WASM_EXPR_BLOCK, WASM_EXPR_LOOP, WASM_EXPR_BR, WASM_EXPR_CALL,
+    WASM_EXPR_BLOCK, WASM_EXPR_LOOP, WASM_EXPR_BR, WASM_EXPR_BR_IF, WASM_EXPR_CALL,
     WASM_EXPR_I32_CONST, WASM_EXPR_UNREACHABLE, WASM_EXPR_IF,
     WASM_EXPR_LOCAL_GET, WASM_EXPR_LOCAL_SET, WASM_EXPR_LOAD,
-    WASM_EXPR_STORE, WASM_EXPR_BINARY, WASM_EXPR_RETURN
+    WASM_EXPR_STORE, WASM_EXPR_UNARY, WASM_EXPR_BINARY, WASM_EXPR_SELECT,
+    WASM_EXPR_RETURN
 } WasmExprKind;
-typedef enum WasmBinaryOp { WASM_BINARY_ADD, WASM_BINARY_AND, WASM_BINARY_OTHER } WasmBinaryOp;
+typedef enum WasmUnaryOp { WASM_UNARY_EQZ, WASM_UNARY_OTHER } WasmUnaryOp;
+typedef enum WasmBinaryOp {
+    WASM_BINARY_ADD, WASM_BINARY_AND, WASM_BINARY_EQ, WASM_BINARY_OTHER
+} WasmBinaryOp;
 
 typedef struct WasmExpr {
     WasmExprKind kind;
@@ -22,6 +26,7 @@ typedef struct WasmExpr {
     int32_t i32_value;
     uint32_t index, offset, bytes, align;
     bool is_signed, is_tee;
+    WasmUnaryOp unary_op;
     WasmBinaryOp binary_op;
     struct WasmExpr **children;
     size_t child_count;

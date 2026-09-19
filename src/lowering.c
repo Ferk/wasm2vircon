@@ -108,6 +108,15 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
     if (callee->is_import) {
         if (strcmp(callee->import_name, "vircon_set_background_color") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_ClearColor, R1") || !emit(context, "  out GPU_Command, GPUCommand_ClearScreen")) return false; }
         else if (strcmp(callee->import_name, "vircon_end_frame") == 0) { if (!emit(context, "  wait")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_get_selected_texture") == 0) {
+            int slot = temp_slot(context);
+            if (slot == 0 || !emit(context, "  in R0, GPU_SelectedTexture") || !store_slot(context, slot, 0)) return false;
+            value->slot = slot; value->present = true; return true;
+        }
+        else if (strcmp(callee->import_name, "vircon_gpu_select_texture") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_SelectedTexture, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_select_region") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_SelectedRegion, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_point") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingPointX, R1") || !emit(context, "  out GPU_DrawingPointY, R2")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_draw_region") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegion")) return false; }
         else { diagnostics_error(context->diagnostics, "internal error: unsupported import passed validation"); return false; }
         for (index = expression->child_count; index != 0; --index)
             release(context, arguments[index - 1]);
@@ -123,7 +132,7 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
 }
 static bool lower_expression(Context *context, const WasmExpr *expression, Value *value)
 {
-    Value left = {0}, right = {0}; char label[64], end[64]; size_t index;
+    Value left = {0}, right = {0}, condition = {0}; char label[64], end[64], false_label[64]; size_t index;
     value->present = false;
     switch (expression->kind) {
     case WASM_EXPR_I32_CONST: { int slot = temp_slot(context); if (slot == 0 || !emit(context, "  mov R1, 0x%08X", (uint32_t)expression->i32_value) || !store_slot(context, slot, 1)) return false; value->slot = slot; value->present = true; return true; }
@@ -131,9 +140,27 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     case WASM_EXPR_LOCAL_SET:
         if (!lower_expression(context, expression->children[0], &left) || !left.present || !load_slot(context, 1, left.slot) || !store_slot(context, local_slot(context->function, expression->index), 1)) return false;
         if (expression->is_tee) { *value = left; return true; } release(context, left); return true;
+    case WASM_EXPR_UNARY:
+        if (!lower_expression(context, expression->children[0], &left) || !left.present ||
+            !load_slot(context, 1, left.slot) ||
+            !emit(context, "  ieq R1, 0") || !store_slot(context, left.slot, 1)) return false;
+        *value = left; return true;
     case WASM_EXPR_BINARY:
-        if (!lower_expression(context, expression->children[0], &left) || !lower_expression(context, expression->children[1], &right) || !left.present || !right.present || !load_slot(context, 1, left.slot) || !load_slot(context, 2, right.slot) || !emit(context, expression->binary_op == WASM_BINARY_ADD ? "  iadd R1, R2" : "  and R1, R2") || !store_slot(context, left.slot, 1)) return false;
+        if (!lower_expression(context, expression->children[0], &left) || !lower_expression(context, expression->children[1], &right) || !left.present || !right.present || !load_slot(context, 1, left.slot) || !load_slot(context, 2, right.slot) || !emit(context, expression->binary_op == WASM_BINARY_ADD ? "  iadd R1, R2" : expression->binary_op == WASM_BINARY_AND ? "  and R1, R2" : "  ieq R1, R2") || !store_slot(context, left.slot, 1)) return false;
         release(context, right); *value = left; return true;
+    case WASM_EXPR_SELECT:
+        /* Children retain Wasm's evaluation order: first, second, condition. */
+        if (!lower_expression(context, expression->children[0], &left) ||
+            !lower_expression(context, expression->children[1], &right) ||
+            !lower_expression(context, expression->children[2], &condition) ||
+            !left.present || !right.present || !condition.present ||
+            !fresh_label(context, "select_false", false_label, sizeof(false_label)) ||
+            !fresh_label(context, "select_done", end, sizeof(end)) ||
+            !load_slot(context, 1, condition.slot) || !emit(context, "  jf R1, %s", false_label) ||
+            !load_slot(context, 1, left.slot) || !emit(context, "  jmp %s", end) ||
+            !emit_label(context, false_label) || !load_slot(context, 1, right.slot) ||
+            !emit_label(context, end) || !store_slot(context, left.slot, 1)) return false;
+        release(context, condition); release(context, right); *value = left; return true;
     case WASM_EXPR_LOAD: return lower_load(context, expression, value);
     case WASM_EXPR_STORE: return lower_store(context, expression, value);
     case WASM_EXPR_CALL: return lower_call(context, expression, value);
@@ -149,6 +176,13 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     case WASM_EXPR_BR:
         for (index = context->target_count; index != 0; --index) if (strcmp(context->targets[index - 1].wasm_name, expression->name) == 0) return emit(context, "  jmp %s", context->targets[index - 1].label);
         diagnostics_error(context->diagnostics, "branch targets '%s' outside active structured control", expression->name); return false;
+    case WASM_EXPR_BR_IF:
+        if (!lower_expression(context, expression->children[0], &condition) || !condition.present || !load_slot(context, 1, condition.slot)) return false;
+        release(context, condition);
+        for (index = context->target_count; index != 0; --index)
+            if (strcmp(context->targets[index - 1].wasm_name, expression->name) == 0)
+                return emit(context, "  jt R1, %s", context->targets[index - 1].label);
+        diagnostics_error(context->diagnostics, "conditional branch targets '%s' outside active structured control", expression->name); return false;
     case WASM_EXPR_IF:
         if (!lower_expression(context, expression->children[0], &left) || !left.present || !fresh_label(context, "if_end", end, sizeof(end)) || !load_slot(context, 1, left.slot) || !emit(context, "  jf R1, %s", end)) return false;
         release(context, left); if (!lower_expression(context, expression->children[1], &right)) return false; release(context, right); return emit_label(context, end);

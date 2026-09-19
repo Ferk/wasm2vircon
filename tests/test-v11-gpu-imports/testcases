@@ -1,0 +1,2 @@
+source=gpu-imports.wat
+expectations=expected.asm

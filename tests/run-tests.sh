@@ -27,6 +27,9 @@ run_cases() {
     entry=__original_main
     expectations_file=
     outcome=accept
+    extra_sources=
+    include_dirs=
+    normalize=false
     while IFS='=' read -r key value || [ -n "$key" ]; do
       case "$key" in
         ''|'#'*) ;;
@@ -34,6 +37,9 @@ run_cases() {
         entry) entry=$value ;;
         expectations) expectations_file=$value ;;
         outcome) outcome=$value ;;
+        extra_sources) extra_sources=$value ;;
+        include_dirs) include_dirs=$value ;;
+        normalize) normalize=$value ;;
         *)
           echo "unknown key in $case_file: $key" >&2
           exit 1
@@ -59,8 +65,22 @@ run_cases() {
 
     case "$source_file:$outcome" in
       *.c:accept)
-        WASM2VIRCON="$tool" CLANG="$clang" ASSEMBLE="$assemble" PACKROM="$packrom" \
-          "$builder" --entry "$entry" "$source_path" "$case_output"
+        (
+          set -- "$builder" --entry "$entry"
+          for extra_source in $extra_sources; do
+            set -- "$@" --extra-source "$case_dir/$extra_source"
+          done
+          for include_dir in $include_dirs; do
+            set -- "$@" --include "$case_dir/$include_dir"
+          done
+          if [ "$normalize" = true ]; then
+            set -- "$@" --normalize
+          elif [ "$normalize" != false ]; then
+            echo "$case_name: normalize must be true or false" >&2
+            exit 1
+          fi
+          WASM2VIRCON="$tool" CLANG="$clang" ASSEMBLE="$assemble" PACKROM="$packrom" "$@" "$source_path" "$case_output"
+        )
         asm_file="$case_output/$program_name.asm"
         test -s "$case_output/$program_name.v32"
         ;;
