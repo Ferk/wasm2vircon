@@ -1,0 +1,2 @@
+source=memory-unaligned-i32.c
+expectations=expected.asm

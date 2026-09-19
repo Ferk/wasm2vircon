@@ -1,0 +1,2 @@
+source=data-segment-overlap.wat
+expectations=expected.asm

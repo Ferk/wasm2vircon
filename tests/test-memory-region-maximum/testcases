@@ -1,0 +1,2 @@
+source=maximum-memory.wat
+expectations=expected.asm

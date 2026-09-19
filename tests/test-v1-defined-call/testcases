@@ -1,0 +1,2 @@
+source=defined-call.wat
+expectations=expected.asm

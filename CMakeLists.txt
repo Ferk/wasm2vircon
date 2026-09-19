@@ -28,6 +28,11 @@ target_link_libraries(wasm2vircon PRIVATE ${BINARYEN_LIBRARY})
 
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(wasm2vircon-memory-model-test tests/memory-model-test.c)
+  target_compile_features(wasm2vircon-memory-model-test PRIVATE c_std_11)
+  target_compile_options(wasm2vircon-memory-model-test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  add_test(NAME wasm2vircon-memory-model COMMAND wasm2vircon-memory-model-test)
+
   find_program(WASM_AS_EXECUTABLE wasm-as REQUIRED)
   find_program(CLANG_EXECUTABLE clang REQUIRED)
   find_program(VIRCON_ASSEMBLE_EXECUTABLE assemble REQUIRED)

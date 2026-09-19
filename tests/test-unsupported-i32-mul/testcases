@@ -1,0 +1,2 @@
+source=unsupported-i32-mul.wat
+outcome=reject

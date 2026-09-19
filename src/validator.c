@@ -1,10 +1,13 @@
 #include "validator.h"
 
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "target_layout.h"
+
 typedef struct ImportSpec {
-    const char *module;
-    const char *name;
+    const char *module, *name;
     WasmValueType params[1];
     size_t param_count;
     WasmValueType result;
@@ -18,169 +21,131 @@ static const ImportSpec IMPORTS[] = {
 static const ImportSpec *find_import_spec(const char *module, const char *name)
 {
     size_t index;
-
-    for (index = 0; index < sizeof(IMPORTS) / sizeof(IMPORTS[0]); index++) {
-        if (strcmp(module, IMPORTS[index].module) == 0 &&
-            strcmp(name, IMPORTS[index].name) == 0) {
+    for (index = 0; index < sizeof(IMPORTS) / sizeof(IMPORTS[0]); ++index)
+        if (strcmp(module, IMPORTS[index].module) == 0 && strcmp(name, IMPORTS[index].name) == 0)
             return &IMPORTS[index];
-        }
-    }
     return NULL;
 }
 
 static bool matches_signature(const WasmFunction *function, const ImportSpec *spec)
 {
     size_t index;
-
-    if (function->param_count != spec->param_count || function->result != spec->result) {
-        return false;
-    }
-    for (index = 0; index < spec->param_count; index++) {
-        if (function->params[index] != spec->params[index]) {
-            return false;
-        }
-    }
+    if (function->param_count != spec->param_count || function->result != spec->result) return false;
+    for (index = 0; index < spec->param_count; ++index)
+        if (function->params[index] != spec->params[index]) return false;
     return true;
 }
 
-static bool validate_expression(const WasmExpr *expression, const WasmModule *module,
+static bool function_has_i32_signature(const WasmFunction *function)
+{
+    size_t index;
+    if (function->result != WASM_VALUE_NONE && function->result != WASM_VALUE_I32) return false;
+    for (index = 0; index < function->param_count; ++index)
+        if (function->params[index] != WASM_VALUE_I32) return false;
+    for (index = 0; index < function->local_count; ++index)
+        if (function->locals[index] != WASM_VALUE_I32) return false;
+    return true;
+}
+
+static size_t function_index(const WasmModule *module, const WasmFunction *function)
+{
+    return (size_t)(function - module->functions);
+}
+
+static bool validate_function(const WasmModule *module, const WasmFunction *function,
+                              bool *reachable, Diagnostics *diagnostics);
+
+static bool validate_expression(const WasmModule *module, const WasmFunction *function,
+                                const WasmExpr *expression, bool *reachable,
                                 Diagnostics *diagnostics)
 {
-    const WasmFunction *callee;
-    const ImportSpec *spec;
-    size_t index;
-
+    const WasmFunction *callee; const ImportSpec *spec; size_t index;
     switch (expression->kind) {
     case WASM_EXPR_BLOCK:
     case WASM_EXPR_LOOP:
-        for (index = 0; index < expression->child_count; index++) {
-            if (!validate_expression(expression->children[index], module, diagnostics)) {
-                return false;
-            }
-        }
+        for (index = 0; index < expression->child_count; ++index)
+            if (!validate_expression(module, function, expression->children[index], reachable, diagnostics)) return false;
         return true;
     case WASM_EXPR_BR:
     case WASM_EXPR_UNREACHABLE:
     case WASM_EXPR_I32_CONST:
         return true;
+    case WASM_EXPR_IF:
+        if (expression->child_count != 2) { diagnostics_error(diagnostics, "function '%s' uses an if with else, which VirconWasm v1 does not support", function->name); return false; }
+        return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&
+               validate_expression(module, function, expression->children[1], reachable, diagnostics);
+    case WASM_EXPR_LOCAL_GET:
+        if (expression->index >= function->param_count + function->local_count) { diagnostics_error(diagnostics, "function '%s' gets an invalid local index", function->name); return false; }
+        return true;
+    case WASM_EXPR_LOCAL_SET:
+        if (expression->index >= function->param_count + function->local_count) { diagnostics_error(diagnostics, "function '%s' sets an invalid local index", function->name); return false; }
+        return validate_expression(module, function, expression->children[0], reachable, diagnostics);
+    case WASM_EXPR_LOAD:
+        if (!((expression->bytes == 1 && !expression->is_signed) || expression->bytes == 4)) { diagnostics_error(diagnostics, "function '%s' uses unsupported load width/sign", function->name); return false; }
+        return validate_expression(module, function, expression->children[0], reachable, diagnostics);
+    case WASM_EXPR_STORE:
+        if (expression->bytes != 1 && expression->bytes != 4) { diagnostics_error(diagnostics, "function '%s' uses unsupported store width", function->name); return false; }
+        return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&
+               validate_expression(module, function, expression->children[1], reachable, diagnostics);
+    case WASM_EXPR_BINARY:
+        if (expression->binary_op == WASM_BINARY_OTHER) { diagnostics_error(diagnostics, "function '%s' uses an unsupported i32 binary operation", function->name); return false; }
+        return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&
+               validate_expression(module, function, expression->children[1], reachable, diagnostics);
+    case WASM_EXPR_RETURN:
+        if ((function->result == WASM_VALUE_NONE && expression->child_count != 0) ||
+            (function->result == WASM_VALUE_I32 && expression->child_count != 1)) { diagnostics_error(diagnostics, "function '%s' has an incompatible return", function->name); return false; }
+        return expression->child_count == 0 || validate_expression(module, function, expression->children[0], reachable, diagnostics);
     case WASM_EXPR_CALL:
         callee = wasm_module_find_function(module, expression->name);
-        if (callee == NULL) {
-            diagnostics_error(diagnostics, "call target '%s' does not name a module function",
-                              expression->name);
-            return false;
+        if (callee == NULL) { diagnostics_error(diagnostics, "call target '%s' does not name a module function", expression->name); return false; }
+        if (expression->child_count != callee->param_count) { diagnostics_error(diagnostics, "call to '%s' has %zu operands; expected %zu", expression->name, expression->child_count, callee->param_count); return false; }
+        for (index = 0; index < expression->child_count; ++index)
+            if (!validate_expression(module, function, expression->children[index], reachable, diagnostics)) return false;
+        if (callee->is_import) {
+            spec = find_import_spec(callee->import_module, callee->import_name);
+            if (spec == NULL) { diagnostics_error(diagnostics, "call uses unsupported import '%s.%s'", callee->import_module, callee->import_name); return false; }
+            if (!matches_signature(callee, spec)) { diagnostics_error(diagnostics, "import '%s.%s' has an unsupported signature", callee->import_module, callee->import_name); return false; }
+            return true;
         }
-        if (!callee->is_import) {
-            diagnostics_error(diagnostics,
-                              "call to defined function '%s' is not supported in VirconWasm v0",
-                              expression->name);
-            return false;
-        }
-        spec = find_import_spec(callee->import_module, callee->import_name);
-        if (spec == NULL) {
-            diagnostics_error(diagnostics, "call uses unsupported import '%s.%s'",
-                              callee->import_module, callee->import_name);
-            return false;
-        }
-        if (expression->child_count != spec->param_count) {
-            diagnostics_error(diagnostics, "call to '%s.%s' has %zu operands; expected %zu",
-                              spec->module, spec->name, expression->child_count,
-                              spec->param_count);
-            return false;
-        }
-        for (index = 0; index < expression->child_count; index++) {
-            if (!validate_expression(expression->children[index], module, diagnostics)) {
-                return false;
-            }
-            if (spec->params[index] == WASM_VALUE_I32 &&
-                expression->children[index]->kind != WASM_EXPR_I32_CONST) {
-                diagnostics_error(diagnostics,
-                                  "VirconWasm v0 currently accepts only i32.const as the argument to '%s.%s'",
-                                  spec->module, spec->name);
-                return false;
-            }
-        }
-        return true;
+        return validate_function(module, callee, reachable, diagnostics);
     }
-    diagnostics_error(diagnostics, "internal error: unknown compiler-owned Wasm expression");
-    return false;
+    diagnostics_error(diagnostics, "internal error: unknown compiler-owned Wasm expression"); return false;
 }
 
-bool validate_virconwasm_v0(const WasmModule *module, const char *entry_name,
+static bool validate_function(const WasmModule *module, const WasmFunction *function,
+                              bool *reachable, Diagnostics *diagnostics)
+{
+    size_t index = function_index(module, function);
+    if (reachable[index]) return true;
+    reachable[index] = true;
+    if (!function_has_i32_signature(function)) { diagnostics_error(diagnostics, "reachable function '%s' has unsupported VirconWasm v1 value types", function->name); return false; }
+    return validate_expression(module, function, function->body, reachable, diagnostics);
+}
+
+bool validate_virconwasm_v1(const WasmModule *module, const char *entry_name,
                             ValidatedModule *validated, Diagnostics *diagnostics)
 {
-    const WasmExport *entry_export = NULL;
-    const WasmFunction *entry;
-    size_t index;
-
+    const WasmExport *entry_export = NULL; const WasmFunction *entry; size_t index; uint64_t memory_bytes, available_bytes;
     memset(validated, 0, sizeof(*validated));
-    if (!module->has_memory) {
-        diagnostics_error(diagnostics, "VirconWasm v0 requires one declared Wasm memory");
-        return false;
-    }
-    if (module->has_imported_memory) {
-        diagnostics_error(diagnostics,
-                          "memory imports are unsupported: VirconWasm v0 imports must be platform functions");
-        return false;
-    }
-    if (module->table_count != 0 || module->global_count != 0 ||
-        module->element_segment_count != 0 || module->data_segment_count != 0) {
-        diagnostics_error(diagnostics,
-                          "tables, globals, element segments, and data segments are unsupported in VirconWasm v0");
-        return false;
-    }
-
-    for (index = 0; index < module->function_count; index++) {
-        const WasmFunction *function = &module->functions[index];
-        const ImportSpec *spec;
-
-        if (!function->is_import) {
-            continue;
-        }
-        spec = find_import_spec(function->import_module, function->import_name);
-        if (spec == NULL) {
-            diagnostics_error(diagnostics, "unsupported function import '%s.%s'",
-                              function->import_module, function->import_name);
-            return false;
-        }
-        if (!matches_signature(function, spec)) {
-            diagnostics_error(diagnostics, "import '%s.%s' has a signature unsupported by VirconWasm v0",
-                              function->import_module, function->import_name);
-            return false;
-        }
-    }
-
-    for (index = 0; index < module->export_count; index++) {
-        if (strcmp(module->exports[index].name, entry_name) == 0) {
-            entry_export = &module->exports[index];
-            break;
-        }
-    }
-    if (entry_export == NULL) {
-        diagnostics_error(diagnostics, "entry export '%s' does not exist", entry_name);
-        return false;
-    }
-    if (!entry_export->is_function) {
-        diagnostics_error(diagnostics, "entry export '%s' is not a function", entry_name);
-        return false;
-    }
+    if (module->memory_count != 1 || !module->has_memory) { diagnostics_error(diagnostics, "VirconWasm v1 requires exactly one defined linear memory"); return false; }
+    if (module->has_imported_memory || module->memory_is_shared || module->memory_is_64) { diagnostics_error(diagnostics, "memory imports, shared memory, and memory64 are unsupported"); return false; }
+    if (module->table_count != 0 || module->global_count != 0 || module->element_segment_count != 0) { diagnostics_error(diagnostics, "tables, globals, and element segments are unsupported in VirconWasm v1"); return false; }
+    memory_bytes = (uint64_t)module->memory_initial_pages * 65536u;
+    available_bytes = VIRCON_LINEAR_MEMORY_BYTES;
+    if (memory_bytes == 0 || memory_bytes > available_bytes || memory_bytes > UINT32_MAX) { diagnostics_error(diagnostics, "declared Wasm memory does not fit the reserved Vircon32 linear-memory region"); return false; }
+    for (index = 0; index < module->data_segment_count; ++index) { const WasmDataSegment *segment = &module->data_segments[index]; if (segment->is_passive || !segment->offset_is_i32_const || (uint64_t)segment->offset + segment->size > memory_bytes) { diagnostics_error(diagnostics, "data segment %zu is not an in-bounds active constant-offset segment", index); return false; } }
+    for (index = 0; index < module->function_count; ++index) { const WasmFunction *function = &module->functions[index]; const ImportSpec *spec; if (!function->is_import) continue; spec = find_import_spec(function->import_module, function->import_name); if (spec == NULL) { diagnostics_error(diagnostics, "unsupported function import '%s.%s'", function->import_module, function->import_name); return false; } if (!matches_signature(function, spec)) { diagnostics_error(diagnostics, "import '%s.%s' has an unsupported signature", function->import_module, function->import_name); return false; } }
+    for (index = 0; index < module->export_count; ++index) if (strcmp(module->exports[index].name, entry_name) == 0) { entry_export = &module->exports[index]; break; }
+    if (entry_export == NULL || !entry_export->is_function) { diagnostics_error(diagnostics, "entry export '%s' does not name a function", entry_name); return false; }
     entry = wasm_module_find_function(module, entry_export->value);
-    if (entry == NULL || entry->is_import) {
-        diagnostics_error(diagnostics, "entry export '%s' does not refer to a defined function",
-                          entry_name);
-        return false;
-    }
-    if (entry->param_count != 0 || entry->result != WASM_VALUE_I32) {
-        diagnostics_error(diagnostics,
-                          "entry export '%s' must have signature () -> i32 for this frontend profile",
-                          entry_name);
-        return false;
-    }
-    if (!validate_expression(entry->body, module, diagnostics)) {
-        return false;
-    }
+    if (entry == NULL || entry->is_import || entry->param_count != 0 || entry->result != WASM_VALUE_I32) { diagnostics_error(diagnostics, "entry export '%s' must refer to a defined () -> i32 function", entry_name); return false; }
+    validated->reachable = calloc(module->function_count, sizeof(*validated->reachable));
+    if (validated->reachable == NULL) { diagnostics_error(diagnostics, "out of memory tracking reachable functions"); return false; }
+    if (!validate_function(module, entry, validated->reachable, diagnostics)) { validated_module_dispose(validated); return false; }
+    validated->module = module; validated->entry = entry; return true;
+}
 
-    validated->module = module;
-    validated->entry = entry;
-    return true;
+void validated_module_dispose(ValidatedModule *validated)
+{
+    free(validated->reachable); memset(validated, 0, sizeof(*validated));
 }

@@ -1,0 +1,2 @@
+source=memory-bounds.wat
+expectations=expected.asm

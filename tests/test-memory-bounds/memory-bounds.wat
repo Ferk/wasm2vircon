@@ -1,0 +1,15 @@
+(module
+  (memory 1)
+  (func $entry (result i32)
+    (local $discard i32)
+    ;; Valid final byte, then the requested invalid unsigned/end cases.
+    (local.set $discard (i32.load8_u (i32.const 65535)))
+    (local.set $discard (i32.load8_u (i32.const 65536)))
+    (local.set $discard (i32.load (i32.const 65533)))
+    (local.set $discard (i32.load8_u (i32.const -1)))
+    (local.set $discard (i32.load8_u (i32.const -2147483648)))
+    (local.set $discard (i32.load8_u offset=4294967295 (i32.const 0)))
+    (i32.const 0)
+  )
+  (export "__original_main" (func $entry))
+)

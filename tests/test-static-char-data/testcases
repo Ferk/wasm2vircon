@@ -1,0 +1,2 @@
+source=static-char-data.c
+expectations=expected.asm

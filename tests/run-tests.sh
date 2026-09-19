@@ -70,6 +70,7 @@ run_cases() {
         "$tool" "$case_output/$program_name.wasm" --entry "$entry" \
           -o "$case_output/$program_name.asm"
         asm_file="$case_output/$program_name.asm"
+        "$assemble" -o "$case_output/$program_name.vbin" "$asm_file"
         ;;
       *.wat:reject)
         mkdir -p "$case_output"

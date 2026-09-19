@@ -13,7 +13,7 @@ static void print_usage(FILE *stream)
     fprintf(stream,
             "Usage: wasm2vircon input.wasm [--entry NAME] -o output.asm\n"
             "\n"
-            "Translate the supported VirconWasm v0 profile into Vircon32 assembly.\n"
+            "Translate the supported VirconWasm v1 profile into Vircon32 assembly.\n"
             "The default entry export is __original_main; --entry makes the frontend\n"
             "entry convention explicit.\n");
 }
@@ -32,6 +32,7 @@ int main(int argc, char **argv)
 
     diagnostics_init(&diagnostics, stderr);
     memset(&module, 0, sizeof(module));
+    memset(&validated, 0, sizeof(validated));
     vircon_ir_init(&program);
 
     for (index = 1; index < argc; index++) {
@@ -71,8 +72,8 @@ int main(int argc, char **argv)
         goto done;
     }
     if (!wasm_module_load(input_path, &module, &diagnostics) ||
-        !validate_virconwasm_v0(&module, entry_name, &validated, &diagnostics) ||
-        !lower_entry_to_vircon_ir(&validated, &program, &diagnostics) ||
+        !validate_virconwasm_v1(&module, entry_name, &validated, &diagnostics) ||
+        !lower_module_to_vircon_ir(&validated, &program, &diagnostics) ||
         !emit_vircon_assembly(&program, output_path, &diagnostics)) {
         goto done;
     }
@@ -80,6 +81,7 @@ int main(int argc, char **argv)
 
 done:
     vircon_ir_dispose(&program);
+    validated_module_dispose(&validated);
     wasm_module_dispose(&module);
     return status;
 }

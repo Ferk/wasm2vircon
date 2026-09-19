@@ -1,0 +1,2 @@
+source=static-writable.c
+expectations=expected.asm

@@ -1,0 +1,2 @@
+source=overflow-memory.wat
+outcome=reject

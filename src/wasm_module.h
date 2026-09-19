@@ -7,25 +7,22 @@
 
 #include "diagnostics.h"
 
-typedef enum WasmValueType {
-    WASM_VALUE_NONE,
-    WASM_VALUE_I32,
-    WASM_VALUE_OTHER
-} WasmValueType;
-
+typedef enum WasmValueType { WASM_VALUE_NONE, WASM_VALUE_I32, WASM_VALUE_OTHER } WasmValueType;
 typedef enum WasmExprKind {
-    WASM_EXPR_BLOCK,
-    WASM_EXPR_LOOP,
-    WASM_EXPR_BR,
-    WASM_EXPR_CALL,
-    WASM_EXPR_I32_CONST,
-    WASM_EXPR_UNREACHABLE
+    WASM_EXPR_BLOCK, WASM_EXPR_LOOP, WASM_EXPR_BR, WASM_EXPR_CALL,
+    WASM_EXPR_I32_CONST, WASM_EXPR_UNREACHABLE, WASM_EXPR_IF,
+    WASM_EXPR_LOCAL_GET, WASM_EXPR_LOCAL_SET, WASM_EXPR_LOAD,
+    WASM_EXPR_STORE, WASM_EXPR_BINARY, WASM_EXPR_RETURN
 } WasmExprKind;
+typedef enum WasmBinaryOp { WASM_BINARY_ADD, WASM_BINARY_AND, WASM_BINARY_OTHER } WasmBinaryOp;
 
 typedef struct WasmExpr {
     WasmExprKind kind;
     char *name;
     int32_t i32_value;
+    uint32_t index, offset, bytes, align;
+    bool is_signed, is_tee;
+    WasmBinaryOp binary_op;
     struct WasmExpr **children;
     size_t child_count;
 } WasmExpr;
@@ -33,36 +30,34 @@ typedef struct WasmExpr {
 typedef struct WasmFunction {
     char *name;
     bool is_import;
-    char *import_module;
-    char *import_name;
+    char *import_module, *import_name;
     WasmValueType params[4];
     size_t param_count;
     WasmValueType result;
+    WasmValueType *locals;
+    size_t local_count;
     WasmExpr *body;
 } WasmFunction;
 
-typedef struct WasmExport {
-    char *name;
-    char *value;
-    bool is_function;
-} WasmExport;
+typedef struct WasmExport { char *name, *value; bool is_function; } WasmExport;
+typedef struct WasmDataSegment {
+    uint32_t offset;
+    unsigned char *bytes;
+    size_t size;
+    bool is_passive, offset_is_i32_const;
+} WasmDataSegment;
 
 typedef struct WasmModule {
-    WasmFunction *functions;
-    size_t function_count;
-    WasmExport *exports;
-    size_t export_count;
-    bool has_memory;
-    bool has_imported_memory;
-    size_t table_count;
-    size_t global_count;
-    size_t element_segment_count;
-    size_t data_segment_count;
+    WasmFunction *functions; size_t function_count;
+    WasmExport *exports; size_t export_count;
+    bool has_memory, has_imported_memory, memory_is_shared, memory_is_64, memory_has_max;
+    uint32_t memory_initial_pages, memory_max_pages;
+    size_t memory_count, table_count, global_count, element_segment_count;
+    WasmDataSegment *data_segments; size_t data_segment_count;
 } WasmModule;
 
 bool wasm_module_load(const char *path, WasmModule *module, Diagnostics *diagnostics);
 void wasm_module_dispose(WasmModule *module);
-const WasmFunction *wasm_module_find_function(const WasmModule *module,
-                                              const char *name);
+const WasmFunction *wasm_module_find_function(const WasmModule *module, const char *name);
 
 #endif

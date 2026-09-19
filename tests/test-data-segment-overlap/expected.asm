@@ -1,0 +1,4 @@
+mov R1, 0xDDBBAA11
+mov [1000000], R1
+mov R1, 0x00000055
+mov [1000001], R1

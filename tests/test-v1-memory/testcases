@@ -1,0 +1,2 @@
+source=memory-v1.wat
+expectations=expected.asm
