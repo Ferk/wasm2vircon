@@ -1,0 +1,4 @@
+# A positive end-to-end C-to-ROM case. Paths are relative to this directory.
+source=minimal.c
+entry=__original_main
+expectations=expected.asm

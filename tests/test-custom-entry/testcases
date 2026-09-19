@@ -1,0 +1,3 @@
+source=custom-entry.wat
+entry=custom_entry
+expectations=expected.asm

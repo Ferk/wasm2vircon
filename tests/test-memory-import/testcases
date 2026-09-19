@@ -1,0 +1,2 @@
+source=memory-import.wat
+outcome=reject
