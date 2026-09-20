@@ -89,14 +89,24 @@ void vircon_spu_select_sound(int sound_id)
     VIRCON_IMPORT("vircon_spu_select_sound");
 void vircon_spu_set_sound_play_with_loop(int enabled)
     VIRCON_IMPORT("vircon_spu_set_sound_play_with_loop");
+void vircon_spu_set_sound_loop_start(int position)
+    VIRCON_IMPORT("vircon_spu_set_sound_loop_start");
+void vircon_spu_set_sound_loop_end(int position)
+    VIRCON_IMPORT("vircon_spu_set_sound_loop_end");
 void vircon_spu_set_channel_assigned_sound(int sound_id)
     VIRCON_IMPORT("vircon_spu_set_channel_assigned_sound");
 void vircon_spu_play_selected_channel(void)
     VIRCON_IMPORT("vircon_spu_play_selected_channel");
+void vircon_spu_pause_selected_channel(void)
+    VIRCON_IMPORT("vircon_spu_pause_selected_channel");
 void vircon_spu_set_channel_volume(float volume)
     VIRCON_IMPORT("vircon_spu_set_channel_volume");
 void vircon_spu_set_channel_speed(float speed)
     VIRCON_IMPORT("vircon_spu_set_channel_speed");
+void vircon_spu_set_channel_loop_enabled(int enabled)
+    VIRCON_IMPORT("vircon_spu_set_channel_loop_enabled");
+void vircon_spu_set_global_volume(float volume)
+    VIRCON_IMPORT("vircon_spu_set_global_volume");
 int vircon_spu_get_channel_state(void)
     VIRCON_IMPORT("vircon_spu_get_channel_state");
 

@@ -125,10 +125,15 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
         else if (strcmp(callee->import_name, "vircon_spu_select_channel") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SelectedChannel, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_select_sound") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SelectedSound, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_set_sound_play_with_loop") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SoundPlayWithLoop, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_spu_set_sound_loop_start") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SoundLoopStart, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_spu_set_sound_loop_end") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SoundLoopEnd, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_set_channel_assigned_sound") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelAssignedSound, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_play_selected_channel") == 0) { if (!emit(context, "  out SPU_Command, SPUCommand_PlaySelectedChannel")) return false; }
+        else if (strcmp(callee->import_name, "vircon_spu_pause_selected_channel") == 0) { if (!emit(context, "  out SPU_Command, SPUCommand_PauseSelectedChannel")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_set_channel_volume") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelVolume, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_set_channel_speed") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelSpeed, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_spu_set_channel_loop_enabled") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelLoopEnabled, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_spu_set_global_volume") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_GlobalVolume, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_rng_set_current_value") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out RNG_CurrentValue, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_multiply_color") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_MultiplyColor, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_active_blending") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_ActiveBlending, R1")) return false; }
