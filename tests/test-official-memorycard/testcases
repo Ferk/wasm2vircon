@@ -1,0 +1,7 @@
+source=memorycard.c
+entry=__original_main
+include_dirs=../../include
+textures=assets/Texture-GameScreen.png
+normalize=true
+expectations=expected.asm
+xml_expectations=expected.xml

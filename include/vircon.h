@@ -62,6 +62,9 @@ int vircon__timer_get_current_time(void) VIRCON__IMPORT("vircon_timer_get_curren
 int vircon__timer_get_current_date(void) VIRCON__IMPORT("vircon_timer_get_current_date");
 int vircon__rng_get_current_value(void) VIRCON__IMPORT("vircon_rng_get_current_value");
 void vircon__rng_set_current_value(int value) VIRCON__IMPORT("vircon_rng_set_current_value");
+int vircon__memcard_is_connected(void) VIRCON__IMPORT("vircon_memcard_is_connected");
+int vircon__memcard_read_word(int word_index) VIRCON__IMPORT("vircon_memcard_read_word");
+void vircon__memcard_write_word(int word_index, int value) VIRCON__IMPORT("vircon_memcard_write_word");
 void vircon__spu_select_channel(int value) VIRCON__IMPORT("vircon_spu_select_channel");
 void vircon__spu_select_sound(int value) VIRCON__IMPORT("vircon_spu_select_sound");
 void vircon__spu_set_sound_play_with_loop(int value) VIRCON__IMPORT("vircon_spu_set_sound_play_with_loop");
@@ -284,6 +287,37 @@ static inline int play_sound(int sound)
         }
     }
     return -1;
+}
+
+/* Memory card --------------------------------------------------------------
+ * Vircon cards are word-addressed.  These public helpers deliberately use
+ * `int` words too: a normal C `int *` advances four Wasm bytes while one card
+ * index advances one Vircon card word.  Card offsets and counts are words,
+ * not byte counts.  The raw memory-mapped device address remains private. */
+static inline int card_is_connected(void) { return vircon__memcard_is_connected(); }
+static inline int card_read_word(int word_index)
+{ return vircon__memcard_read_word(word_index); }
+static inline void card_write_word(int word_index, int value)
+{ vircon__memcard_write_word(word_index, value); }
+static inline void card_read_words(int *destination, int card_word_offset, int word_count)
+{
+    int index;
+    for (index = 0; index < word_count; ++index)
+        destination[index] = card_read_word(card_word_offset + index);
+}
+static inline void card_write_words(const int *source, int card_word_offset, int word_count)
+{
+    int index;
+    for (index = 0; index < word_count; ++index)
+        card_write_word(card_word_offset + index, source[index]);
+}
+static inline int card_words_match(const int *expected, int card_word_offset, int word_count)
+{
+    int index;
+    for (index = 0; index < word_count; ++index)
+        if (card_read_word(card_word_offset + index) != expected[index])
+            return 0;
+    return 1;
 }
 
 /* Finite f32 math ----------------------------------------------------------

@@ -135,6 +135,14 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
         else if (strcmp(callee->import_name, "vircon_spu_set_channel_loop_enabled") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelLoopEnabled, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_set_global_volume") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_GlobalVolume, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_rng_set_current_value") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out RNG_CurrentValue, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_memcard_read_word") == 0) {
+            int slot = temp_slot(context);
+            if (slot == 0 || !load_slot(context, 1, arguments[0].slot) || !emit(context, "  iadd R1, 0x30000000") || !emit(context, "  mov R0, [R1]") || !store_slot(context, slot, 0)) return false;
+            value->slot = slot; value->present = true; return true;
+        }
+        else if (strcmp(callee->import_name, "vircon_memcard_write_word") == 0) {
+            if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  iadd R1, 0x30000000") || !emit(context, "  mov [R1], R2")) return false;
+        }
         else if (strcmp(callee->import_name, "vircon_gpu_set_multiply_color") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_MultiplyColor, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_active_blending") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_ActiveBlending, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale_bits") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
@@ -163,7 +171,7 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
             value->slot = slot; value->present = true; return true;
         }
         else if (strcmp(callee->import_name, "vircon_input_select_gamepad") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out INP_SelectedGamepad, R1")) return false; }
-        else if (strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_down") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_connected") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_a") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_b") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_x") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_y") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_l") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_r") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_start") == 0 || strcmp(callee->import_name, "vircon_timer_get_frame_counter") == 0 || strcmp(callee->import_name, "vircon_timer_get_current_time") == 0 || strcmp(callee->import_name, "vircon_timer_get_current_date") == 0 || strcmp(callee->import_name, "vircon_rng_get_current_value") == 0 || strcmp(callee->import_name, "vircon_spu_get_channel_state") == 0) {
+        else if (strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_down") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_connected") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_a") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_b") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_x") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_y") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_l") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_r") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_start") == 0 || strcmp(callee->import_name, "vircon_timer_get_frame_counter") == 0 || strcmp(callee->import_name, "vircon_timer_get_current_time") == 0 || strcmp(callee->import_name, "vircon_timer_get_current_date") == 0 || strcmp(callee->import_name, "vircon_rng_get_current_value") == 0 || strcmp(callee->import_name, "vircon_spu_get_channel_state") == 0 || strcmp(callee->import_name, "vircon_memcard_is_connected") == 0) {
             const char *port = strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 ? "INP_GamepadLeft" :
                 strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 ? "INP_GamepadRight" :
                 strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 ? "INP_GamepadUp" :
@@ -179,6 +187,7 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
                 strcmp(callee->import_name, "vircon_timer_get_current_time") == 0 ? "TIM_CurrentTime" :
                 strcmp(callee->import_name, "vircon_timer_get_current_date") == 0 ? "TIM_CurrentDate" :
                 strcmp(callee->import_name, "vircon_rng_get_current_value") == 0 ? "RNG_CurrentValue" :
+                strcmp(callee->import_name, "vircon_memcard_is_connected") == 0 ? "MEM_Connected" :
                 strcmp(callee->import_name, "vircon_spu_get_channel_state") == 0 ? "SPU_ChannelState" : "TIM_FrameCounter";
             int slot = temp_slot(context);
             if (slot == 0 || !emit(context, "  in R0, %s", port) || !store_slot(context, slot, 0)) return false;
