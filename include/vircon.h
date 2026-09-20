@@ -88,12 +88,18 @@ static inline void define_region_center(int min_x, int min_y,
 /* Minimal selected-channel sound helper. */
 void select_sound(int sound_id);
 void set_sound_loop(int enabled);
+void set_sound_loop_start(int position);
+void set_sound_loop_end(int position);
 void play_sound_in_channel(int sound_id, int channel_id);
 void select_channel(int channel_id);
 void assign_channel_sound(int channel_id, int sound_id);
 void set_channel_volume(float volume);
 void set_channel_speed(float speed);
+void set_channel_loop(int enabled);
+void set_global_volume(float volume);
 void play_channel(int channel_id);
+void pause_channel(int channel_id);
+int get_channel_state(int channel_id);
 int play_sound(int sound_id);
 
 /* Small finite-input math layer. These are ordinary runtime functions; their
