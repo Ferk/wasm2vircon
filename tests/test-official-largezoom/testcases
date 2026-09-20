@@ -1,7 +1,6 @@
 source=largezoom.c
 entry=__original_main
-extra_sources=../../runtime/vircon_runtime.c ../../runtime/vircon_video.c ../../runtime/vircon_input.c ../../runtime/vircon_numbers.c ../../runtime/vircon_text.c ../../runtime/vircon_primitives.c
-include_dirs=../../include ../../runtime
+include_dirs=../../include
 textures=assets/TextureCheckers.png
 normalize=true
 expectations=expected.asm

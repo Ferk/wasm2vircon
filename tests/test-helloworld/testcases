@@ -2,7 +2,6 @@
 # normalization profile. Paths are relative to this test directory.
 source=helloworld.c
 entry=__original_main
-extra_sources=../../runtime/vircon_runtime.c ../../runtime/vircon_text.c
-include_dirs=../../include ../../runtime
+include_dirs=../../include
 normalize=true
 expectations=expected.asm

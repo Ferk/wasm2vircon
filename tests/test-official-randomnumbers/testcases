@@ -1,7 +1,6 @@
 source=randomnumbers.c
 entry=__original_main
-extra_sources=../../runtime/vircon_runtime.c ../../runtime/vircon_video.c ../../runtime/vircon_input.c ../../runtime/vircon_audio.c ../../runtime/vircon_random.c ../../runtime/vircon_numbers.c ../../runtime/vircon_text.c
-include_dirs=../../include ../../runtime
+include_dirs=../../include
 textures=assets/Texture-DiceStats.png
 sounds=assets/Sound-DiceRoll.wav assets/Sound-PageComplete.wav
 normalize=true

@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/build-rom.sh [--entry NAME] [--include DIR] [--extra-source FILE]
+Usage: scripts/build-rom.sh [--entry NAME] [--rom-name NAME] [--include DIR] [--extra-source FILE]
                             [--texture PNG] [--sound WAV] [--embedded-words NAME=FILE]
                             [--tilemap NAME=TMX] [--normalize]
                             INPUT.c OUTPUT_DIR
@@ -24,11 +24,16 @@ NAME. These options affect Wasm active data; they are not cartridge resources.
 
 The default entry export is __original_main. Tool paths may be overridden with
 the CLANG, WASM2VIRCON, ASSEMBLE, and PACKROM environment variables; otherwise
-clang, build/wasm2vircon, assemble, and packrom are used.
+clang, wasm2vircon, assemble, and packrom are resolved from PATH.
+
+--rom-name controls the basename used for all generated program artifacts and
+the final NAME.v32. It defaults to the INPUT.c basename and must be supplied
+without a filename extension or path.
 EOF
 }
 
 entry=__original_main
+rom_name=
 extra_sources=()
 include_dirs=()
 texture_sources=()
@@ -44,6 +49,14 @@ while [ "$#" -gt 0 ]; do
         exit 2
       fi
       entry=$2
+      shift 2
+      ;;
+    --rom-name)
+      if [ "$#" -lt 2 ]; then
+        echo "build-rom: --rom-name requires a name" >&2
+        exit 2
+      fi
+      rom_name=$2
       shift 2
       ;;
     --extra-source)
@@ -130,15 +143,14 @@ if [ ! -f "$source_file" ]; then
 fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-project_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 clang_tool=${CLANG:-clang}
-compiler=${WASM2VIRCON:-"$project_dir/build/wasm2vircon"}
+compiler=${WASM2VIRCON:-wasm2vircon}
 assembler=${ASSEMBLE:-assemble}
 rom_packer=${PACKROM:-packrom}
 png_converter=${PNG2VIRCON:-png2vircon}
 wav_converter=${WAV2VIRCON:-wav2vircon}
 tiled_converter=${TILED2VIRCON:-tiled2vircon}
-normalizer="$project_dir/scripts/normalize-virconwasm.sh"
+normalizer="$script_dir/normalize-virconwasm.sh"
 
 for tool in "$clang_tool" "$compiler" "$assembler" "$rom_packer"; do
   if ! command -v "$tool" >/dev/null 2>&1; then
@@ -164,6 +176,13 @@ program_name=${source_name%.c}
 if [ "$program_name" = "$source_name" ] || [ -z "$program_name" ]; then
   echo "build-rom: input must have a .c filename: $source_file" >&2
   exit 2
+fi
+if [ -n "$rom_name" ]; then
+  if ! [[ "$rom_name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+    echo "build-rom: --rom-name must use only letters, digits, _ or -: $rom_name" >&2
+    exit 2
+  fi
+  program_name=$rom_name
 fi
 
 mkdir -p "$output_dir"
@@ -253,10 +272,12 @@ for embedded_spec in "${embedded_word_specs[@]}"; do
   embedded_sources+=("$embedded_source")
 done
 
-if [ "${#extra_sources[@]}" -eq 0 ] && [ "${#embedded_sources[@]}" -eq 0 ]; then
-  if [ "$normalize" = true ]; then
-    raw_wasm_file="$output_dir/$program_name.raw.wasm"
-  fi
+# The supported normalized profile always has an explicit clang-object /
+# wasm-ld boundary.  This makes one-file header-only applications behave like
+# the former separately compiled runtime modules.  Keep Clang's direct link
+# path for deliberately unnormalized, one-source compiler probes: it avoids
+# linker scaffolding that those narrow raw-Wasm tests intentionally reject.
+if [ "$normalize" = false ] && [ "${#extra_sources[@]}" -eq 0 ] && [ "${#embedded_sources[@]}" -eq 0 ]; then
   "$clang_tool" "${clang_flags[@]}" "$source_file" -Wl,--no-entry \
     -Wl,--export="$entry" -Wl,--allow-undefined -o "$raw_wasm_file"
 else
@@ -306,7 +327,7 @@ done
   printf '%s\n' \
     '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>' \
     '<rom-definition version="1.0">' \
-    '  <rom type="cartridge" title="wasm2vircon ROM" version="1.0" />' \
+    "  <rom type=\"cartridge\" title=\"$program_name\" version=\"1.0\" />" \
     "  <binary path=\"$program_name.vbin\" />" \
     '  <textures>'
   for texture_output in "${texture_outputs[@]}"; do

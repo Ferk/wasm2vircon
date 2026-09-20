@@ -1,7 +1,6 @@
 source=gamepads.c
 entry=__original_main
-extra_sources=../../runtime/vircon_runtime.c ../../runtime/vircon_video.c ../../runtime/vircon_input.c
-include_dirs=../../include ../../runtime
+include_dirs=../../include
 textures=assets/Texture-Gamepad.png
 normalize=true
 expectations=expected.asm
