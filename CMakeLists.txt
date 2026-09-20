@@ -54,4 +54,31 @@ if(BUILD_TESTING)
       ${VIRCON_TILED2VIRCON_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests
   )
+
+  set(WASM2VIRCON_V32SIM_EXECUTABLE "" CACHE FILEPATH
+    "Path to an externally built v32sim executable for optional execution tests")
+  set(WASM2VIRCON_V32SIM_BIOS "" CACHE FILEPATH
+    "Path to an installed Vircon32 BIOS .v32 for optional execution tests")
+  if(WASM2VIRCON_V32SIM_EXECUTABLE AND WASM2VIRCON_V32SIM_BIOS)
+    add_test(
+      NAME wasm2vircon-simulator
+      COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/run-tests.sh
+        $<TARGET_FILE:wasm2vircon>
+        ${CLANG_EXECUTABLE}
+        ${WASM_AS_EXECUTABLE}
+        ${VIRCON_ASSEMBLE_EXECUTABLE}
+        ${VIRCON_PACKROM_EXECUTABLE}
+        ${VIRCON_PNG2VIRCON_EXECUTABLE}
+        ${VIRCON_WAV2VIRCON_EXECUTABLE}
+        ${VIRCON_TILED2VIRCON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        ${WASM2VIRCON_V32SIM_EXECUTABLE}
+        ${WASM2VIRCON_V32SIM_BIOS}
+        simulator
+    )
+    set_tests_properties(wasm2vircon-simulator PROPERTIES LABELS simulator)
+  else()
+    message(STATUS
+      "v32sim execution tests are disabled; set WASM2VIRCON_V32SIM_EXECUTABLE and WASM2VIRCON_V32SIM_BIOS to enable them")
+  endif()
 endif()

@@ -10,6 +10,9 @@ png2vircon=$6
 wav2vircon=$7
 tiled2vircon=$8
 tests_dir=$9
+v32sim=${10-}
+v32sim_bios=${11-}
+test_mode=${12-all}
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
 
@@ -19,6 +22,26 @@ builder="$project_dir/scripts/build-rom.sh"
 
 run_cases() {
   found_case=false
+  found_sim_case=false
+
+  case "$test_mode" in
+    all|simulator) ;;
+    *)
+      echo "unknown test mode: $test_mode" >&2
+      exit 1
+      ;;
+  esac
+
+  if [ "$test_mode" = simulator ]; then
+    if [ -z "$v32sim" ] || [ -z "$v32sim_bios" ]; then
+      echo "simulator tests require v32sim and a BIOS path" >&2
+      exit 1
+    fi
+    if [ ! -x "$v32sim" ] || [ ! -f "$v32sim_bios" ]; then
+      echo "simulator executable or BIOS path is unavailable" >&2
+      exit 1
+    fi
+  fi
 
   for case_dir in "$tests_dir"/test-*; do
     [ -d "$case_dir" ] || continue
@@ -38,6 +61,10 @@ run_cases() {
     tilemaps=
     xml_expectations_file=
     normalize=false
+    sim_commands_file=
+    sim_expectations_file=
+    sim_watch_for=
+    sim_stdin_file=
     while IFS='=' read -r key value || [ -n "$key" ]; do
       case "$key" in
         ''|'#'*) ;;
@@ -53,12 +80,21 @@ run_cases() {
         tilemaps) tilemaps=$value ;;
         xml_expectations) xml_expectations_file=$value ;;
         normalize) normalize=$value ;;
+        sim_commands) sim_commands_file=$value ;;
+        sim_expectations) sim_expectations_file=$value ;;
+        sim_watch_for) sim_watch_for=$value ;;
+        sim_stdin) sim_stdin_file=$value ;;
         *)
           echo "unknown key in $case_file: $key" >&2
           exit 1
           ;;
       esac
     done < "$case_file"
+
+    if [ "$test_mode" = simulator ]; then
+      [ -n "$sim_commands_file" ] || continue
+      found_sim_case=true
+    fi
 
     if [ -z "$source_file" ]; then
       echo "incomplete test case: $case_file" >&2
@@ -175,10 +211,57 @@ run_cases() {
         fi
       done < "$xml_expectations_path"
     fi
+
+    if [ "$test_mode" = simulator ]; then
+      if [ "$source_file" != "${source_file%.c}.c" ] || [ "$outcome" != accept ]; then
+        echo "$case_name: simulator cases must be accepted C-to-ROM tests" >&2
+        exit 1
+      fi
+      if [ -z "$sim_expectations_file" ]; then
+        echo "$case_name: simulator cases require sim_expectations" >&2
+        exit 1
+      fi
+      sim_commands_path="$case_dir/$sim_commands_file"
+      sim_expectations_path="$case_dir/$sim_expectations_file"
+      sim_output="$case_output/$program_name.v32sim.out"
+      if [ ! -f "$sim_commands_path" ] || [ ! -f "$sim_expectations_path" ]; then
+        echo "$case_name: missing simulator command or expectation file" >&2
+        exit 1
+      fi
+      set -- "$v32sim" --no-debug --run --errorcheck --biosfile "$v32sim_bios" \
+        --entry-point 0x20000000 --command-file "$sim_commands_path"
+      if [ -n "$sim_watch_for" ]; then
+        set -- "$@" --watch-for "$sim_watch_for"
+      fi
+      set -- "$@" "$case_output/$program_name.v32"
+      if [ -n "$sim_stdin_file" ]; then
+        sim_stdin_path="$case_dir/$sim_stdin_file"
+        if [ ! -f "$sim_stdin_path" ]; then
+          echo "$case_name: missing simulator stdin file" >&2
+          exit 1
+        fi
+        "$@" < "$sim_stdin_path" > "$sim_output" 2>&1
+      else
+        "$@" > "$sim_output" 2>&1
+      fi
+      while IFS= read -r expected || [ -n "$expected" ]; do
+        case "$expected" in
+          ''|'#'*) continue ;;
+        esac
+        if ! grep -F -- "$expected" "$sim_output" >/dev/null; then
+          echo "$case_name: missing simulator output fragment: $expected" >&2
+          exit 1
+        fi
+      done < "$sim_expectations_path"
+    fi
   done
 
-  if [ "$found_case" = false ]; then
+  if [ "$test_mode" = all ] && [ "$found_case" = false ]; then
     echo "no testcases files found under $tests_dir/test-*" >&2
+    exit 1
+  fi
+  if [ "$test_mode" = simulator ] && [ "$found_sim_case" = false ]; then
+    echo "no simulator testcases found under $tests_dir/test-*" >&2
     exit 1
   fi
 }

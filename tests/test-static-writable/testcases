@@ -1,2 +1,4 @@
 source=static-writable.c
 expectations=expected.asm
+sim_commands=v32sim.commands
+sim_expectations=expected.v32sim

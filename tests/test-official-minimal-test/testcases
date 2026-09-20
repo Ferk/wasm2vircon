@@ -7,3 +7,5 @@ sounds=./assets/Sound-SoftSynth.wav
 normalize=true
 expectations=expected.asm
 xml_expectations=expected.xml
+sim_commands=v32sim.commands
+sim_expectations=expected.v32sim

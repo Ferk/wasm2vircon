@@ -1,0 +1,9 @@
+display GPU_ClearColor clear_color
+display GPU_SelectedTexture selected_texture
+display GPU_SelectedRegion selected_region
+display GPU_DrawingPointX drawing_x
+display GPU_DrawingPointY drawing_y
+display SPU_SelectedChannel selected_channel
+display SPU_ChannelAssignedSound assigned_sound
+display SPU_Command sound_command
+display/d R0 result

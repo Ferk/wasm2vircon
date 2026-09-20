@@ -1,0 +1,9 @@
+# Player 3 is processed last, so its right-arrow draw is the final GPU state
+# before the frame WAIT instruction.
+gamepad3 connect
+gamepad3 right
+display GPU_SelectedTexture selected_texture
+display GPU_SelectedRegion selected_region
+display GPU_DrawingPointX drawing_x
+display GPU_DrawingPointY drawing_y
+display INP_SelectedGamepad selected_gamepad
