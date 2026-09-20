@@ -1,0 +1,8 @@
+source=dateandtime.c
+entry=__original_main
+include_dirs=../../include
+textures=assets/Texture-Clock.png
+sounds=assets/Sound-TicTac.wav
+normalize=true
+expectations=expected.asm
+xml_expectations=expected.xml
