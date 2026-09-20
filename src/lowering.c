@@ -124,13 +124,14 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
         else if (strcmp(callee->import_name, "vircon_spu_set_channel_assigned_sound") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelAssignedSound, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_play_selected_channel") == 0) { if (!emit(context, "  out SPU_Command, SPUCommand_PlaySelectedChannel")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_set_channel_volume") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelVolume, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_spu_set_channel_speed") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelSpeed, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_rng_set_current_value") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out RNG_CurrentValue, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_multiply_color") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_MultiplyColor, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale_bits") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_draw_region_zoomed") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionZoomed")) return false; }
         else if (strcmp(callee->import_name, "vircon_input_select_gamepad") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out INP_SelectedGamepad, R1")) return false; }
-        else if (strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_down") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_connected") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_a") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_b") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_x") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_y") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_l") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_r") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_start") == 0 || strcmp(callee->import_name, "vircon_timer_get_frame_counter") == 0 || strcmp(callee->import_name, "vircon_timer_get_current_time") == 0 || strcmp(callee->import_name, "vircon_rng_get_current_value") == 0 || strcmp(callee->import_name, "vircon_spu_get_channel_state") == 0) {
+        else if (strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_down") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_connected") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_a") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_b") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_x") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_y") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_l") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_r") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_start") == 0 || strcmp(callee->import_name, "vircon_timer_get_frame_counter") == 0 || strcmp(callee->import_name, "vircon_timer_get_current_time") == 0 || strcmp(callee->import_name, "vircon_timer_get_current_date") == 0 || strcmp(callee->import_name, "vircon_rng_get_current_value") == 0 || strcmp(callee->import_name, "vircon_spu_get_channel_state") == 0) {
             const char *port = strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 ? "INP_GamepadLeft" :
                 strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 ? "INP_GamepadRight" :
                 strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 ? "INP_GamepadUp" :
@@ -144,6 +145,7 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
                 strcmp(callee->import_name, "vircon_input_gamepad_button_r") == 0 ? "INP_GamepadButtonR" :
                 strcmp(callee->import_name, "vircon_input_gamepad_button_start") == 0 ? "INP_GamepadButtonStart" :
                 strcmp(callee->import_name, "vircon_timer_get_current_time") == 0 ? "TIM_CurrentTime" :
+                strcmp(callee->import_name, "vircon_timer_get_current_date") == 0 ? "TIM_CurrentDate" :
                 strcmp(callee->import_name, "vircon_rng_get_current_value") == 0 ? "RNG_CurrentValue" :
                 strcmp(callee->import_name, "vircon_spu_get_channel_state") == 0 ? "SPU_ChannelState" : "TIM_FrameCounter";
             int slot = temp_slot(context);
@@ -189,12 +191,21 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     case WASM_BINARY_GT_U:
         if (!emit(context, "  xor R1, 0x80000000") || !emit(context, "  xor R2, 0x80000000") || !emit(context, "  igt R1, R2")) return false;
         break;
+    case WASM_BINARY_GE_U:
+        if (!emit(context, "  xor R1, 0x80000000") || !emit(context, "  xor R2, 0x80000000") || !emit(context, "  ige R1, R2")) return false;
+        break;
+    case WASM_BINARY_SHR_U:
+        if (!emit(context, "  and R2, 31") || !emit(context, "  mov R3, 0") || !emit(context, "  isub R3, R2") || !emit(context, "  shl R1, R3")) return false;
+        break;
     case WASM_BINARY_SHL:
         if (!emit(context, "  and R2, 31") || !emit(context, "  shl R1, R2")) return false;
         break;
     case WASM_BINARY_DIV_U:
         if (!emit(context, "  call __wasm_i32_div_u") || !store_slot(context, left.slot, 0)) return false;
         release(context, right); *value = left; return true;
+    case WASM_BINARY_REM_U:
+        if (!emit(context, "  call __wasm_i32_div_u") || !load_slot(context, 1, left.slot) || !emit(context, "  imul R0, R2") || !emit(context, "  isub R1, R0")) return false;
+        break;
     case WASM_BINARY_REM_S:
         if (!fresh_label(context, "rem_s_normal", normal, sizeof(normal)) ||
             !fresh_label(context, "rem_s_done", done, sizeof(done)) ||
@@ -340,7 +351,7 @@ bool lower_module_to_vircon_ir(const ValidatedModule *validated, VirconIrProgram
     if (!emit_label(&startup, "__wasm_entry") || !initialize_data(validated, &startup) || !emit(&startup, "  call %s", entry_label) || !emit(&startup, "  hlt") || !emit_label(&startup, "__wasm_trap") || !emit(&startup, "  hlt  ; Wasm memory/unreachable trap")) return false;
     for (index = 0; index < validated->module->function_count; ++index) {
         const WasmFunction *function = &validated->module->functions[index];
-        if (validated->reachable[index] && !function->is_import && expression_uses_binary(function->body, WASM_BINARY_DIV_U)) needs_unsigned_division = true;
+        if (validated->reachable[index] && !function->is_import && (expression_uses_binary(function->body, WASM_BINARY_DIV_U) || expression_uses_binary(function->body, WASM_BINARY_REM_U))) needs_unsigned_division = true;
         if (validated->reachable[index] && !function->is_import && !lower_function(validated, function, program, diagnostics, memory_bytes)) return false;
     }
     if (needs_unsigned_division && !emit_unsigned_division_helper(&startup)) return false;

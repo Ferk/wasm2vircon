@@ -63,6 +63,8 @@ int vircon_timer_get_frame_counter(void)
     VIRCON_IMPORT("vircon_timer_get_frame_counter");
 int vircon_timer_get_current_time(void)
     VIRCON_IMPORT("vircon_timer_get_current_time");
+int vircon_timer_get_current_date(void)
+    VIRCON_IMPORT("vircon_timer_get_current_date");
 
 int vircon_rng_get_current_value(void)
     VIRCON_IMPORT("vircon_rng_get_current_value");
@@ -77,6 +79,8 @@ void vircon_spu_play_selected_channel(void)
     VIRCON_IMPORT("vircon_spu_play_selected_channel");
 void vircon_spu_set_channel_volume(float volume)
     VIRCON_IMPORT("vircon_spu_set_channel_volume");
+void vircon_spu_set_channel_speed(float speed)
+    VIRCON_IMPORT("vircon_spu_set_channel_speed");
 int vircon_spu_get_channel_state(void)
     VIRCON_IMPORT("vircon_spu_get_channel_state");
 

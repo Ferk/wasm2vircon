@@ -40,6 +40,7 @@ int gamepad_button_r(void);
 int gamepad_button_start(void);
 int get_frame_counter(void);
 int get_time(void);
+int get_date(void);
 int rand(void);
 void srand(int seed);
 void sleep(int frames);
@@ -73,7 +74,10 @@ static inline void define_region_center(int min_x, int min_y,
 /* Minimal selected-channel sound helper. */
 void play_sound_in_channel(int sound_id, int channel_id);
 void select_channel(int channel_id);
+void assign_channel_sound(int channel_id, int sound_id);
 void set_channel_volume(float volume);
+void set_channel_speed(float speed);
+void play_channel(int channel_id);
 int play_sound(int sound_id);
 
 #endif

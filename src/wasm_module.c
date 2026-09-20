@@ -179,6 +179,9 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
             op == BinaryenGtSInt32() ? WASM_BINARY_GT_S :
             op == BinaryenGtUInt32() ? WASM_BINARY_GT_U :
             op == BinaryenGeSInt32() ? WASM_BINARY_GE_S :
+            op == BinaryenGeUInt32() ? WASM_BINARY_GE_U :
+            op == BinaryenRemUInt32() ? WASM_BINARY_REM_U :
+            op == BinaryenShrUInt32() ? WASM_BINARY_SHR_U :
             op == BinaryenMulFloat32() ? WASM_BINARY_F32_MUL : WASM_BINARY_OTHER;
         if (!allocate_children(expression, 2, diagnostics)) goto fail;
         expression->children[0] = convert_expression(BinaryenBinaryGetLeft(source), diagnostics, function_name); expression->children[1] = convert_expression(BinaryenBinaryGetRight(source), diagnostics, function_name);

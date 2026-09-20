@@ -9,11 +9,14 @@ void play_sound_in_channel(int sound_id, int channel_id)
 }
 
 void select_channel(int channel_id) { vircon_spu_select_channel(channel_id); }
+void assign_channel_sound(int channel_id, int sound_id) { vircon_spu_select_channel(channel_id); vircon_spu_set_channel_assigned_sound(sound_id); }
 
 void set_channel_volume(float volume)
 {
     vircon_spu_set_channel_volume(volume);
 }
+void set_channel_speed(float speed) { vircon_spu_set_channel_speed(speed); }
+void play_channel(int channel_id) { vircon_spu_select_channel(channel_id); vircon_spu_play_selected_channel(); }
 
 int play_sound(int sound_id)
 {

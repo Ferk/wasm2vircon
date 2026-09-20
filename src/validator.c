@@ -47,9 +47,11 @@ static const ImportSpec IMPORTS[] = {
     {"env", "vircon_input_gamepad_button_start", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
     {"env", "vircon_timer_get_frame_counter", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
     {"env", "vircon_timer_get_current_time", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
+    {"env", "vircon_timer_get_current_date", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
     {"env", "vircon_rng_get_current_value", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
     {"env", "vircon_rng_set_current_value", {WASM_VALUE_I32}, 1, WASM_VALUE_NONE},
     {"env", "vircon_spu_get_channel_state", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
+    {"env", "vircon_spu_set_channel_speed", {WASM_VALUE_F32}, 1, WASM_VALUE_NONE},
 };
 
 static const ImportSpec *find_import_spec(const char *module, const char *name)
