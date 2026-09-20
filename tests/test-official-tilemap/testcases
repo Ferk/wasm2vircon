@@ -1,0 +1,9 @@
+source=tilemap.c
+entry=__original_main
+extra_sources=../../runtime/vircon_runtime.c ../../runtime/vircon_video.c ../../runtime/vircon_input.c
+include_dirs=../../include ../../runtime
+textures=assets/Texture-TileSet.png
+tilemaps=TileMap=assets/TileMap.tmx
+normalize=true
+expectations=expected.asm
+xml_expectations=expected.xml

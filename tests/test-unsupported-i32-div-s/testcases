@@ -1,0 +1,2 @@
+source=unsupported-i32-div-s.wat
+outcome=reject

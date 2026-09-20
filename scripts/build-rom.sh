@@ -5,7 +5,8 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage: scripts/build-rom.sh [--entry NAME] [--include DIR] [--extra-source FILE]
-                            [--texture PNG] [--sound WAV] [--normalize]
+                            [--texture PNG] [--sound WAV] [--embedded-words NAME=FILE]
+                            [--tilemap NAME=TMX] [--normalize]
                             INPUT.c OUTPUT_DIR
 
 Compile INPUT.c plus any --extra-source files as the current freestanding
@@ -15,6 +16,11 @@ and runs the supported Binaryen cleanup profile before wasm2vircon.
 
 Each --texture and --sound is converted with the official PNG/WAV conversion
 tool from PATH and is added to the generated ROM definition in option order.
+
+--embedded-words converts a little-endian 32-bit word file into a generated C
+definition named NAME, compiled with the application. --tilemap first invokes
+tiled2vircon for a one-layer TMX map and then embeds its generated .vmap under
+NAME. These options affect Wasm active data; they are not cartridge resources.
 
 The default entry export is __original_main. Tool paths may be overridden with
 the CLANG, WASM2VIRCON, ASSEMBLE, and PACKROM environment variables; otherwise
@@ -27,6 +33,8 @@ extra_sources=()
 include_dirs=()
 texture_sources=()
 sound_sources=()
+embedded_word_specs=()
+tilemap_specs=()
 normalize=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -68,6 +76,22 @@ while [ "$#" -gt 0 ]; do
         exit 2
       fi
       sound_sources+=("$2")
+      shift 2
+      ;;
+    --embedded-words)
+      if [ "$#" -lt 2 ]; then
+        echo "build-rom: --embedded-words requires NAME=FILE" >&2
+        exit 2
+      fi
+      embedded_word_specs+=("$2")
+      shift 2
+      ;;
+    --tilemap)
+      if [ "$#" -lt 2 ]; then
+        echo "build-rom: --tilemap requires NAME=TMX" >&2
+        exit 2
+      fi
+      tilemap_specs+=("$2")
       shift 2
       ;;
     --normalize)
@@ -113,6 +137,7 @@ assembler=${ASSEMBLE:-assemble}
 rom_packer=${PACKROM:-packrom}
 png_converter=${PNG2VIRCON:-png2vircon}
 wav_converter=${WAV2VIRCON:-wav2vircon}
+tiled_converter=${TILED2VIRCON:-tiled2vircon}
 normalizer="$project_dir/scripts/normalize-virconwasm.sh"
 
 for tool in "$clang_tool" "$compiler" "$assembler" "$rom_packer"; do
@@ -127,6 +152,10 @@ if [ "${#texture_sources[@]}" -ne 0 ] && ! command -v "$png_converter" >/dev/nul
 fi
 if [ "${#sound_sources[@]}" -ne 0 ] && ! command -v "$wav_converter" >/dev/null 2>&1; then
   echo "build-rom: required tool not found: $wav_converter" >&2
+  exit 2
+fi
+if [ "${#tilemap_specs[@]}" -ne 0 ] && ! command -v "$tiled_converter" >/dev/null 2>&1; then
+  echo "build-rom: required tool not found: $tiled_converter" >&2
   exit 2
 fi
 
@@ -154,14 +183,81 @@ for include_dir in "${include_dirs[@]}"; do
   clang_flags+=(-I "$include_dir")
 done
 
-if [ "${#extra_sources[@]}" -eq 0 ]; then
+validate_embedded_words_spec() {
+  case "$1" in
+    *=*) ;;
+    *) echo "build-rom: embedded word data must use NAME=FILE: $1" >&2; exit 2 ;;
+  esac
+  embedded_name=${1%%=*}
+  embedded_file=${1#*=}
+  if ! [[ "$embedded_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "build-rom: embedded word name is not a C identifier: $embedded_name" >&2
+    exit 2
+  fi
+  if [ ! -f "$embedded_file" ]; then
+    echo "build-rom: embedded word file not found: $embedded_file" >&2
+    exit 2
+  fi
+  if [ $(( $(wc -c < "$embedded_file") % 4 )) -ne 0 ]; then
+    echo "build-rom: embedded word file is not a whole number of 32-bit words: $embedded_file" >&2
+    exit 2
+  fi
+}
+
+for tilemap_spec in "${tilemap_specs[@]}"; do
+  case "$tilemap_spec" in
+    *=*) ;;
+    *) echo "build-rom: tilemap must use NAME=TMX: $tilemap_spec" >&2; exit 2 ;;
+  esac
+  tilemap_name=${tilemap_spec%%=*}
+  tilemap_source=${tilemap_spec#*=}
+  if [ ! -f "$tilemap_source" ]; then
+    echo "build-rom: tilemap source not found: $tilemap_source" >&2
+    exit 2
+  fi
+  tilemap_output="$output_dir/tilemap-${#embedded_word_specs[@]}"
+  mkdir -p "$tilemap_output"
+  "$tiled_converter" "$tilemap_source" -o "$tilemap_output/"
+  tilemap_files=("$tilemap_output"/*.vmap)
+  if [ "${#tilemap_files[@]}" -ne 1 ] || [ ! -f "${tilemap_files[0]}" ]; then
+    echo "build-rom: --tilemap currently requires exactly one generated .vmap file" >&2
+    exit 2
+  fi
+  embedded_word_specs+=("$tilemap_name=${tilemap_files[0]}")
+done
+
+embedded_sources=()
+for embedded_spec in "${embedded_word_specs[@]}"; do
+  validate_embedded_words_spec "$embedded_spec"
+  embedded_name=${embedded_spec%%=*}
+  embedded_file=${embedded_spec#*=}
+  embedded_source="$output_dir/$program_name.embedded-${#embedded_sources[@]}.c"
+  {
+    printf '%s\n' '/* Generated from a project-supplied little-endian word asset. */'
+    od --endian=little -An -tx4 -v "$embedded_file" | awk -v name="$embedded_name" '
+      BEGIN { printf "const int %s[] = {\n", name; count = 0; }
+      {
+        for (field = 1; field <= NF; ++field) {
+          if ((count % 8) == 0) printf "    ";
+          printf "(int)0x%sU", $field;
+          count++;
+          if ((count % 8) == 0) printf ",\n"; else printf ", ";
+        }
+      }
+      END { if ((count % 8) != 0) printf "\n"; printf "};\n"; }
+    '
+  } > "$embedded_source"
+  embedded_sources+=("$embedded_source")
+done
+
+if [ "${#extra_sources[@]}" -eq 0 ] && [ "${#embedded_sources[@]}" -eq 0 ]; then
   if [ "$normalize" = true ]; then
     raw_wasm_file="$output_dir/$program_name.raw.wasm"
   fi
   "$clang_tool" "${clang_flags[@]}" "$source_file" -Wl,--no-entry \
     -Wl,--export="$entry" -Wl,--allow-undefined -o "$raw_wasm_file"
 else
-  sources=("$source_file" "${extra_sources[@]}")
+  sources=("$source_file" "${extra_sources[@]}" "${embedded_sources[@]}")
   objects=()
   if [ "$normalize" = true ]; then
     raw_wasm_file="$output_dir/$program_name.raw.wasm"

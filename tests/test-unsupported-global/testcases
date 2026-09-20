@@ -1,0 +1,3 @@
+source=unsupported-global.wat
+entry=entry
+outcome=reject

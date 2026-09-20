@@ -8,7 +8,8 @@ assemble=$4
 packrom=$5
 png2vircon=$6
 wav2vircon=$7
-tests_dir=$8
+tiled2vircon=$8
+tests_dir=$9
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
 
@@ -33,6 +34,8 @@ run_cases() {
     include_dirs=
     textures=
     sounds=
+    embedded_words=
+    tilemaps=
     xml_expectations_file=
     normalize=false
     while IFS='=' read -r key value || [ -n "$key" ]; do
@@ -46,6 +49,8 @@ run_cases() {
         include_dirs) include_dirs=$value ;;
         textures) textures=$value ;;
         sounds) sounds=$value ;;
+        embedded_words) embedded_words=$value ;;
+        tilemaps) tilemaps=$value ;;
         xml_expectations) xml_expectations_file=$value ;;
         normalize) normalize=$value ;;
         *)
@@ -87,13 +92,23 @@ run_cases() {
           for sound in $sounds; do
             set -- "$@" --sound "$case_dir/$sound"
           done
+          for embedded_word in $embedded_words; do
+            embedded_name=${embedded_word%%=*}
+            embedded_file=${embedded_word#*=}
+            set -- "$@" --embedded-words "$embedded_name=$case_dir/$embedded_file"
+          done
+          for tilemap in $tilemaps; do
+            tilemap_name=${tilemap%%=*}
+            tilemap_file=${tilemap#*=}
+            set -- "$@" --tilemap "$tilemap_name=$case_dir/$tilemap_file"
+          done
           if [ "$normalize" = true ]; then
             set -- "$@" --normalize
           elif [ "$normalize" != false ]; then
             echo "$case_name: normalize must be true or false" >&2
             exit 1
           fi
-          WASM2VIRCON="$tool" CLANG="$clang" ASSEMBLE="$assemble" PACKROM="$packrom" PNG2VIRCON="$png2vircon" WAV2VIRCON="$wav2vircon" "$@" "$source_path" "$case_output"
+          WASM2VIRCON="$tool" CLANG="$clang" ASSEMBLE="$assemble" PACKROM="$packrom" PNG2VIRCON="$png2vircon" WAV2VIRCON="$wav2vircon" TILED2VIRCON="$tiled2vircon" "$@" "$source_path" "$case_output"
         )
         asm_file="$case_output/$program_name.asm"
         test -s "$case_output/$program_name.v32"

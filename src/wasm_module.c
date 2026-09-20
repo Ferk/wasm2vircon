@@ -158,7 +158,20 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
     }
     if (id == BinaryenBinaryId()) {
         BinaryenOp op = BinaryenBinaryGetOp(source); expression = new_expression(WASM_EXPR_BINARY, diagnostics); if (expression == NULL) return NULL;
-        expression->binary_op = op == BinaryenAddInt32() ? WASM_BINARY_ADD : op == BinaryenAndInt32() ? WASM_BINARY_AND : op == BinaryenEqInt32() ? WASM_BINARY_EQ : WASM_BINARY_OTHER;
+        expression->binary_op = op == BinaryenAddInt32() ? WASM_BINARY_ADD :
+            op == BinaryenSubInt32() ? WASM_BINARY_SUB :
+            op == BinaryenMulInt32() ? WASM_BINARY_MUL :
+            op == BinaryenDivUInt32() ? WASM_BINARY_DIV_U :
+            op == BinaryenRemSInt32() ? WASM_BINARY_REM_S :
+            op == BinaryenShlInt32() ? WASM_BINARY_SHL :
+            op == BinaryenAndInt32() ? WASM_BINARY_AND :
+            op == BinaryenEqInt32() ? WASM_BINARY_EQ :
+            op == BinaryenNeInt32() ? WASM_BINARY_NE :
+            op == BinaryenLtSInt32() ? WASM_BINARY_LT_S :
+            op == BinaryenLtUInt32() ? WASM_BINARY_LT_U :
+            op == BinaryenGtSInt32() ? WASM_BINARY_GT_S :
+            op == BinaryenGtUInt32() ? WASM_BINARY_GT_U :
+            op == BinaryenGeSInt32() ? WASM_BINARY_GE_S : WASM_BINARY_OTHER;
         if (!allocate_children(expression, 2, diagnostics)) goto fail;
         expression->children[0] = convert_expression(BinaryenBinaryGetLeft(source), diagnostics, function_name); expression->children[1] = convert_expression(BinaryenBinaryGetRight(source), diagnostics, function_name);
         if (expression->children[0] == NULL || expression->children[1] == NULL) goto fail;
@@ -272,9 +285,12 @@ fail:
 void wasm_module_dispose(WasmModule *module)
 {
     size_t index;
-    for (index = 0; index < module->function_count; ++index) { WasmFunction *f = &module->functions[index]; free(f->name); free(f->import_module); free(f->import_name); free(f->locals); free_expression(f->body); }
-    for (index = 0; index < module->export_count; ++index) { free(module->exports[index].name); free(module->exports[index].value); }
-    for (index = 0; index < module->data_segment_count; ++index) free(module->data_segments[index].bytes);
+    if (module->functions != NULL)
+        for (index = 0; index < module->function_count; ++index) { WasmFunction *f = &module->functions[index]; free(f->name); free(f->import_module); free(f->import_name); free(f->locals); free_expression(f->body); }
+    if (module->exports != NULL)
+        for (index = 0; index < module->export_count; ++index) { free(module->exports[index].name); free(module->exports[index].value); }
+    if (module->data_segments != NULL)
+        for (index = 0; index < module->data_segment_count; ++index) free(module->data_segments[index].bytes);
     free(module->functions); free(module->exports); free(module->data_segments); memset(module, 0, sizeof(*module));
 }
 

@@ -27,6 +27,13 @@ static const ImportSpec IMPORTS[] = {
     {"env", "vircon_spu_select_channel", {WASM_VALUE_I32}, 1, WASM_VALUE_NONE},
     {"env", "vircon_spu_set_channel_assigned_sound", {WASM_VALUE_I32}, 1, WASM_VALUE_NONE},
     {"env", "vircon_spu_play_selected_channel", {WASM_VALUE_NONE}, 0, WASM_VALUE_NONE},
+    {"env", "vircon_gpu_set_multiply_color", {WASM_VALUE_I32}, 1, WASM_VALUE_NONE},
+    {"env", "vircon_input_select_gamepad", {WASM_VALUE_I32}, 1, WASM_VALUE_NONE},
+    {"env", "vircon_input_gamepad_left", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
+    {"env", "vircon_input_gamepad_right", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
+    {"env", "vircon_input_gamepad_up", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
+    {"env", "vircon_input_gamepad_down", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
+    {"env", "vircon_timer_get_frame_counter", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
 };
 
 static const ImportSpec *find_import_spec(const char *module, const char *name)

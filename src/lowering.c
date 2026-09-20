@@ -37,7 +37,7 @@ static bool emit(Context *context, const char *format, ...)
     return vircon_ir_append_text(context->program, text, context->diagnostics);
 }
 static bool fresh_label(Context *context, const char *kind, char *out, size_t size)
-{ return snprintf(out, size, "__wasm_%s_%u", kind, context->next_label++) > 0; }
+{ return snprintf(out, size, "__wasm_%s_%zu_%u", kind, (size_t)(context->function - context->validated->module->functions), context->next_label++) > 0; }
 static bool emit_label(Context *context, const char *label) { return emit(context, "%s:", label); }
 static int temp_slot(Context *context)
 {
@@ -123,6 +123,17 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
         else if (strcmp(callee->import_name, "vircon_spu_select_channel") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SelectedChannel, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_set_channel_assigned_sound") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelAssignedSound, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_play_selected_channel") == 0) { if (!emit(context, "  out SPU_Command, SPUCommand_PlaySelectedChannel")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_set_multiply_color") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_MultiplyColor, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_input_select_gamepad") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out INP_SelectedGamepad, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_down") == 0 || strcmp(callee->import_name, "vircon_timer_get_frame_counter") == 0) {
+            const char *port = strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 ? "INP_GamepadLeft" :
+                strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 ? "INP_GamepadRight" :
+                strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 ? "INP_GamepadUp" :
+                strcmp(callee->import_name, "vircon_input_gamepad_down") == 0 ? "INP_GamepadDown" : "TIM_FrameCounter";
+            int slot = temp_slot(context);
+            if (slot == 0 || !emit(context, "  in R0, %s", port) || !store_slot(context, slot, 0)) return false;
+            value->slot = slot; value->present = true; return true;
+        }
         else { diagnostics_error(context->diagnostics, "internal error: unsupported import passed validation"); return false; }
         for (index = expression->child_count; index != 0; --index)
             release(context, arguments[index - 1]);
@@ -136,6 +147,83 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
     else value->present = false;
     return true;
 }
+
+static bool lower_binary(Context *context, const WasmExpr *expression, Value *value)
+{
+    Value left = {0}, right = {0}; char normal[64], done[64];
+    if (!lower_expression(context, expression->children[0], &left) ||
+        !lower_expression(context, expression->children[1], &right) ||
+        !left.present || !right.present || !load_slot(context, 1, left.slot) ||
+        !load_slot(context, 2, right.slot)) return false;
+
+    switch (expression->binary_op) {
+    case WASM_BINARY_ADD: if (!emit(context, "  iadd R1, R2")) return false; break;
+    case WASM_BINARY_SUB: if (!emit(context, "  isub R1, R2")) return false; break;
+    case WASM_BINARY_MUL: if (!emit(context, "  imul R1, R2")) return false; break;
+    case WASM_BINARY_AND: if (!emit(context, "  and R1, R2")) return false; break;
+    case WASM_BINARY_EQ: if (!emit(context, "  ieq R1, R2")) return false; break;
+    case WASM_BINARY_NE: if (!emit(context, "  ine R1, R2")) return false; break;
+    case WASM_BINARY_LT_S: if (!emit(context, "  ilt R1, R2")) return false; break;
+    case WASM_BINARY_GT_S: if (!emit(context, "  igt R1, R2")) return false; break;
+    case WASM_BINARY_GE_S: if (!emit(context, "  ige R1, R2")) return false; break;
+    case WASM_BINARY_LT_U:
+        if (!emit(context, "  xor R1, 0x80000000") || !emit(context, "  xor R2, 0x80000000") || !emit(context, "  ilt R1, R2")) return false;
+        break;
+    case WASM_BINARY_GT_U:
+        if (!emit(context, "  xor R1, 0x80000000") || !emit(context, "  xor R2, 0x80000000") || !emit(context, "  igt R1, R2")) return false;
+        break;
+    case WASM_BINARY_SHL:
+        if (!emit(context, "  and R2, 31") || !emit(context, "  shl R1, R2")) return false;
+        break;
+    case WASM_BINARY_DIV_U:
+        if (!emit(context, "  call __wasm_i32_div_u") || !store_slot(context, left.slot, 0)) return false;
+        release(context, right); *value = left; return true;
+    case WASM_BINARY_REM_S:
+        if (!fresh_label(context, "rem_s_normal", normal, sizeof(normal)) ||
+            !fresh_label(context, "rem_s_done", done, sizeof(done)) ||
+            !emit(context, "  mov R3, R2") || !emit(context, "  ieq R3, 0") ||
+            !emit(context, "  jt R3, __wasm_trap") || !emit(context, "  ieq R3, -1") ||
+            !emit(context, "  jf R3, %s", normal) || !emit(context, "  mov R1, 0") ||
+            !emit(context, "  jmp %s", done) || !emit_label(context, normal) ||
+            !emit(context, "  imod R1, R2") || !emit_label(context, done)) return false;
+        break;
+    case WASM_BINARY_OTHER:
+        diagnostics_error(context->diagnostics, "internal error: unsupported binary operation passed validation"); return false;
+    }
+    if (!store_slot(context, left.slot, 1)) return false;
+    release(context, right); *value = left; return true;
+}
+
+static bool expression_uses_binary(const WasmExpr *expression, WasmBinaryOp operation)
+{
+    size_t index;
+    if (expression->kind == WASM_EXPR_BINARY && expression->binary_op == operation) return true;
+    for (index = 0; index < expression->child_count; ++index)
+        if (expression_uses_binary(expression->children[index], operation)) return true;
+    return false;
+}
+
+static bool emit_unsigned_division_helper(Context *context)
+{
+    return emit_label(context, "__wasm_i32_div_u") &&
+        emit(context, "  mov R3, R2") && emit(context, "  ieq R3, 0") &&
+        emit(context, "  jt R3, __wasm_trap") && emit(context, "  mov R3, 0") &&
+        emit(context, "  mov R4, 0") && emit(context, "  mov R5, 32") &&
+        emit_label(context, "__wasm_i32_div_u_loop") &&
+        emit(context, "  mov R6, R1") && emit(context, "  mov R7, -31") &&
+        emit(context, "  shl R6, R7") && emit(context, "  shl R1, 1") &&
+        emit(context, "  shl R4, 1") && emit(context, "  or R4, R6") &&
+        emit(context, "  mov R6, R4") && emit(context, "  xor R6, 0x80000000") &&
+        emit(context, "  mov R7, R2") && emit(context, "  xor R7, 0x80000000") &&
+        emit(context, "  ige R6, R7") && emit(context, "  jf R6, __wasm_i32_div_u_skip") &&
+        emit(context, "  isub R4, R2") && emit(context, "  shl R3, 1") &&
+        emit(context, "  or R3, 1") && emit(context, "  jmp __wasm_i32_div_u_decrement") &&
+        emit_label(context, "__wasm_i32_div_u_skip") && emit(context, "  shl R3, 1") &&
+        emit_label(context, "__wasm_i32_div_u_decrement") && emit(context, "  isub R5, 1") &&
+        emit(context, "  jt R5, __wasm_i32_div_u_loop") && emit(context, "  mov R0, R3") &&
+        emit(context, "  ret");
+}
+
 static bool lower_expression(Context *context, const WasmExpr *expression, Value *value)
 {
     Value left = {0}, right = {0}, condition = {0}; char label[64], end[64], false_label[64]; size_t index;
@@ -151,9 +239,7 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
             !load_slot(context, 1, left.slot) ||
             !emit(context, "  ieq R1, 0") || !store_slot(context, left.slot, 1)) return false;
         *value = left; return true;
-    case WASM_EXPR_BINARY:
-        if (!lower_expression(context, expression->children[0], &left) || !lower_expression(context, expression->children[1], &right) || !left.present || !right.present || !load_slot(context, 1, left.slot) || !load_slot(context, 2, right.slot) || !emit(context, expression->binary_op == WASM_BINARY_ADD ? "  iadd R1, R2" : expression->binary_op == WASM_BINARY_AND ? "  and R1, R2" : "  ieq R1, R2") || !store_slot(context, left.slot, 1)) return false;
-        release(context, right); *value = left; return true;
+    case WASM_EXPR_BINARY: return lower_binary(context, expression, value);
     case WASM_EXPR_SELECT:
         /* Children retain Wasm's evaluation order: first, second, condition. */
         if (!lower_expression(context, expression->children[0], &left) ||
@@ -224,10 +310,15 @@ static bool lower_function(const ValidatedModule *validated, const WasmFunction 
 
 bool lower_module_to_vircon_ir(const ValidatedModule *validated, VirconIrProgram *program, Diagnostics *diagnostics)
 {
-    Context startup = {0}; uint32_t memory_bytes = validated->module->memory_initial_pages * 65536u; size_t index; char entry_label[64];
+    Context startup = {0}; uint32_t memory_bytes = validated->module->memory_initial_pages * 65536u; size_t index; char entry_label[64]; bool needs_unsigned_division = false;
     startup.program = program; startup.diagnostics = diagnostics; startup.memory_bytes = memory_bytes;
     function_label(validated->module, validated->entry, entry_label, sizeof(entry_label));
     if (!emit_label(&startup, "__wasm_entry") || !initialize_data(validated, &startup) || !emit(&startup, "  call %s", entry_label) || !emit(&startup, "  hlt") || !emit_label(&startup, "__wasm_trap") || !emit(&startup, "  hlt  ; Wasm memory/unreachable trap")) return false;
-    for (index = 0; index < validated->module->function_count; ++index) if (validated->reachable[index] && !validated->module->functions[index].is_import && !lower_function(validated, &validated->module->functions[index], program, diagnostics, memory_bytes)) return false;
+    for (index = 0; index < validated->module->function_count; ++index) {
+        const WasmFunction *function = &validated->module->functions[index];
+        if (validated->reachable[index] && !function->is_import && expression_uses_binary(function->body, WASM_BINARY_DIV_U)) needs_unsigned_division = true;
+        if (validated->reachable[index] && !function->is_import && !lower_function(validated, function, program, diagnostics, memory_bytes)) return false;
+    }
+    if (needs_unsigned_division && !emit_unsigned_division_helper(&startup)) return false;
     return true;
 }

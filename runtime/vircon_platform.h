@@ -28,6 +28,17 @@ void vircon_gpu_set_region_maximum(int x, int y)
     VIRCON_IMPORT("vircon_gpu_set_region_maximum");
 void vircon_gpu_set_region_hotspot(int x, int y)
     VIRCON_IMPORT("vircon_gpu_set_region_hotspot");
+void vircon_gpu_set_multiply_color(int color)
+    VIRCON_IMPORT("vircon_gpu_set_multiply_color");
+
+void vircon_input_select_gamepad(int gamepad_id)
+    VIRCON_IMPORT("vircon_input_select_gamepad");
+int vircon_input_gamepad_left(void) VIRCON_IMPORT("vircon_input_gamepad_left");
+int vircon_input_gamepad_right(void) VIRCON_IMPORT("vircon_input_gamepad_right");
+int vircon_input_gamepad_up(void) VIRCON_IMPORT("vircon_input_gamepad_up");
+int vircon_input_gamepad_down(void) VIRCON_IMPORT("vircon_input_gamepad_down");
+int vircon_timer_get_frame_counter(void)
+    VIRCON_IMPORT("vircon_timer_get_frame_counter");
 
 void vircon_spu_select_channel(int channel_id)
     VIRCON_IMPORT("vircon_spu_select_channel");
