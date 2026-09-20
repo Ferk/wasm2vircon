@@ -29,6 +29,11 @@ void set_drawing_angle(float angle);
 void draw_region_zoomed(void);
 void draw_region_rotozoomed_at(int drawing_x, int drawing_y);
 
+/* BIOS white-pixel primitives. They intentionally leave the BIOS texture and
+ * region selected, like the corresponding official helper. */
+void draw_bios_horizontal_line(int x1, int y1, int x2);
+void draw_bios_vertical_line(int x1, int y1, int y2);
+
 /* TileMap's small input/timer surface. Gamepad direction writes -1, 0, or 1
  * through normal byte-addressed C pointers. */
 void select_gamepad(int gamepad_id);
