@@ -31,6 +31,11 @@ void set_multiply_color(int color)
     vircon_gpu_set_multiply_color(color);
 }
 
+void set_blending_mode(int mode)
+{
+    vircon_gpu_set_active_blending(mode);
+}
+
 void set_drawing_point(int drawing_x, int drawing_y)
 {
     vircon_gpu_set_drawing_point(drawing_x, drawing_y);

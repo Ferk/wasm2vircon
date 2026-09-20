@@ -169,6 +169,7 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
         expression->binary_op = op == BinaryenAddInt32() ? WASM_BINARY_ADD :
             op == BinaryenSubInt32() ? WASM_BINARY_SUB :
             op == BinaryenMulInt32() ? WASM_BINARY_MUL :
+            op == BinaryenDivSInt32() ? WASM_BINARY_DIV_S :
             op == BinaryenDivUInt32() ? WASM_BINARY_DIV_U :
             op == BinaryenRemSInt32() ? WASM_BINARY_REM_S :
             op == BinaryenShlInt32() ? WASM_BINARY_SHL :

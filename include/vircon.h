@@ -19,6 +19,7 @@ void set_region_maximum(int x, int y);
 void set_region_hotspot(int x, int y);
 void draw_region_at(int drawing_x, int drawing_y);
 void set_multiply_color(int color);
+void set_blending_mode(int mode);
 void set_drawing_point(int drawing_x, int drawing_y);
 /* Scale values are IEEE-754 single-precision bit patterns. This keeps the
  * currently integer-only VirconWasm profile independent of C float lowering. */
@@ -80,6 +81,8 @@ static inline void define_region_center(int min_x, int min_y,
 }
 
 /* Minimal selected-channel sound helper. */
+void select_sound(int sound_id);
+void set_sound_loop(int enabled);
 void play_sound_in_channel(int sound_id, int channel_id);
 void select_channel(int channel_id);
 void assign_channel_sound(int channel_id, int sound_id);

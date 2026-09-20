@@ -1,0 +1,2 @@
+source=i32-div-s.wat
+expectations=expected.asm

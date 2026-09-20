@@ -1,6 +1,9 @@
 #include "vircon.h"
 #include "vircon_platform.h"
 
+void select_sound(int sound_id) { vircon_spu_select_sound(sound_id); }
+void set_sound_loop(int enabled) { vircon_spu_set_sound_play_with_loop(enabled); }
+
 void play_sound_in_channel(int sound_id, int channel_id)
 {
     vircon_spu_select_channel(channel_id);

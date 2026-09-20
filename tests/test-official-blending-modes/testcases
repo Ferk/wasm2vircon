@@ -1,0 +1,13 @@
+source=blending-modes.c
+entry=__original_main
+extra_sources=../../runtime/vircon_runtime.c ../../runtime/vircon_video.c ../../runtime/vircon_audio.c ../../runtime/vircon_random.c ../../runtime/vircon_math.c
+include_dirs=../../include ../../runtime
+textures=assets/Texture-Room.png
+sounds=assets/Sound-LampMoving.wav
+normalize=true
+expectations=expected.asm
+xml_expectations=expected.xml
+sim_commands=v32sim.commands
+sim_expectations=expected.v32sim
+sim_watch_for=0x04000000
+sim_stdin=v32sim.stdin

@@ -30,6 +30,8 @@ void vircon_gpu_set_region_hotspot(int x, int y)
     VIRCON_IMPORT("vircon_gpu_set_region_hotspot");
 void vircon_gpu_set_multiply_color(int color)
     VIRCON_IMPORT("vircon_gpu_set_multiply_color");
+void vircon_gpu_set_active_blending(int mode)
+    VIRCON_IMPORT("vircon_gpu_set_active_blending");
 void vircon_gpu_set_drawing_scale_bits(int scale_x_bits, int scale_y_bits)
     VIRCON_IMPORT("vircon_gpu_set_drawing_scale_bits");
 void vircon_gpu_set_drawing_scale(float scale_x, float scale_y)
@@ -83,6 +85,10 @@ void vircon_rng_set_current_value(int seed)
 
 void vircon_spu_select_channel(int channel_id)
     VIRCON_IMPORT("vircon_spu_select_channel");
+void vircon_spu_select_sound(int sound_id)
+    VIRCON_IMPORT("vircon_spu_select_sound");
+void vircon_spu_set_sound_play_with_loop(int enabled)
+    VIRCON_IMPORT("vircon_spu_set_sound_play_with_loop");
 void vircon_spu_set_channel_assigned_sound(int sound_id)
     VIRCON_IMPORT("vircon_spu_set_channel_assigned_sound");
 void vircon_spu_play_selected_channel(void)

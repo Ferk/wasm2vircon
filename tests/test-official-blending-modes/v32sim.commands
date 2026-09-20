@@ -1,0 +1,10 @@
+display GPU_ActiveBlending active_blending
+display GPU_SelectedTexture selected_texture
+display GPU_SelectedRegion selected_region
+display GPU_DrawingPointX drawing_x
+display GPU_DrawingPointY drawing_y
+display SPU_SelectedSound selected_sound
+display SPU_SoundPlayWithLoop sound_loop
+display SPU_SelectedChannel selected_channel
+display SPU_ChannelAssignedSound assigned_sound
+display SPU_ChannelVolume channel_volume

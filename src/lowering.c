@@ -123,12 +123,15 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
         else if (strcmp(callee->import_name, "vircon_gpu_set_region_maximum") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_RegionMaxX, R1") || !emit(context, "  out GPU_RegionMaxY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_region_hotspot") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_RegionHotSpotX, R1") || !emit(context, "  out GPU_RegionHotSpotY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_select_channel") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SelectedChannel, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_spu_select_sound") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SelectedSound, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_spu_set_sound_play_with_loop") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SoundPlayWithLoop, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_set_channel_assigned_sound") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelAssignedSound, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_play_selected_channel") == 0) { if (!emit(context, "  out SPU_Command, SPUCommand_PlaySelectedChannel")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_set_channel_volume") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelVolume, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_set_channel_speed") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelSpeed, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_rng_set_current_value") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out RNG_CurrentValue, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_multiply_color") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_MultiplyColor, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_set_active_blending") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_ActiveBlending, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale_bits") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_draw_region_zoomed") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionZoomed")) return false; }
@@ -202,6 +205,17 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     case WASM_BINARY_ADD: if (!emit(context, "  iadd R1, R2")) return false; break;
     case WASM_BINARY_SUB: if (!emit(context, "  isub R1, R2")) return false; break;
     case WASM_BINARY_MUL: if (!emit(context, "  imul R1, R2")) return false; break;
+    case WASM_BINARY_DIV_S:
+        /* Wasm traps for a zero divisor and for INT32_MIN / -1. Vircon IDIV
+         * checks only zero, so guard the second case before issuing it. */
+        if (!fresh_label(context, "div_s_normal", normal, sizeof(normal)) ||
+            !emit(context, "  mov R3, R2") || !emit(context, "  ieq R3, 0") ||
+            !emit(context, "  jt R3, __wasm_trap") || !emit(context, "  mov R3, R1") ||
+            !emit(context, "  ieq R3, 0x80000000") || !emit(context, "  jf R3, %s", normal) ||
+            !emit(context, "  mov R3, R2") || !emit(context, "  ieq R3, -1") ||
+            !emit(context, "  jt R3, __wasm_trap") || !emit_label(context, normal) ||
+            !emit(context, "  idiv R1, R2")) return false;
+        break;
     case WASM_BINARY_AND: if (!emit(context, "  and R1, R2")) return false; break;
     case WASM_BINARY_OR: if (!emit(context, "  or R1, R2")) return false; break;
     case WASM_BINARY_EQ: if (!emit(context, "  ieq R1, R2")) return false; break;
