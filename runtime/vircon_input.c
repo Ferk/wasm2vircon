@@ -30,6 +30,9 @@ int gamepad_direction_y(void)
     return 0;
 }
 
+int gamepad_up(void) { return vircon_input_gamepad_up(); }
+int gamepad_down(void) { return vircon_input_gamepad_down(); }
+
 int gamepad_is_connected(void) { return vircon_input_gamepad_connected(); }
 int gamepad_button_a(void) { return vircon_input_gamepad_button_a(); }
 int gamepad_button_b(void) { return vircon_input_gamepad_button_b(); }

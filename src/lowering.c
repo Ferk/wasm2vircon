@@ -130,6 +130,26 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale_bits") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_draw_region_zoomed") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionZoomed")) return false; }
+        else if (strcmp(callee->import_name, "vircon_cpu_sin") == 0) {
+            int slot = temp_slot(context);
+            if (slot == 0 || !load_slot(context, 0, arguments[0].slot) || !emit(context, "  sin R0") || !store_slot(context, slot, 0)) return false;
+            value->slot = slot; value->present = true; return true;
+        }
+        else if (strcmp(callee->import_name, "vircon_cpu_acos") == 0) {
+            int slot = temp_slot(context);
+            if (slot == 0 || !load_slot(context, 0, arguments[0].slot) || !emit(context, "  acos R0") || !store_slot(context, slot, 0)) return false;
+            value->slot = slot; value->present = true; return true;
+        }
+        else if (strcmp(callee->import_name, "vircon_cpu_log") == 0) {
+            int slot = temp_slot(context);
+            if (slot == 0 || !load_slot(context, 0, arguments[0].slot) || !emit(context, "  log R0") || !store_slot(context, slot, 0)) return false;
+            value->slot = slot; value->present = true; return true;
+        }
+        else if (strcmp(callee->import_name, "vircon_cpu_pow") == 0) {
+            int slot = temp_slot(context);
+            if (slot == 0 || !load_slot(context, 0, arguments[0].slot) || !load_slot(context, 1, arguments[1].slot) || !emit(context, "  pow R0, R1") || !store_slot(context, slot, 0)) return false;
+            value->slot = slot; value->present = true; return true;
+        }
         else if (strcmp(callee->import_name, "vircon_input_select_gamepad") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out INP_SelectedGamepad, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_down") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_connected") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_a") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_b") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_x") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_y") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_l") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_r") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_start") == 0 || strcmp(callee->import_name, "vircon_timer_get_frame_counter") == 0 || strcmp(callee->import_name, "vircon_timer_get_current_time") == 0 || strcmp(callee->import_name, "vircon_timer_get_current_date") == 0 || strcmp(callee->import_name, "vircon_rng_get_current_value") == 0 || strcmp(callee->import_name, "vircon_spu_get_channel_state") == 0) {
             const char *port = strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 ? "INP_GamepadLeft" :
@@ -161,7 +181,7 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
     for (index = 0; index < expression->child_count; ++index) if (!load_slot(context, 1, arguments[index].slot) || !emit(context, "  mov [SP+%zu], R1", index)) return false;
     for (index = expression->child_count; index != 0; --index) release(context, arguments[index - 1]);
     function_label(context->validated->module, callee, label, sizeof(label)); if (!emit(context, "  call %s", label)) return false;
-    if (callee->result == WASM_VALUE_I32) { int slot = temp_slot(context); if (slot == 0 || !store_slot(context, slot, 0)) return false; value->slot = slot; value->present = true; }
+    if (callee->result == WASM_VALUE_I32 || callee->result == WASM_VALUE_F32) { int slot = temp_slot(context); if (slot == 0 || !store_slot(context, slot, 0)) return false; value->slot = slot; value->present = true; }
     else value->present = false;
     return true;
 }
@@ -184,7 +204,12 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     case WASM_BINARY_LT_S: if (!emit(context, "  ilt R1, R2")) return false; break;
     case WASM_BINARY_GT_S: if (!emit(context, "  igt R1, R2")) return false; break;
     case WASM_BINARY_GE_S: if (!emit(context, "  ige R1, R2")) return false; break;
+    case WASM_BINARY_F32_ADD: if (!emit(context, "  fadd R1, R2")) return false; break;
+    case WASM_BINARY_F32_SUB: if (!emit(context, "  fsub R1, R2")) return false; break;
+    case WASM_BINARY_F32_LE: if (!emit(context, "  fle R1, R2")) return false; break;
     case WASM_BINARY_F32_MUL: if (!emit(context, "  fmul R1, R2")) return false; break;
+    case WASM_BINARY_F32_DIV: if (!emit(context, "  fdiv R1, R2")) return false; break;
+    case WASM_BINARY_F32_GT: if (!emit(context, "  fgt R1, R2")) return false; break;
     case WASM_BINARY_LT_U:
         if (!emit(context, "  xor R1, 0x80000000") || !emit(context, "  xor R2, 0x80000000") || !emit(context, "  ilt R1, R2")) return false;
         break;
@@ -268,6 +293,17 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
             !load_slot(context, 1, left.slot)) return false;
         if (expression->unary_op == WASM_UNARY_EQZ) { if (!emit(context, "  ieq R1, 0")) return false; }
         else if (expression->unary_op == WASM_UNARY_CONVERT_I32_S_TO_F32) { if (!emit(context, "  cif R1")) return false; }
+        else if (expression->unary_op == WASM_UNARY_TRUNC_SAT_F32_TO_I32) {
+            char nan[64], minimum[64], maximum[64], done[64];
+            if (!fresh_label(context, "trunc_nan", nan, sizeof(nan)) || !fresh_label(context, "trunc_min", minimum, sizeof(minimum)) || !fresh_label(context, "trunc_max", maximum, sizeof(maximum)) || !fresh_label(context, "trunc_done", done, sizeof(done)) ||
+                !emit(context, "  mov R3, R1") || !emit(context, "  feq R3, R1") || !emit(context, "  jf R3, %s", nan) ||
+                !emit(context, "  mov R2, 0xCF000000") || !emit(context, "  mov R3, R1") || !emit(context, "  fle R3, R2") || !emit(context, "  jt R3, %s", minimum) ||
+                !emit(context, "  mov R2, 0x4F000000") || !emit(context, "  mov R3, R2") || !emit(context, "  fle R3, R1") || !emit(context, "  jt R3, %s", maximum) ||
+                !emit(context, "  cfi R1") || !emit(context, "  jmp %s", done) ||
+                !emit_label(context, nan) || !emit(context, "  mov R1, 0") || !emit(context, "  jmp %s", done) ||
+                !emit_label(context, minimum) || !emit(context, "  mov R1, 0x80000000") || !emit(context, "  jmp %s", done) ||
+                !emit_label(context, maximum) || !emit(context, "  mov R1, 0x7FFFFFFF") || !emit_label(context, done)) return false;
+        }
         else return false;
         if (!store_slot(context, left.slot, 1)) return false;
         *value = left; return true;
@@ -338,7 +374,7 @@ static bool lower_function(const ValidatedModule *validated, const WasmFunction 
     snprintf(context.return_label, sizeof(context.return_label), "__wasm_return_%zu",
              function_index(validated->module, function));
     if (!emit_label(&context, label) || !emit(&context, "  push BP") || !emit(&context, "  mov BP, SP") || !emit(&context, "  isub SP, %u", (unsigned)(function->local_count + TEMP_SLOTS + OUTGOING_SLOTS)) || !lower_expression(&context, function->body, &result)) return false;
-    if (function->result == WASM_VALUE_I32) { if (result.present) { if (!load_slot(&context, 0, result.slot)) return false; } else if (!emit(&context, "  mov R0, 0")) return false; }
+    if (function->result == WASM_VALUE_I32 || function->result == WASM_VALUE_F32) { if (result.present) { if (!load_slot(&context, 0, result.slot)) return false; } else if (!emit(&context, "  mov R0, 0")) return false; }
     release(&context, result);
     return emit_label(&context, context.return_label) && emit(&context, "  mov SP, BP") && emit(&context, "  pop BP") && emit(&context, "  ret");
 }

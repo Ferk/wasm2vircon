@@ -37,6 +37,12 @@ void vircon_gpu_set_drawing_scale(float scale_x, float scale_y)
 void vircon_gpu_draw_region_zoomed(void)
     VIRCON_IMPORT("vircon_gpu_draw_region_zoomed");
 
+float vircon_cpu_sin(float value) VIRCON_IMPORT("vircon_cpu_sin");
+float vircon_cpu_acos(float value) VIRCON_IMPORT("vircon_cpu_acos");
+float vircon_cpu_log(float value) VIRCON_IMPORT("vircon_cpu_log");
+float vircon_cpu_pow(float base, float exponent)
+    VIRCON_IMPORT("vircon_cpu_pow");
+
 void vircon_input_select_gamepad(int gamepad_id)
     VIRCON_IMPORT("vircon_input_select_gamepad");
 int vircon_input_gamepad_left(void) VIRCON_IMPORT("vircon_input_gamepad_left");

@@ -32,6 +32,10 @@ static const ImportSpec IMPORTS[] = {
     {"env", "vircon_gpu_set_drawing_scale_bits", {WASM_VALUE_I32, WASM_VALUE_I32}, 2, WASM_VALUE_NONE},
     {"env", "vircon_gpu_set_drawing_scale", {WASM_VALUE_F32, WASM_VALUE_F32}, 2, WASM_VALUE_NONE},
     {"env", "vircon_gpu_draw_region_zoomed", {WASM_VALUE_NONE}, 0, WASM_VALUE_NONE},
+    {"env", "vircon_cpu_sin", {WASM_VALUE_F32}, 1, WASM_VALUE_F32},
+    {"env", "vircon_cpu_acos", {WASM_VALUE_F32}, 1, WASM_VALUE_F32},
+    {"env", "vircon_cpu_log", {WASM_VALUE_F32}, 1, WASM_VALUE_F32},
+    {"env", "vircon_cpu_pow", {WASM_VALUE_F32, WASM_VALUE_F32}, 2, WASM_VALUE_F32},
     {"env", "vircon_input_select_gamepad", {WASM_VALUE_I32}, 1, WASM_VALUE_NONE},
     {"env", "vircon_input_gamepad_left", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
     {"env", "vircon_input_gamepad_right", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
@@ -143,7 +147,7 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
                validate_expression(module, function, expression->children[2], reachable, diagnostics);
     case WASM_EXPR_RETURN:
         if ((function->result == WASM_VALUE_NONE && expression->child_count != 0) ||
-            (function->result == WASM_VALUE_I32 && expression->child_count != 1)) { diagnostics_error(diagnostics, "function '%s' has an incompatible return", function->name); return false; }
+            ((function->result == WASM_VALUE_I32 || function->result == WASM_VALUE_F32) && expression->child_count != 1)) { diagnostics_error(diagnostics, "function '%s' has an incompatible return", function->name); return false; }
         return expression->child_count == 0 || validate_expression(module, function, expression->children[0], reachable, diagnostics);
     case WASM_EXPR_CALL:
         callee = wasm_module_find_function(module, expression->name);

@@ -174,7 +174,10 @@ vbin_file="$output_dir/$program_name.vbin"
 xml_file="$output_dir/$program_name.xml"
 rom_file="$output_dir/$program_name.v32"
 
-clang_flags=(--target=wasm32-unknown-unknown -O2 -ffreestanding -fno-builtin -nostdlib)
+# Keep source-level multi-way branches as ordinary structured branches. The
+# backend deliberately has no br_table support yet; this flag is part of the
+# supported frontend contract, not a test-specific workaround.
+clang_flags=(--target=wasm32-unknown-unknown -O2 -fno-jump-tables -ffreestanding -fno-builtin -nostdlib)
 for include_dir in "${include_dirs[@]}"; do
   if [ ! -d "$include_dir" ]; then
     echo "build-rom: include directory not found: $include_dir" >&2

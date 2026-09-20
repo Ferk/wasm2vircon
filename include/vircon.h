@@ -30,6 +30,8 @@ void select_gamepad(int gamepad_id);
 void gamepad_direction(int *delta_x, int *delta_y);
 int gamepad_direction_x(void);
 int gamepad_direction_y(void);
+int gamepad_up(void);
+int gamepad_down(void);
 int gamepad_is_connected(void);
 int gamepad_button_a(void);
 int gamepad_button_b(void);
@@ -79,5 +81,16 @@ void set_channel_volume(float volume);
 void set_channel_speed(float speed);
 void play_channel(int channel_id);
 int play_sound(int sound_id);
+
+/* Small finite-input math layer. These are ordinary runtime functions; their
+ * low-level CPU operations remain private platform imports. */
+float sinf(float x);
+float cosf(float x);
+float tanf(float x);
+float asinf(float x);
+float acosf(float x);
+float expf(float x);
+float logf(float x);
+float powf(float x, float y);
 
 #endif

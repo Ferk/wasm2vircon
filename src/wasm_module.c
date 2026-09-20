@@ -157,7 +157,8 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
         BinaryenOp op = BinaryenUnaryGetOp(source);
         expression = new_expression(WASM_EXPR_UNARY, diagnostics); if (expression == NULL) return NULL;
         expression->unary_op = op == BinaryenEqZInt32() ? WASM_UNARY_EQZ :
-            op == BinaryenConvertSInt32ToFloat32() ? WASM_UNARY_CONVERT_I32_S_TO_F32 : WASM_UNARY_OTHER;
+            op == BinaryenConvertSInt32ToFloat32() ? WASM_UNARY_CONVERT_I32_S_TO_F32 :
+            op == BinaryenTruncSatSFloat32ToInt32() ? WASM_UNARY_TRUNC_SAT_F32_TO_I32 : WASM_UNARY_OTHER;
         if (!allocate_children(expression, 1, diagnostics)) goto fail;
         expression->children[0] = convert_expression(BinaryenUnaryGetValue(source), diagnostics, function_name);
         if (expression->children[0] == NULL) goto fail;
@@ -182,7 +183,12 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
             op == BinaryenGeUInt32() ? WASM_BINARY_GE_U :
             op == BinaryenRemUInt32() ? WASM_BINARY_REM_U :
             op == BinaryenShrUInt32() ? WASM_BINARY_SHR_U :
-            op == BinaryenMulFloat32() ? WASM_BINARY_F32_MUL : WASM_BINARY_OTHER;
+            op == BinaryenAddFloat32() ? WASM_BINARY_F32_ADD :
+            op == BinaryenSubFloat32() ? WASM_BINARY_F32_SUB :
+            op == BinaryenLeFloat32() ? WASM_BINARY_F32_LE :
+            op == BinaryenMulFloat32() ? WASM_BINARY_F32_MUL :
+            op == BinaryenDivFloat32() ? WASM_BINARY_F32_DIV :
+            op == BinaryenGtFloat32() ? WASM_BINARY_F32_GT : WASM_BINARY_OTHER;
         if (!allocate_children(expression, 2, diagnostics)) goto fail;
         expression->children[0] = convert_expression(BinaryenBinaryGetLeft(source), diagnostics, function_name); expression->children[1] = convert_expression(BinaryenBinaryGetRight(source), diagnostics, function_name);
         if (expression->children[0] == NULL || expression->children[1] == NULL) goto fail;
