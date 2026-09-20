@@ -28,6 +28,7 @@ static WasmValueType convert_type(BinaryenType type)
 {
     if (type == BinaryenTypeNone()) return WASM_VALUE_NONE;
     if (type == BinaryenTypeInt32()) return WASM_VALUE_I32;
+    if (type == BinaryenTypeFloat32()) return WASM_VALUE_F32;
     return WASM_VALUE_OTHER;
 }
 
@@ -110,8 +111,13 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
         return expression;
     }
     if (id == BinaryenConstId()) {
-        if (BinaryenExpressionGetType(source) != BinaryenTypeInt32()) { diagnostics_error(diagnostics, "function '%s' contains a non-i32 constant", function_name); return NULL; }
-        expression = new_expression(WASM_EXPR_I32_CONST, diagnostics); if (expression != NULL) expression->i32_value = BinaryenConstGetValueI32(source); return expression;
+        if (BinaryenExpressionGetType(source) == BinaryenTypeInt32()) {
+            expression = new_expression(WASM_EXPR_I32_CONST, diagnostics); if (expression != NULL) expression->i32_value = BinaryenConstGetValueI32(source); return expression;
+        }
+        if (BinaryenExpressionGetType(source) == BinaryenTypeFloat32()) {
+            expression = new_expression(WASM_EXPR_F32_CONST, diagnostics); if (expression != NULL) expression->f32_value = BinaryenConstGetValueF32(source); return expression;
+        }
+        diagnostics_error(diagnostics, "function '%s' contains an unsupported constant type", function_name); return NULL;
     }
     if (id == BinaryenUnreachableId()) return new_expression(WASM_EXPR_UNREACHABLE, diagnostics);
     if (id == BinaryenIfId()) {
@@ -150,7 +156,8 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
     if (id == BinaryenUnaryId()) {
         BinaryenOp op = BinaryenUnaryGetOp(source);
         expression = new_expression(WASM_EXPR_UNARY, diagnostics); if (expression == NULL) return NULL;
-        expression->unary_op = op == BinaryenEqZInt32() ? WASM_UNARY_EQZ : WASM_UNARY_OTHER;
+        expression->unary_op = op == BinaryenEqZInt32() ? WASM_UNARY_EQZ :
+            op == BinaryenConvertSInt32ToFloat32() ? WASM_UNARY_CONVERT_I32_S_TO_F32 : WASM_UNARY_OTHER;
         if (!allocate_children(expression, 1, diagnostics)) goto fail;
         expression->children[0] = convert_expression(BinaryenUnaryGetValue(source), diagnostics, function_name);
         if (expression->children[0] == NULL) goto fail;
@@ -171,7 +178,8 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
             op == BinaryenLtUInt32() ? WASM_BINARY_LT_U :
             op == BinaryenGtSInt32() ? WASM_BINARY_GT_S :
             op == BinaryenGtUInt32() ? WASM_BINARY_GT_U :
-            op == BinaryenGeSInt32() ? WASM_BINARY_GE_S : WASM_BINARY_OTHER;
+            op == BinaryenGeSInt32() ? WASM_BINARY_GE_S :
+            op == BinaryenMulFloat32() ? WASM_BINARY_F32_MUL : WASM_BINARY_OTHER;
         if (!allocate_children(expression, 2, diagnostics)) goto fail;
         expression->children[0] = convert_expression(BinaryenBinaryGetLeft(source), diagnostics, function_name); expression->children[1] = convert_expression(BinaryenBinaryGetRight(source), diagnostics, function_name);
         if (expression->children[0] == NULL || expression->children[1] == NULL) goto fail;
@@ -191,6 +199,13 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
     if (id == BinaryenReturnId()) {
         expression = new_expression(WASM_EXPR_RETURN, diagnostics); if (expression == NULL) return NULL;
         if (BinaryenReturnGetValue(source) != NULL) { if (!allocate_children(expression, 1, diagnostics)) goto fail; expression->children[0] = convert_expression(BinaryenReturnGetValue(source), diagnostics, function_name); if (expression->children[0] == NULL) goto fail; }
+        return expression;
+    }
+    if (id == BinaryenDropId()) {
+        expression = new_expression(WASM_EXPR_DROP, diagnostics); if (expression == NULL) return NULL;
+        if (!allocate_children(expression, 1, diagnostics)) goto fail;
+        expression->children[0] = convert_expression(BinaryenDropGetValue(source), diagnostics, function_name);
+        if (expression->children[0] == NULL) goto fail;
         return expression;
     }
     diagnostics_error(diagnostics, "function '%s' contains unsupported Wasm expression kind %u", function_name, (unsigned)id); return NULL;

@@ -123,11 +123,14 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
         else if (strcmp(callee->import_name, "vircon_spu_select_channel") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SelectedChannel, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_set_channel_assigned_sound") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelAssignedSound, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_play_selected_channel") == 0) { if (!emit(context, "  out SPU_Command, SPUCommand_PlaySelectedChannel")) return false; }
+        else if (strcmp(callee->import_name, "vircon_spu_set_channel_volume") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelVolume, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_rng_set_current_value") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out RNG_CurrentValue, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_multiply_color") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_MultiplyColor, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale_bits") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_draw_region_zoomed") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionZoomed")) return false; }
         else if (strcmp(callee->import_name, "vircon_input_select_gamepad") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out INP_SelectedGamepad, R1")) return false; }
-        else if (strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_down") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_connected") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_a") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_b") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_x") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_y") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_l") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_r") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_start") == 0 || strcmp(callee->import_name, "vircon_timer_get_frame_counter") == 0) {
+        else if (strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_down") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_connected") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_a") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_b") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_x") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_y") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_l") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_r") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_start") == 0 || strcmp(callee->import_name, "vircon_timer_get_frame_counter") == 0 || strcmp(callee->import_name, "vircon_timer_get_current_time") == 0 || strcmp(callee->import_name, "vircon_rng_get_current_value") == 0 || strcmp(callee->import_name, "vircon_spu_get_channel_state") == 0) {
             const char *port = strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 ? "INP_GamepadLeft" :
                 strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 ? "INP_GamepadRight" :
                 strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 ? "INP_GamepadUp" :
@@ -139,7 +142,10 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
                 strcmp(callee->import_name, "vircon_input_gamepad_button_y") == 0 ? "INP_GamepadButtonY" :
                 strcmp(callee->import_name, "vircon_input_gamepad_button_l") == 0 ? "INP_GamepadButtonL" :
                 strcmp(callee->import_name, "vircon_input_gamepad_button_r") == 0 ? "INP_GamepadButtonR" :
-                strcmp(callee->import_name, "vircon_input_gamepad_button_start") == 0 ? "INP_GamepadButtonStart" : "TIM_FrameCounter";
+                strcmp(callee->import_name, "vircon_input_gamepad_button_start") == 0 ? "INP_GamepadButtonStart" :
+                strcmp(callee->import_name, "vircon_timer_get_current_time") == 0 ? "TIM_CurrentTime" :
+                strcmp(callee->import_name, "vircon_rng_get_current_value") == 0 ? "RNG_CurrentValue" :
+                strcmp(callee->import_name, "vircon_spu_get_channel_state") == 0 ? "SPU_ChannelState" : "TIM_FrameCounter";
             int slot = temp_slot(context);
             if (slot == 0 || !emit(context, "  in R0, %s", port) || !store_slot(context, slot, 0)) return false;
             value->slot = slot; value->present = true; return true;
@@ -176,6 +182,7 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     case WASM_BINARY_LT_S: if (!emit(context, "  ilt R1, R2")) return false; break;
     case WASM_BINARY_GT_S: if (!emit(context, "  igt R1, R2")) return false; break;
     case WASM_BINARY_GE_S: if (!emit(context, "  ige R1, R2")) return false; break;
+    case WASM_BINARY_F32_MUL: if (!emit(context, "  fmul R1, R2")) return false; break;
     case WASM_BINARY_LT_U:
         if (!emit(context, "  xor R1, 0x80000000") || !emit(context, "  xor R2, 0x80000000") || !emit(context, "  ilt R1, R2")) return false;
         break;
@@ -240,14 +247,18 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     value->present = false;
     switch (expression->kind) {
     case WASM_EXPR_I32_CONST: { int slot = temp_slot(context); if (slot == 0 || !emit(context, "  mov R1, 0x%08X", (uint32_t)expression->i32_value) || !store_slot(context, slot, 1)) return false; value->slot = slot; value->present = true; return true; }
+    case WASM_EXPR_F32_CONST: { union { float value; uint32_t bits; } constant; int slot = temp_slot(context); constant.value = expression->f32_value; if (slot == 0 || !emit(context, "  mov R1, 0x%08X", constant.bits) || !store_slot(context, slot, 1)) return false; value->slot = slot; value->present = true; return true; }
     case WASM_EXPR_LOCAL_GET: { int slot = temp_slot(context); if (slot == 0 || !load_slot(context, 1, local_slot(context->function, expression->index)) || !store_slot(context, slot, 1)) return false; value->slot = slot; value->present = true; return true; }
     case WASM_EXPR_LOCAL_SET:
         if (!lower_expression(context, expression->children[0], &left) || !left.present || !load_slot(context, 1, left.slot) || !store_slot(context, local_slot(context->function, expression->index), 1)) return false;
         if (expression->is_tee) { *value = left; return true; } release(context, left); return true;
     case WASM_EXPR_UNARY:
         if (!lower_expression(context, expression->children[0], &left) || !left.present ||
-            !load_slot(context, 1, left.slot) ||
-            !emit(context, "  ieq R1, 0") || !store_slot(context, left.slot, 1)) return false;
+            !load_slot(context, 1, left.slot)) return false;
+        if (expression->unary_op == WASM_UNARY_EQZ) { if (!emit(context, "  ieq R1, 0")) return false; }
+        else if (expression->unary_op == WASM_UNARY_CONVERT_I32_S_TO_F32) { if (!emit(context, "  cif R1")) return false; }
+        else return false;
+        if (!store_slot(context, left.slot, 1)) return false;
         *value = left; return true;
     case WASM_EXPR_BINARY: return lower_binary(context, expression, value);
     case WASM_EXPR_SELECT:
@@ -291,6 +302,9 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     case WASM_EXPR_RETURN:
         if (expression->child_count != 0) { if (!lower_expression(context, expression->children[0], &left) || !left.present || !load_slot(context, 0, left.slot)) return false; release(context, left); }
         return emit(context, "  jmp %s", context->return_label);
+    case WASM_EXPR_DROP:
+        if (!lower_expression(context, expression->children[0], &left)) return false;
+        release(context, left); value->present = false; return true;
     case WASM_EXPR_UNREACHABLE: return emit(context, "  jmp __wasm_trap");
     }
     diagnostics_error(context->diagnostics, "internal error: unhandled Wasm expression"); return false;

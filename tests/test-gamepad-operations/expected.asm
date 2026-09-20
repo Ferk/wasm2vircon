@@ -1,0 +1,11 @@
+out GPU_DrawingScaleX, R1
+out GPU_DrawingScaleY, R2
+out GPU_Command, GPUCommand_DrawRegionZoomed
+in R0, INP_GamepadConnected
+in R0, INP_GamepadButtonA
+in R0, INP_GamepadButtonB
+in R0, INP_GamepadButtonX
+in R0, INP_GamepadButtonY
+in R0, INP_GamepadButtonL
+in R0, INP_GamepadButtonR
+in R0, INP_GamepadButtonStart

@@ -5,6 +5,7 @@
  * Its text argument is a NUL-terminated CP-1252 byte string, not UTF-8. */
 void clear_screen(int color);
 void print_at(int drawing_x, int drawing_y, const char *text);
+void print_uint_at(int drawing_x, int drawing_y, unsigned value);
 void end_frame(void);
 
 /* Basic cartridge-texture operations. These are runtime functions, not Wasm
@@ -20,6 +21,7 @@ void set_drawing_point(int drawing_x, int drawing_y);
 /* Scale values are IEEE-754 single-precision bit patterns. This keeps the
  * currently integer-only VirconWasm profile independent of C float lowering. */
 void set_drawing_scale_bits(int scale_x_bits, int scale_y_bits);
+void set_drawing_scale(float scale_x, float scale_y);
 void draw_region_zoomed(void);
 
 /* TileMap's small input/timer surface. Gamepad direction writes -1, 0, or 1
@@ -37,6 +39,10 @@ int gamepad_button_l(void);
 int gamepad_button_r(void);
 int gamepad_button_start(void);
 int get_frame_counter(void);
+int get_time(void);
+int rand(void);
+void srand(int seed);
+void sleep(int frames);
 
 /* A runtime representation avoids a general ten-argument Wasm call while
  * retaining the official define_region_matrix behaviour. */
@@ -66,5 +72,8 @@ static inline void define_region_center(int min_x, int min_y,
 
 /* Minimal selected-channel sound helper. */
 void play_sound_in_channel(int sound_id, int channel_id);
+void select_channel(int channel_id);
+void set_channel_volume(float volume);
+int play_sound(int sound_id);
 
 #endif

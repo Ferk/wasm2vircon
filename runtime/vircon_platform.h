@@ -32,6 +32,8 @@ void vircon_gpu_set_multiply_color(int color)
     VIRCON_IMPORT("vircon_gpu_set_multiply_color");
 void vircon_gpu_set_drawing_scale_bits(int scale_x_bits, int scale_y_bits)
     VIRCON_IMPORT("vircon_gpu_set_drawing_scale_bits");
+void vircon_gpu_set_drawing_scale(float scale_x, float scale_y)
+    VIRCON_IMPORT("vircon_gpu_set_drawing_scale");
 void vircon_gpu_draw_region_zoomed(void)
     VIRCON_IMPORT("vircon_gpu_draw_region_zoomed");
 
@@ -59,6 +61,13 @@ int vircon_input_gamepad_button_start(void)
     VIRCON_IMPORT("vircon_input_gamepad_button_start");
 int vircon_timer_get_frame_counter(void)
     VIRCON_IMPORT("vircon_timer_get_frame_counter");
+int vircon_timer_get_current_time(void)
+    VIRCON_IMPORT("vircon_timer_get_current_time");
+
+int vircon_rng_get_current_value(void)
+    VIRCON_IMPORT("vircon_rng_get_current_value");
+void vircon_rng_set_current_value(int seed)
+    VIRCON_IMPORT("vircon_rng_set_current_value");
 
 void vircon_spu_select_channel(int channel_id)
     VIRCON_IMPORT("vircon_spu_select_channel");
@@ -66,5 +75,9 @@ void vircon_spu_set_channel_assigned_sound(int sound_id)
     VIRCON_IMPORT("vircon_spu_set_channel_assigned_sound");
 void vircon_spu_play_selected_channel(void)
     VIRCON_IMPORT("vircon_spu_play_selected_channel");
+void vircon_spu_set_channel_volume(float volume)
+    VIRCON_IMPORT("vircon_spu_set_channel_volume");
+int vircon_spu_get_channel_state(void)
+    VIRCON_IMPORT("vircon_spu_get_channel_state");
 
 #endif

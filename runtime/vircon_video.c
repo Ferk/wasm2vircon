@@ -41,6 +41,11 @@ void set_drawing_scale_bits(int scale_x_bits, int scale_y_bits)
     vircon_gpu_set_drawing_scale_bits(scale_x_bits, scale_y_bits);
 }
 
+void set_drawing_scale(float scale_x, float scale_y)
+{
+    vircon_gpu_set_drawing_scale(scale_x, scale_y);
+}
+
 void draw_region_zoomed(void)
 {
     vircon_gpu_draw_region_zoomed();
