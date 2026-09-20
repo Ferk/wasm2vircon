@@ -16,6 +16,11 @@ void set_region_maximum(int x, int y);
 void set_region_hotspot(int x, int y);
 void draw_region_at(int drawing_x, int drawing_y);
 void set_multiply_color(int color);
+void set_drawing_point(int drawing_x, int drawing_y);
+/* Scale values are IEEE-754 single-precision bit patterns. This keeps the
+ * currently integer-only VirconWasm profile independent of C float lowering. */
+void set_drawing_scale_bits(int scale_x_bits, int scale_y_bits);
+void draw_region_zoomed(void);
 
 /* TileMap's small input/timer surface. Gamepad direction writes -1, 0, or 1
  * through normal byte-addressed C pointers. */
@@ -23,6 +28,14 @@ void select_gamepad(int gamepad_id);
 void gamepad_direction(int *delta_x, int *delta_y);
 int gamepad_direction_x(void);
 int gamepad_direction_y(void);
+int gamepad_is_connected(void);
+int gamepad_button_a(void);
+int gamepad_button_b(void);
+int gamepad_button_x(void);
+int gamepad_button_y(void);
+int gamepad_button_l(void);
+int gamepad_button_r(void);
+int gamepad_button_start(void);
 int get_frame_counter(void);
 
 /* A runtime representation avoids a general ten-argument Wasm call while

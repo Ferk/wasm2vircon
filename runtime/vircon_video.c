@@ -31,6 +31,21 @@ void set_multiply_color(int color)
     vircon_gpu_set_multiply_color(color);
 }
 
+void set_drawing_point(int drawing_x, int drawing_y)
+{
+    vircon_gpu_set_drawing_point(drawing_x, drawing_y);
+}
+
+void set_drawing_scale_bits(int scale_x_bits, int scale_y_bits)
+{
+    vircon_gpu_set_drawing_scale_bits(scale_x_bits, scale_y_bits);
+}
+
+void draw_region_zoomed(void)
+{
+    vircon_gpu_draw_region_zoomed();
+}
+
 void define_region_matrix(const struct vircon_region_matrix *definition)
 {
     int current_id = definition->first_id;
@@ -64,6 +79,6 @@ void define_region_matrix(const struct vircon_region_matrix *definition)
 
 void draw_region_at(int drawing_x, int drawing_y)
 {
-    vircon_gpu_set_drawing_point(drawing_x, drawing_y);
+    set_drawing_point(drawing_x, drawing_y);
     vircon_gpu_draw_region();
 }

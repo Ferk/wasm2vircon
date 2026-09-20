@@ -124,12 +124,22 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
         else if (strcmp(callee->import_name, "vircon_spu_set_channel_assigned_sound") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelAssignedSound, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_spu_play_selected_channel") == 0) { if (!emit(context, "  out SPU_Command, SPUCommand_PlaySelectedChannel")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_multiply_color") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_MultiplyColor, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale_bits") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_draw_region_zoomed") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionZoomed")) return false; }
         else if (strcmp(callee->import_name, "vircon_input_select_gamepad") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out INP_SelectedGamepad, R1")) return false; }
-        else if (strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_down") == 0 || strcmp(callee->import_name, "vircon_timer_get_frame_counter") == 0) {
+        else if (strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_down") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_connected") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_a") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_b") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_x") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_y") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_l") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_r") == 0 || strcmp(callee->import_name, "vircon_input_gamepad_button_start") == 0 || strcmp(callee->import_name, "vircon_timer_get_frame_counter") == 0) {
             const char *port = strcmp(callee->import_name, "vircon_input_gamepad_left") == 0 ? "INP_GamepadLeft" :
                 strcmp(callee->import_name, "vircon_input_gamepad_right") == 0 ? "INP_GamepadRight" :
                 strcmp(callee->import_name, "vircon_input_gamepad_up") == 0 ? "INP_GamepadUp" :
-                strcmp(callee->import_name, "vircon_input_gamepad_down") == 0 ? "INP_GamepadDown" : "TIM_FrameCounter";
+                strcmp(callee->import_name, "vircon_input_gamepad_down") == 0 ? "INP_GamepadDown" :
+                strcmp(callee->import_name, "vircon_input_gamepad_connected") == 0 ? "INP_GamepadConnected" :
+                strcmp(callee->import_name, "vircon_input_gamepad_button_a") == 0 ? "INP_GamepadButtonA" :
+                strcmp(callee->import_name, "vircon_input_gamepad_button_b") == 0 ? "INP_GamepadButtonB" :
+                strcmp(callee->import_name, "vircon_input_gamepad_button_x") == 0 ? "INP_GamepadButtonX" :
+                strcmp(callee->import_name, "vircon_input_gamepad_button_y") == 0 ? "INP_GamepadButtonY" :
+                strcmp(callee->import_name, "vircon_input_gamepad_button_l") == 0 ? "INP_GamepadButtonL" :
+                strcmp(callee->import_name, "vircon_input_gamepad_button_r") == 0 ? "INP_GamepadButtonR" :
+                strcmp(callee->import_name, "vircon_input_gamepad_button_start") == 0 ? "INP_GamepadButtonStart" : "TIM_FrameCounter";
             int slot = temp_slot(context);
             if (slot == 0 || !emit(context, "  in R0, %s", port) || !store_slot(context, slot, 0)) return false;
             value->slot = slot; value->present = true; return true;

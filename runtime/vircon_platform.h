@@ -30,6 +30,10 @@ void vircon_gpu_set_region_hotspot(int x, int y)
     VIRCON_IMPORT("vircon_gpu_set_region_hotspot");
 void vircon_gpu_set_multiply_color(int color)
     VIRCON_IMPORT("vircon_gpu_set_multiply_color");
+void vircon_gpu_set_drawing_scale_bits(int scale_x_bits, int scale_y_bits)
+    VIRCON_IMPORT("vircon_gpu_set_drawing_scale_bits");
+void vircon_gpu_draw_region_zoomed(void)
+    VIRCON_IMPORT("vircon_gpu_draw_region_zoomed");
 
 void vircon_input_select_gamepad(int gamepad_id)
     VIRCON_IMPORT("vircon_input_select_gamepad");
@@ -37,6 +41,22 @@ int vircon_input_gamepad_left(void) VIRCON_IMPORT("vircon_input_gamepad_left");
 int vircon_input_gamepad_right(void) VIRCON_IMPORT("vircon_input_gamepad_right");
 int vircon_input_gamepad_up(void) VIRCON_IMPORT("vircon_input_gamepad_up");
 int vircon_input_gamepad_down(void) VIRCON_IMPORT("vircon_input_gamepad_down");
+int vircon_input_gamepad_connected(void)
+    VIRCON_IMPORT("vircon_input_gamepad_connected");
+int vircon_input_gamepad_button_a(void)
+    VIRCON_IMPORT("vircon_input_gamepad_button_a");
+int vircon_input_gamepad_button_b(void)
+    VIRCON_IMPORT("vircon_input_gamepad_button_b");
+int vircon_input_gamepad_button_x(void)
+    VIRCON_IMPORT("vircon_input_gamepad_button_x");
+int vircon_input_gamepad_button_y(void)
+    VIRCON_IMPORT("vircon_input_gamepad_button_y");
+int vircon_input_gamepad_button_l(void)
+    VIRCON_IMPORT("vircon_input_gamepad_button_l");
+int vircon_input_gamepad_button_r(void)
+    VIRCON_IMPORT("vircon_input_gamepad_button_r");
+int vircon_input_gamepad_button_start(void)
+    VIRCON_IMPORT("vircon_input_gamepad_button_start");
 int vircon_timer_get_frame_counter(void)
     VIRCON_IMPORT("vircon_timer_get_frame_counter");
 

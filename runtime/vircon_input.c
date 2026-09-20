@@ -30,6 +30,15 @@ int gamepad_direction_y(void)
     return 0;
 }
 
+int gamepad_is_connected(void) { return vircon_input_gamepad_connected(); }
+int gamepad_button_a(void) { return vircon_input_gamepad_button_a(); }
+int gamepad_button_b(void) { return vircon_input_gamepad_button_b(); }
+int gamepad_button_x(void) { return vircon_input_gamepad_button_x(); }
+int gamepad_button_y(void) { return vircon_input_gamepad_button_y(); }
+int gamepad_button_l(void) { return vircon_input_gamepad_button_l(); }
+int gamepad_button_r(void) { return vircon_input_gamepad_button_r(); }
+int gamepad_button_start(void) { return vircon_input_gamepad_button_start(); }
+
 int get_frame_counter(void)
 {
     return vircon_timer_get_frame_counter();
