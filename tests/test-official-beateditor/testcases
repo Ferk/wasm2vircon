@@ -1,0 +1,8 @@
+source=beateditor.c
+entry=__original_main
+include_dirs=../../include
+textures=assets/TextureEditor.png
+sounds=assets/SoundDrum.wav assets/SoundSticks.wav assets/SoundClap.wav assets/SoundBell.wav
+normalize=true
+expectations=expected.asm
+xml_expectations=expected.xml
