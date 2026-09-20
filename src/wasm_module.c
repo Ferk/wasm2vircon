@@ -181,11 +181,13 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
             op == BinaryenGtUInt32() ? WASM_BINARY_GT_U :
             op == BinaryenGeSInt32() ? WASM_BINARY_GE_S :
             op == BinaryenGeUInt32() ? WASM_BINARY_GE_U :
+            op == BinaryenOrInt32() ? WASM_BINARY_OR :
             op == BinaryenRemUInt32() ? WASM_BINARY_REM_U :
             op == BinaryenShrUInt32() ? WASM_BINARY_SHR_U :
             op == BinaryenAddFloat32() ? WASM_BINARY_F32_ADD :
             op == BinaryenSubFloat32() ? WASM_BINARY_F32_SUB :
             op == BinaryenLeFloat32() ? WASM_BINARY_F32_LE :
+            op == BinaryenLtFloat32() ? WASM_BINARY_F32_LT :
             op == BinaryenMulFloat32() ? WASM_BINARY_F32_MUL :
             op == BinaryenDivFloat32() ? WASM_BINARY_F32_DIV :
             op == BinaryenGtFloat32() ? WASM_BINARY_F32_GT : WASM_BINARY_OTHER;
@@ -196,7 +198,8 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
     }
     if (id == BinaryenSelectId()) {
         expression = new_expression(WASM_EXPR_SELECT, diagnostics); if (expression == NULL) return NULL;
-        if (BinaryenExpressionGetType(source) != BinaryenTypeInt32()) { diagnostics_error(diagnostics, "function '%s' contains a non-i32 select", function_name); goto fail; }
+        expression->value_type = convert_type(BinaryenExpressionGetType(source));
+        if (expression->value_type != WASM_VALUE_I32 && expression->value_type != WASM_VALUE_F32) { diagnostics_error(diagnostics, "function '%s' contains an unsupported select result type", function_name); goto fail; }
         /* Preserve Wasm evaluation order: first value, second value, condition. */
         if (!allocate_children(expression, 3, diagnostics)) goto fail;
         expression->children[0] = convert_expression(BinaryenSelectGetIfTrue(source), diagnostics, function_name);

@@ -6,6 +6,8 @@
 void clear_screen(int color);
 void print_at(int drawing_x, int drawing_y, const char *text);
 void print_uint_at(int drawing_x, int drawing_y, unsigned value);
+void print_int_at(int drawing_x, int drawing_y, int value);
+void print_fixed_2_at(int drawing_x, int drawing_y, float value);
 void end_frame(void);
 
 /* Basic cartridge-texture operations. These are runtime functions, not Wasm
@@ -22,7 +24,9 @@ void set_drawing_point(int drawing_x, int drawing_y);
  * currently integer-only VirconWasm profile independent of C float lowering. */
 void set_drawing_scale_bits(int scale_x_bits, int scale_y_bits);
 void set_drawing_scale(float scale_x, float scale_y);
+void set_drawing_angle(float angle);
 void draw_region_zoomed(void);
+void draw_region_rotozoomed_at(int drawing_x, int drawing_y);
 
 /* TileMap's small input/timer surface. Gamepad direction writes -1, 0, or 1
  * through normal byte-addressed C pointers. */
@@ -30,6 +34,8 @@ void select_gamepad(int gamepad_id);
 void gamepad_direction(int *delta_x, int *delta_y);
 int gamepad_direction_x(void);
 int gamepad_direction_y(void);
+int gamepad_left(void);
+int gamepad_right(void);
 int gamepad_up(void);
 int gamepad_down(void);
 int gamepad_is_connected(void);

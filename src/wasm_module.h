@@ -20,10 +20,10 @@ typedef enum WasmBinaryOp {
     WASM_BINARY_ADD, WASM_BINARY_SUB, WASM_BINARY_MUL, WASM_BINARY_DIV_U,
     WASM_BINARY_REM_S, WASM_BINARY_SHL, WASM_BINARY_AND, WASM_BINARY_EQ,
     WASM_BINARY_NE, WASM_BINARY_LT_S, WASM_BINARY_LT_U, WASM_BINARY_GT_S,
-    WASM_BINARY_GT_U, WASM_BINARY_GE_S, WASM_BINARY_GE_U, WASM_BINARY_REM_U,
+    WASM_BINARY_GT_U, WASM_BINARY_GE_S, WASM_BINARY_GE_U, WASM_BINARY_OR, WASM_BINARY_REM_U,
     WASM_BINARY_SHR_U, WASM_BINARY_F32_ADD, WASM_BINARY_F32_SUB,
     WASM_BINARY_F32_MUL, WASM_BINARY_F32_DIV, WASM_BINARY_F32_LE,
-    WASM_BINARY_F32_GT, WASM_BINARY_OTHER
+    WASM_BINARY_F32_LT, WASM_BINARY_F32_GT, WASM_BINARY_OTHER
 } WasmBinaryOp;
 
 typedef struct WasmExpr {
@@ -31,6 +31,7 @@ typedef struct WasmExpr {
     char *name;
     int32_t i32_value;
     float f32_value;
+    WasmValueType value_type;
     uint32_t index, offset, bytes, align;
     bool is_signed, is_tee;
     WasmUnaryOp unary_op;

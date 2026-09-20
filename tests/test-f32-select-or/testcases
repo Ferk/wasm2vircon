@@ -1,0 +1,3 @@
+source=f32-select-or.wat
+entry=__original_main
+expectations=expected.asm

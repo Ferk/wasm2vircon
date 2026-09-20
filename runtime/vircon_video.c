@@ -46,9 +46,20 @@ void set_drawing_scale(float scale_x, float scale_y)
     vircon_gpu_set_drawing_scale(scale_x, scale_y);
 }
 
+void set_drawing_angle(float angle)
+{
+    vircon_gpu_set_drawing_angle(angle);
+}
+
 void draw_region_zoomed(void)
 {
     vircon_gpu_draw_region_zoomed();
+}
+
+void draw_region_rotozoomed_at(int drawing_x, int drawing_y)
+{
+    set_drawing_point(drawing_x, drawing_y);
+    vircon_gpu_draw_region_rotozoomed();
 }
 
 void define_region_matrix(const struct vircon_region_matrix *definition)

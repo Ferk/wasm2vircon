@@ -68,7 +68,9 @@ static bool load_byte_at_r2(Context *context, int result)
 }
 static bool store_byte_at_r2(Context *context, int value_register)
 {
-    return emit(context, "  mov R3, R2") && emit(context, "  and R3, 3") && emit(context, "  imul R3, 8") && emit(context, "  mov R4, R2") && emit(context, "  mov R5, -2") && emit(context, "  shl R4, R5") && emit(context, "  iadd R4, %u", LINEAR_BASE) && emit(context, "  mov R5, [R4]") && emit(context, "  mov R6, 0x000000FF") && emit(context, "  shl R6, R3") && emit(context, "  bnot R6") && emit(context, "  and R5, R6") && emit(context, "  mov R6, R%d", value_register) && emit(context, "  and R6, 0x000000FF") && emit(context, "  shl R6, R3") && emit(context, "  or R5, R6") && emit(context, "  mov [R4], R5");
+    /* Vircon32 BNOT is logical-not, not a bitwise complement. XOR builds the
+     * inverted lane mask required for Wasm's preserving read-modify-write. */
+    return emit(context, "  mov R3, R2") && emit(context, "  and R3, 3") && emit(context, "  imul R3, 8") && emit(context, "  mov R4, R2") && emit(context, "  mov R5, -2") && emit(context, "  shl R4, R5") && emit(context, "  iadd R4, %u", LINEAR_BASE) && emit(context, "  mov R5, [R4]") && emit(context, "  mov R6, 0x000000FF") && emit(context, "  shl R6, R3") && emit(context, "  xor R6, 0xFFFFFFFF") && emit(context, "  and R5, R6") && emit(context, "  mov R6, R%d", value_register) && emit(context, "  and R6, 0x000000FF") && emit(context, "  shl R6, R3") && emit(context, "  or R5, R6") && emit(context, "  mov [R4], R5");
 }
 static bool lower_load(Context *context, const WasmExpr *expression, Value *value)
 {
@@ -130,6 +132,8 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale_bits") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_draw_region_zoomed") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionZoomed")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_angle") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_DrawingAngle, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_draw_region_rotozoomed") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionRotozoomed")) return false; }
         else if (strcmp(callee->import_name, "vircon_cpu_sin") == 0) {
             int slot = temp_slot(context);
             if (slot == 0 || !load_slot(context, 0, arguments[0].slot) || !emit(context, "  sin R0") || !store_slot(context, slot, 0)) return false;
@@ -199,6 +203,7 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     case WASM_BINARY_SUB: if (!emit(context, "  isub R1, R2")) return false; break;
     case WASM_BINARY_MUL: if (!emit(context, "  imul R1, R2")) return false; break;
     case WASM_BINARY_AND: if (!emit(context, "  and R1, R2")) return false; break;
+    case WASM_BINARY_OR: if (!emit(context, "  or R1, R2")) return false; break;
     case WASM_BINARY_EQ: if (!emit(context, "  ieq R1, R2")) return false; break;
     case WASM_BINARY_NE: if (!emit(context, "  ine R1, R2")) return false; break;
     case WASM_BINARY_LT_S: if (!emit(context, "  ilt R1, R2")) return false; break;
@@ -207,6 +212,7 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     case WASM_BINARY_F32_ADD: if (!emit(context, "  fadd R1, R2")) return false; break;
     case WASM_BINARY_F32_SUB: if (!emit(context, "  fsub R1, R2")) return false; break;
     case WASM_BINARY_F32_LE: if (!emit(context, "  fle R1, R2")) return false; break;
+    case WASM_BINARY_F32_LT: if (!emit(context, "  flt R1, R2")) return false; break;
     case WASM_BINARY_F32_MUL: if (!emit(context, "  fmul R1, R2")) return false; break;
     case WASM_BINARY_F32_DIV: if (!emit(context, "  fdiv R1, R2")) return false; break;
     case WASM_BINARY_F32_GT: if (!emit(context, "  fgt R1, R2")) return false; break;

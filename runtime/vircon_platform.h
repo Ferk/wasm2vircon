@@ -34,8 +34,12 @@ void vircon_gpu_set_drawing_scale_bits(int scale_x_bits, int scale_y_bits)
     VIRCON_IMPORT("vircon_gpu_set_drawing_scale_bits");
 void vircon_gpu_set_drawing_scale(float scale_x, float scale_y)
     VIRCON_IMPORT("vircon_gpu_set_drawing_scale");
+void vircon_gpu_set_drawing_angle(float angle)
+    VIRCON_IMPORT("vircon_gpu_set_drawing_angle");
 void vircon_gpu_draw_region_zoomed(void)
     VIRCON_IMPORT("vircon_gpu_draw_region_zoomed");
+void vircon_gpu_draw_region_rotozoomed(void)
+    VIRCON_IMPORT("vircon_gpu_draw_region_rotozoomed");
 
 float vircon_cpu_sin(float value) VIRCON_IMPORT("vircon_cpu_sin");
 float vircon_cpu_acos(float value) VIRCON_IMPORT("vircon_cpu_acos");

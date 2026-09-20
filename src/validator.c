@@ -32,6 +32,8 @@ static const ImportSpec IMPORTS[] = {
     {"env", "vircon_gpu_set_drawing_scale_bits", {WASM_VALUE_I32, WASM_VALUE_I32}, 2, WASM_VALUE_NONE},
     {"env", "vircon_gpu_set_drawing_scale", {WASM_VALUE_F32, WASM_VALUE_F32}, 2, WASM_VALUE_NONE},
     {"env", "vircon_gpu_draw_region_zoomed", {WASM_VALUE_NONE}, 0, WASM_VALUE_NONE},
+    {"env", "vircon_gpu_set_drawing_angle", {WASM_VALUE_F32}, 1, WASM_VALUE_NONE},
+    {"env", "vircon_gpu_draw_region_rotozoomed", {WASM_VALUE_NONE}, 0, WASM_VALUE_NONE},
     {"env", "vircon_cpu_sin", {WASM_VALUE_F32}, 1, WASM_VALUE_F32},
     {"env", "vircon_cpu_acos", {WASM_VALUE_F32}, 1, WASM_VALUE_F32},
     {"env", "vircon_cpu_log", {WASM_VALUE_F32}, 1, WASM_VALUE_F32},
