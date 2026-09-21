@@ -1,0 +1,2 @@
+source=unaligned-i64-store.wat
+outcome=reject

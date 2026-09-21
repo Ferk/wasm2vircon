@@ -1,0 +1,2 @@
+source=i64-const-store-out-of-bounds.wat
+outcome=reject

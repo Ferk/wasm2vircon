@@ -1,0 +1,2 @@
+source=i64-const-store.wat
+expectations=expected.asm

@@ -1,0 +1,2 @@
+source=nonconstant-i64-store.wat
+outcome=reject

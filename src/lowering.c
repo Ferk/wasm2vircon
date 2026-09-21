@@ -103,6 +103,21 @@ static bool lower_store(Context *context, const WasmExpr *expression, Value *val
     if (!emit(context, "  jmp %s", done) || !emit_label(context, aligned) || !emit(context, "  mov R3, R2") || !emit(context, "  mov R4, -2") || !emit(context, "  shl R3, R4") || !emit(context, "  iadd R3, %u", LINEAR_BASE) || !emit(context, "  mov [R3], R1") || !emit_label(context, done)) return false;
     release(context, input); release(context, pointer); value->present = false; return true;
 }
+static bool lower_i64_const_store(Context *context, const WasmExpr *expression, Value *value)
+{
+    uint64_t address = (uint64_t)(uint32_t)expression->children[0]->i32_value + expression->offset;
+    uint32_t low = (uint32_t)expression->i64_value;
+    uint32_t high = (uint32_t)(expression->i64_value >> 32);
+    unsigned word = LINEAR_BASE + (unsigned)(address >> 2);
+
+    /* Validation has already proved the full eight-byte range and the
+     * four-byte alignment. Store low then high to preserve Wasm little-endian
+     * layout without introducing an i64 target value or arithmetic path. */
+    if (!emit(context, "  mov R1, 0x%08X", low) || !emit(context, "  mov [%u], R1", word) ||
+        !emit(context, "  mov R1, 0x%08X", high) || !emit(context, "  mov [%u], R1", word + 1)) return false;
+    value->present = false;
+    return true;
+}
 static bool lower_call(Context *context, const WasmExpr *expression, Value *value)
 {
     const WasmFunction *callee = wasm_module_find_function(context->validated->module, expression->name); Value arguments[4] = {{0}}; char label[64]; size_t index;
@@ -357,6 +372,7 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
         release(context, condition); release(context, right); *value = left; return true;
     case WASM_EXPR_LOAD: return lower_load(context, expression, value);
     case WASM_EXPR_STORE: return lower_store(context, expression, value);
+    case WASM_EXPR_I64_CONST_STORE: return lower_i64_const_store(context, expression, value);
     case WASM_EXPR_CALL: return lower_call(context, expression, value);
     case WASM_EXPR_BLOCK:
         if (expression->name != NULL) { if (!fresh_label(context, "block_end", label, sizeof(label)) || context->target_count == 32) return false; context->targets[context->target_count++] = (Target){expression->name, format_text("%s", label)}; }
