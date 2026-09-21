@@ -146,6 +146,19 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
         if (expression->bytes != 1 && expression->bytes != 4) { diagnostics_error(diagnostics, "function '%s' uses unsupported store width", function->name); return false; }
         return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&
                validate_expression(module, function, expression->children[1], reachable, diagnostics);
+    case WASM_EXPR_I64_CONST_STORE: {
+        uint64_t address;
+        if (expression->child_count != 1 || expression->children[0]->kind != WASM_EXPR_I32_CONST) {
+            diagnostics_error(diagnostics, "function '%s' uses an unsupported i64.store address; it must be a constant i32 address", function->name);
+            return false;
+        }
+        address = (uint64_t)(uint32_t)expression->children[0]->i32_value + expression->offset;
+        if (expression->align < 4 || (address & 3u) != 0 || address + 8 > (uint64_t)module->memory_initial_pages * 65536u) {
+            diagnostics_error(diagnostics, "function '%s' uses an unsupported i64.store; it must be 4-byte aligned and wholly in declared linear memory", function->name);
+            return false;
+        }
+        return true;
+    }
     case WASM_EXPR_BINARY:
         if (expression->binary_op == WASM_BINARY_OTHER) { diagnostics_error(diagnostics, "function '%s' uses an unsupported i32 binary operation", function->name); return false; }
         return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&

@@ -12,7 +12,7 @@ typedef enum WasmExprKind {
     WASM_EXPR_BLOCK, WASM_EXPR_LOOP, WASM_EXPR_BR, WASM_EXPR_BR_IF, WASM_EXPR_CALL,
     WASM_EXPR_I32_CONST, WASM_EXPR_F32_CONST, WASM_EXPR_UNREACHABLE, WASM_EXPR_IF,
     WASM_EXPR_LOCAL_GET, WASM_EXPR_LOCAL_SET, WASM_EXPR_LOAD,
-    WASM_EXPR_STORE, WASM_EXPR_UNARY, WASM_EXPR_BINARY, WASM_EXPR_SELECT,
+    WASM_EXPR_STORE, WASM_EXPR_I64_CONST_STORE, WASM_EXPR_UNARY, WASM_EXPR_BINARY, WASM_EXPR_SELECT,
     WASM_EXPR_RETURN, WASM_EXPR_DROP
 } WasmExprKind;
 typedef enum WasmUnaryOp { WASM_UNARY_EQZ, WASM_UNARY_CONVERT_I32_S_TO_F32, WASM_UNARY_TRUNC_SAT_F32_TO_I32, WASM_UNARY_OTHER } WasmUnaryOp;
@@ -30,6 +30,7 @@ typedef struct WasmExpr {
     WasmExprKind kind;
     char *name;
     int32_t i32_value;
+    uint64_t i64_value;
     float f32_value;
     WasmValueType value_type;
     uint32_t index, offset, bytes, align;

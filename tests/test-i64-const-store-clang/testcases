@@ -1,0 +1,2 @@
+source=adjacent-i32-init.c
+expectations=expected.asm

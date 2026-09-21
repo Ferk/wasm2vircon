@@ -1,0 +1,2 @@
+source=dynamic-i64-store.wat
+outcome=reject

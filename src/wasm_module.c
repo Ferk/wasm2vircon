@@ -148,6 +148,23 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
     if (id == BinaryenStoreId()) {
         expression = new_expression(WASM_EXPR_STORE, diagnostics); if (expression == NULL) return NULL;
         expression->bytes = BinaryenStoreGetBytes(source); expression->offset = BinaryenStoreGetOffset(source); expression->align = BinaryenStoreGetAlign(source);
+        if (expression->bytes == 8) {
+            BinaryenExpressionRef stored_value = BinaryenStoreGetValue(source);
+            /* This is intentionally not general i64 support. Clang can fold
+             * neighbouring i32 initializers into this exact store shape. */
+            if (BinaryenStoreGetValueType(source) != BinaryenTypeInt64() ||
+                BinaryenExpressionGetId(stored_value) != BinaryenConstId() ||
+                BinaryenExpressionGetType(stored_value) != BinaryenTypeInt64()) {
+                diagnostics_error(diagnostics, "function '%s' uses an unsupported i64.store; only an i64.const initializer is accepted", function_name);
+                goto fail;
+            }
+            expression->kind = WASM_EXPR_I64_CONST_STORE;
+            expression->i64_value = (uint64_t)BinaryenConstGetValueI64(stored_value);
+            if (!allocate_children(expression, 1, diagnostics)) goto fail;
+            expression->children[0] = convert_expression(BinaryenStoreGetPtr(source), diagnostics, function_name);
+            if (expression->children[0] == NULL) goto fail;
+            return expression;
+        }
         if (!allocate_children(expression, 2, diagnostics)) goto fail;
         expression->children[0] = convert_expression(BinaryenStoreGetPtr(source), diagnostics, function_name); expression->children[1] = convert_expression(BinaryenStoreGetValue(source), diagnostics, function_name);
         if (expression->children[0] == NULL || expression->children[1] == NULL) goto fail;
