@@ -3,6 +3,7 @@
 #include <binaryen-c.h>
 
 #include <ctype.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,12 +17,63 @@ static char *copy_string(const char *source)
     return copy;
 }
 
+/* Identifies a function while Binaryen expressions are converted. */
+typedef struct DecodeContext {
+    size_t function_index;
+    const char *function_name;
+} DecodeContext;
+
+/* Returns whether a Binaryen function name is useful beyond its numeric index. */
+static bool has_descriptive_function_name(const char *name)
+{
+    const unsigned char *cursor = (const unsigned char *)name;
+    if (name == NULL || name[0] == '\0') return false;
+    while (*cursor != '\0') {
+        if (!isdigit(*cursor)) return true;
+        ++cursor;
+    }
+    return false;
+}
+
+/* Reports a module-conversion failure with a stable Wasm function identity. */
+static void function_error(Diagnostics *diagnostics, const DecodeContext *context,
+                           const char *format, ...)
+{
+    char reason[512]; va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(reason, sizeof(reason), format, arguments);
+    va_end(arguments);
+    if (has_descriptive_function_name(context->function_name))
+        diagnostics_error(diagnostics, "function %zu '%s': %s", context->function_index,
+                          context->function_name, reason);
+    else
+        diagnostics_error(diagnostics, "function %zu: %s", context->function_index, reason);
+}
+
+/* Reports an expression-conversion failure with opcode and structural path. */
+static void expression_error(Diagnostics *diagnostics, const DecodeContext *context,
+                             const char *opcode, const char *path,
+                             const char *format, ...)
+{
+    char reason[512]; va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(reason, sizeof(reason), format, arguments);
+    va_end(arguments);
+    if (has_descriptive_function_name(context->function_name))
+        diagnostics_error(diagnostics,
+                          "Wasm %s in function %zu '%s' at expression path %s: %s",
+                          opcode, context->function_index, context->function_name, path, reason);
+    else
+        diagnostics_error(diagnostics, "Wasm %s in function %zu at expression path %s: %s",
+                          opcode, context->function_index, path, reason);
+}
+
 static void free_expression(WasmExpr *expression)
 {
     size_t index;
     if (expression == NULL) return;
     for (index = 0; index < expression->child_count; ++index) free_expression(expression->children[index]);
-    free(expression->children); free(expression->name); free(expression);
+    free(expression->children); free(expression->path); free(expression->name); free(expression);
 }
 
 static WasmValueType convert_type(BinaryenType type)
@@ -33,24 +85,34 @@ static WasmValueType convert_type(BinaryenType type)
 }
 
 static bool convert_tuple_type(BinaryenType type, WasmValueType *values, size_t *count,
-                               Diagnostics *diagnostics, const char *function_name)
+                               Diagnostics *diagnostics, const DecodeContext *context)
 {
     BinaryenIndex arity = BinaryenTypeArity(type), index; BinaryenType expanded[4];
-    if (arity > 4) { diagnostics_error(diagnostics, "function '%s' has more than four parameters", function_name); return false; }
+    if (arity > 4) { function_error(diagnostics, context, "has more than four parameters"); return false; }
     if (arity == 0) { *count = 0; return true; }
     BinaryenTypeExpand(type, expanded);
     for (index = 0; index < arity; ++index) {
         values[index] = convert_type(expanded[index]);
-        if (values[index] == WASM_VALUE_OTHER) { diagnostics_error(diagnostics, "function '%s' has an unsupported parameter type", function_name); return false; }
+        if (values[index] == WASM_VALUE_OTHER) { function_error(diagnostics, context, "has an unsupported parameter type"); return false; }
     }
     *count = arity; return true;
 }
 
-static WasmExpr *new_expression(WasmExprKind kind, Diagnostics *diagnostics)
+static WasmExpr *new_expression(WasmExprKind kind, const char *opcode, const char *path,
+                                Diagnostics *diagnostics)
 {
     WasmExpr *expression = calloc(1, sizeof(*expression));
     if (expression == NULL) diagnostics_error(diagnostics, "out of memory while reading Wasm expression");
-    else expression->kind = kind;
+    else {
+        expression->kind = kind;
+        expression->opcode = opcode;
+        expression->path = copy_string(path);
+        if (expression->path == NULL) {
+            diagnostics_error(diagnostics, "out of memory while recording Wasm expression path");
+            free(expression);
+            expression = NULL;
+        }
+    }
     return expression;
 }
 
@@ -64,89 +126,196 @@ static bool allocate_children(WasmExpr *expression, size_t count, Diagnostics *d
 }
 
 static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *diagnostics,
-                                    const char *function_name)
+                                    const DecodeContext *context, const char *path);
+
+/* Builds a stable child path without requiring Wasm byte offsets or DWARF. */
+static WasmExpr *convert_child(BinaryenExpressionRef source, Diagnostics *diagnostics,
+                               const DecodeContext *context, const char *parent_path,
+                               size_t child_index)
+{
+    char path[128];
+    snprintf(path, sizeof(path), "%s/%zu", parent_path, child_index);
+    return convert_expression(source, diagnostics, context, path);
+}
+
+/* Names the Binaryen unary operations that can reach the restricted frontend. */
+static const char *unary_opcode(BinaryenOp op)
+{
+    if (op == BinaryenEqZInt32()) return "i32.eqz";
+    if (op == BinaryenConvertSInt32ToFloat32()) return "f32.convert_i32_s";
+    if (op == BinaryenConvertUInt32ToFloat32()) return "f32.convert_i32_u";
+    if (op == BinaryenTruncSatSFloat32ToInt32()) return "i32.trunc_sat_f32_s";
+    if (op == BinaryenClzInt32()) return "i32.clz";
+    if (op == BinaryenCtzInt32()) return "i32.ctz";
+    if (op == BinaryenPopcntInt32()) return "i32.popcnt";
+    return "unknown unary operation";
+}
+
+/* Names common Binaryen binary operations, including unsupported ones. */
+static const char *binary_opcode(BinaryenOp op)
+{
+    if (op == BinaryenAddInt32()) return "i32.add";
+    if (op == BinaryenSubInt32()) return "i32.sub";
+    if (op == BinaryenMulInt32()) return "i32.mul";
+    if (op == BinaryenDivSInt32()) return "i32.div_s";
+    if (op == BinaryenDivUInt32()) return "i32.div_u";
+    if (op == BinaryenRemSInt32()) return "i32.rem_s";
+    if (op == BinaryenRemUInt32()) return "i32.rem_u";
+    if (op == BinaryenAndInt32()) return "i32.and";
+    if (op == BinaryenOrInt32()) return "i32.or";
+    if (op == BinaryenXorInt32()) return "i32.xor";
+    if (op == BinaryenShlInt32()) return "i32.shl";
+    if (op == BinaryenShrUInt32()) return "i32.shr_u";
+    if (op == BinaryenShrSInt32()) return "i32.shr_s";
+    if (op == BinaryenRotLInt32()) return "i32.rotl";
+    if (op == BinaryenRotRInt32()) return "i32.rotr";
+    if (op == BinaryenEqInt32()) return "i32.eq";
+    if (op == BinaryenNeInt32()) return "i32.ne";
+    if (op == BinaryenLtSInt32()) return "i32.lt_s";
+    if (op == BinaryenLtUInt32()) return "i32.lt_u";
+    if (op == BinaryenLeSInt32()) return "i32.le_s";
+    if (op == BinaryenLeUInt32()) return "i32.le_u";
+    if (op == BinaryenGtSInt32()) return "i32.gt_s";
+    if (op == BinaryenGtUInt32()) return "i32.gt_u";
+    if (op == BinaryenGeSInt32()) return "i32.ge_s";
+    if (op == BinaryenGeUInt32()) return "i32.ge_u";
+    if (op == BinaryenAddFloat32()) return "f32.add";
+    if (op == BinaryenSubFloat32()) return "f32.sub";
+    if (op == BinaryenMulFloat32()) return "f32.mul";
+    if (op == BinaryenDivFloat32()) return "f32.div";
+    if (op == BinaryenEqFloat32()) return "f32.eq";
+    if (op == BinaryenNeFloat32()) return "f32.ne";
+    if (op == BinaryenLtFloat32()) return "f32.lt";
+    if (op == BinaryenLeFloat32()) return "f32.le";
+    if (op == BinaryenGtFloat32()) return "f32.gt";
+    if (op == BinaryenGeFloat32()) return "f32.ge";
+    return "unknown binary operation";
+}
+
+/* Describes a load using its byte width, signedness, and result type. */
+static const char *load_opcode(BinaryenExpressionRef source)
+{
+    uint32_t bytes = BinaryenLoadGetBytes(source);
+    bool signed_load = BinaryenLoadIsSigned(source);
+    BinaryenType type = BinaryenExpressionGetType(source);
+    if (type == BinaryenTypeInt64()) return "i64.load";
+    if (type == BinaryenTypeFloat32()) return "f32.load";
+    if (bytes == 1) return signed_load ? "i32.load8_s" : "i32.load8_u";
+    if (bytes == 2) return signed_load ? "i32.load16_s" : "i32.load16_u";
+    return "i32.load";
+}
+
+/* Names core expression kinds that the restricted frontend does not lower. */
+static const char *unsupported_expression_opcode(BinaryenExpressionId id)
+{
+    if (id == BinaryenNopId()) return "nop";
+    if (id == BinaryenSwitchId()) return "br_table";
+    if (id == BinaryenCallIndirectId()) return "call_indirect";
+    if (id == BinaryenGlobalGetId()) return "global.get";
+    if (id == BinaryenGlobalSetId()) return "global.set";
+    if (id == BinaryenMemoryInitId()) return "memory.init";
+    if (id == BinaryenDataDropId()) return "data.drop";
+    if (id == BinaryenMemoryCopyId()) return "memory.copy";
+    if (id == BinaryenMemoryFillId()) return "memory.fill";
+    if (id == BinaryenMemorySizeId()) return "memory.size";
+    if (id == BinaryenMemoryGrowId()) return "memory.grow";
+    if (id == BinaryenRefNullId()) return "ref.null";
+    if (id == BinaryenRefFuncId()) return "ref.func";
+    if (id == BinaryenTableGetId()) return "table.get";
+    if (id == BinaryenTableSetId()) return "table.set";
+    return "unknown expression";
+}
+
+static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *diagnostics,
+                                    const DecodeContext *context, const char *path)
 {
     BinaryenExpressionId id; WasmExpr *expression; BinaryenIndex index;
-    if (source == NULL) { diagnostics_error(diagnostics, "function '%s' contains a missing expression", function_name); return NULL; }
+    if (source == NULL) { expression_error(diagnostics, context, "missing expression", path, "expression is missing"); return NULL; }
     id = BinaryenExpressionGetId(source);
     if (id == BinaryenBlockId()) {
-        expression = new_expression(WASM_EXPR_BLOCK, diagnostics); if (expression == NULL) return NULL;
+        expression = new_expression(WASM_EXPR_BLOCK, "block", path, diagnostics); if (expression == NULL) return NULL;
         expression->name = copy_string(BinaryenBlockGetName(source));
         if (!allocate_children(expression, BinaryenBlockGetNumChildren(source), diagnostics)) goto fail;
-        for (index = 0; index < expression->child_count; ++index) { expression->children[index] = convert_expression(BinaryenBlockGetChildAt(source, index), diagnostics, function_name); if (expression->children[index] == NULL) goto fail; }
+        for (index = 0; index < expression->child_count; ++index) { expression->children[index] = convert_child(BinaryenBlockGetChildAt(source, index), diagnostics, context, path, index); if (expression->children[index] == NULL) goto fail; }
         return expression;
     }
     if (id == BinaryenLoopId()) {
-        expression = new_expression(WASM_EXPR_LOOP, diagnostics); if (expression == NULL) return NULL;
+        expression = new_expression(WASM_EXPR_LOOP, "loop", path, diagnostics); if (expression == NULL) return NULL;
         if (BinaryenExpressionGetType(source) != BinaryenTypeNone() &&
             BinaryenExpressionGetType(source) != BinaryenTypeUnreachable()) {
-            diagnostics_error(diagnostics, "function '%s' contains a value-producing loop", function_name);
+            expression_error(diagnostics, context, expression->opcode, path, "value-producing loops are unsupported");
             goto fail;
         }
         expression->name = copy_string(BinaryenLoopGetName(source));
-        if (expression->name == NULL) { diagnostics_error(diagnostics, "function '%s' has an unnamed loop", function_name); goto fail; }
+        if (expression->name == NULL) { expression_error(diagnostics, context, expression->opcode, path, "loop has no target name"); goto fail; }
         if (!allocate_children(expression, 1, diagnostics)) goto fail;
-        expression->children[0] = convert_expression(BinaryenLoopGetBody(source), diagnostics, function_name);
+        expression->children[0] = convert_child(BinaryenLoopGetBody(source), diagnostics, context, path, 0);
         if (expression->children[0] == NULL) goto fail;
         return expression;
     }
     if (id == BinaryenBreakId()) {
-        expression = new_expression(WASM_EXPR_BR, diagnostics); if (expression == NULL) return NULL;
+        expression = new_expression(WASM_EXPR_BR, "br", path, diagnostics); if (expression == NULL) return NULL;
         expression->name = copy_string(BinaryenBreakGetName(source));
-        if (expression->name == NULL) { diagnostics_error(diagnostics, "function '%s' has a branch without a target", function_name); goto fail; }
-        if (BinaryenBreakGetValue(source) != NULL) { diagnostics_error(diagnostics, "function '%s' uses a value-carrying br, which is unsupported", function_name); goto fail; }
+        if (expression->name == NULL) { expression_error(diagnostics, context, expression->opcode, path, "branch has no target"); goto fail; }
+        if (BinaryenBreakGetValue(source) != NULL) { expression_error(diagnostics, context, expression->opcode, path, "value-carrying branches are unsupported"); goto fail; }
         if (BinaryenBreakGetCondition(source) != NULL) {
             expression->kind = WASM_EXPR_BR_IF;
+            expression->opcode = "br_if";
             if (!allocate_children(expression, 1, diagnostics)) goto fail;
-            expression->children[0] = convert_expression(BinaryenBreakGetCondition(source), diagnostics, function_name);
+            expression->children[0] = convert_child(BinaryenBreakGetCondition(source), diagnostics, context, path, 0);
             if (expression->children[0] == NULL) goto fail;
         }
         return expression;
     }
     if (id == BinaryenCallId()) {
-        expression = new_expression(WASM_EXPR_CALL, diagnostics); if (expression == NULL) return NULL;
+        expression = new_expression(WASM_EXPR_CALL, "call", path, diagnostics); if (expression == NULL) return NULL;
         expression->name = copy_string(BinaryenCallGetTarget(source));
         if (expression->name == NULL || !allocate_children(expression, BinaryenCallGetNumOperands(source), diagnostics)) goto fail;
-        for (index = 0; index < expression->child_count; ++index) { expression->children[index] = convert_expression(BinaryenCallGetOperandAt(source, index), diagnostics, function_name); if (expression->children[index] == NULL) goto fail; }
+        for (index = 0; index < expression->child_count; ++index) { expression->children[index] = convert_child(BinaryenCallGetOperandAt(source, index), diagnostics, context, path, index); if (expression->children[index] == NULL) goto fail; }
         return expression;
     }
     if (id == BinaryenConstId()) {
         if (BinaryenExpressionGetType(source) == BinaryenTypeInt32()) {
-            expression = new_expression(WASM_EXPR_I32_CONST, diagnostics); if (expression != NULL) expression->i32_value = BinaryenConstGetValueI32(source); return expression;
+            expression = new_expression(WASM_EXPR_I32_CONST, "i32.const", path, diagnostics); if (expression != NULL) expression->i32_value = BinaryenConstGetValueI32(source); return expression;
         }
         if (BinaryenExpressionGetType(source) == BinaryenTypeFloat32()) {
-            expression = new_expression(WASM_EXPR_F32_CONST, diagnostics); if (expression != NULL) expression->f32_value = BinaryenConstGetValueF32(source); return expression;
+            expression = new_expression(WASM_EXPR_F32_CONST, "f32.const", path, diagnostics); if (expression != NULL) expression->f32_value = BinaryenConstGetValueF32(source); return expression;
         }
-        diagnostics_error(diagnostics, "function '%s' contains an unsupported constant type", function_name); return NULL;
+        expression_error(diagnostics, context,
+                         BinaryenExpressionGetType(source) == BinaryenTypeInt64() ? "i64.const" : "const",
+                         path, "unsupported constant type"); return NULL;
     }
-    if (id == BinaryenUnreachableId()) return new_expression(WASM_EXPR_UNREACHABLE, diagnostics);
+    if (id == BinaryenUnreachableId()) return new_expression(WASM_EXPR_UNREACHABLE, "unreachable", path, diagnostics);
     if (id == BinaryenIfId()) {
-        expression = new_expression(WASM_EXPR_IF, diagnostics); if (expression == NULL) return NULL;
-        if (BinaryenExpressionGetType(source) != BinaryenTypeNone()) { diagnostics_error(diagnostics, "function '%s' contains a value-producing if", function_name); goto fail; }
+        expression = new_expression(WASM_EXPR_IF, "if", path, diagnostics); if (expression == NULL) return NULL;
+        if (BinaryenExpressionGetType(source) != BinaryenTypeNone()) { expression_error(diagnostics, context, expression->opcode, path, "value-producing if is unsupported"); goto fail; }
         if (!allocate_children(expression, BinaryenIfGetIfFalse(source) == NULL ? 2 : 3, diagnostics)) goto fail;
-        expression->children[0] = convert_expression(BinaryenIfGetCondition(source), diagnostics, function_name);
-        expression->children[1] = convert_expression(BinaryenIfGetIfTrue(source), diagnostics, function_name);
+        expression->children[0] = convert_child(BinaryenIfGetCondition(source), diagnostics, context, path, 0);
+        expression->children[1] = convert_child(BinaryenIfGetIfTrue(source), diagnostics, context, path, 1);
         if (expression->children[0] == NULL || expression->children[1] == NULL) goto fail;
-        if (expression->child_count == 3) { expression->children[2] = convert_expression(BinaryenIfGetIfFalse(source), diagnostics, function_name); if (expression->children[2] == NULL) goto fail; }
+        if (expression->child_count == 3) { expression->children[2] = convert_child(BinaryenIfGetIfFalse(source), diagnostics, context, path, 2); if (expression->children[2] == NULL) goto fail; }
         return expression;
     }
-    if (id == BinaryenLocalGetId()) { expression = new_expression(WASM_EXPR_LOCAL_GET, diagnostics); if (expression != NULL) expression->index = BinaryenLocalGetGetIndex(source); return expression; }
+    if (id == BinaryenLocalGetId()) { expression = new_expression(WASM_EXPR_LOCAL_GET, "local.get", path, diagnostics); if (expression != NULL) expression->index = BinaryenLocalGetGetIndex(source); return expression; }
     if (id == BinaryenLocalSetId()) {
-        expression = new_expression(WASM_EXPR_LOCAL_SET, diagnostics); if (expression == NULL) return NULL;
+        expression = new_expression(WASM_EXPR_LOCAL_SET, "local.set", path, diagnostics); if (expression == NULL) return NULL;
         expression->index = BinaryenLocalSetGetIndex(source); expression->is_tee = BinaryenLocalSetIsTee(source);
+        if (expression->is_tee) expression->opcode = "local.tee";
         if (!allocate_children(expression, 1, diagnostics)) goto fail;
-        expression->children[0] = convert_expression(BinaryenLocalSetGetValue(source), diagnostics, function_name); if (expression->children[0] == NULL) goto fail;
+        expression->children[0] = convert_child(BinaryenLocalSetGetValue(source), diagnostics, context, path, 0); if (expression->children[0] == NULL) goto fail;
         return expression;
     }
     if (id == BinaryenLoadId()) {
-        expression = new_expression(WASM_EXPR_LOAD, diagnostics); if (expression == NULL) return NULL;
+        expression = new_expression(WASM_EXPR_LOAD, load_opcode(source), path, diagnostics); if (expression == NULL) return NULL;
         expression->bytes = BinaryenLoadGetBytes(source); expression->offset = BinaryenLoadGetOffset(source); expression->align = BinaryenLoadGetAlign(source); expression->is_signed = BinaryenLoadIsSigned(source);
         if (!allocate_children(expression, 1, diagnostics)) goto fail;
-        expression->children[0] = convert_expression(BinaryenLoadGetPtr(source), diagnostics, function_name); if (expression->children[0] == NULL) goto fail;
+        expression->children[0] = convert_child(BinaryenLoadGetPtr(source), diagnostics, context, path, 0); if (expression->children[0] == NULL) goto fail;
         return expression;
     }
     if (id == BinaryenStoreId()) {
-        expression = new_expression(WASM_EXPR_STORE, diagnostics); if (expression == NULL) return NULL;
+        expression = new_expression(WASM_EXPR_STORE, BinaryenStoreGetBytes(source) == 8 ? "i64.store" :
+                                    BinaryenStoreGetBytes(source) == 1 ? "i32.store8" : "i32.store",
+                                    path, diagnostics); if (expression == NULL) return NULL;
         expression->bytes = BinaryenStoreGetBytes(source); expression->offset = BinaryenStoreGetOffset(source); expression->align = BinaryenStoreGetAlign(source);
         if (expression->bytes == 8) {
             BinaryenExpressionRef stored_value = BinaryenStoreGetValue(source);
@@ -155,35 +324,36 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
             if (BinaryenStoreGetValueType(source) != BinaryenTypeInt64() ||
                 BinaryenExpressionGetId(stored_value) != BinaryenConstId() ||
                 BinaryenExpressionGetType(stored_value) != BinaryenTypeInt64()) {
-                diagnostics_error(diagnostics, "function '%s' uses an unsupported i64.store; only an i64.const initializer is accepted", function_name);
+                expression_error(diagnostics, context, expression->opcode, path,
+                                 "only a literal i64.const initializer is accepted");
                 goto fail;
             }
             expression->kind = WASM_EXPR_I64_CONST_STORE;
             expression->i64_value = (uint64_t)BinaryenConstGetValueI64(stored_value);
             if (!allocate_children(expression, 1, diagnostics)) goto fail;
-            expression->children[0] = convert_expression(BinaryenStoreGetPtr(source), diagnostics, function_name);
+            expression->children[0] = convert_child(BinaryenStoreGetPtr(source), diagnostics, context, path, 0);
             if (expression->children[0] == NULL) goto fail;
             return expression;
         }
         if (!allocate_children(expression, 2, diagnostics)) goto fail;
-        expression->children[0] = convert_expression(BinaryenStoreGetPtr(source), diagnostics, function_name); expression->children[1] = convert_expression(BinaryenStoreGetValue(source), diagnostics, function_name);
+        expression->children[0] = convert_child(BinaryenStoreGetPtr(source), diagnostics, context, path, 0); expression->children[1] = convert_child(BinaryenStoreGetValue(source), diagnostics, context, path, 1);
         if (expression->children[0] == NULL || expression->children[1] == NULL) goto fail;
         return expression;
     }
     if (id == BinaryenUnaryId()) {
         BinaryenOp op = BinaryenUnaryGetOp(source);
-        expression = new_expression(WASM_EXPR_UNARY, diagnostics); if (expression == NULL) return NULL;
+        expression = new_expression(WASM_EXPR_UNARY, unary_opcode(op), path, diagnostics); if (expression == NULL) return NULL;
         expression->unary_op = op == BinaryenEqZInt32() ? WASM_UNARY_EQZ :
             op == BinaryenConvertSInt32ToFloat32() ? WASM_UNARY_CONVERT_I32_S_TO_F32 :
             op == BinaryenConvertUInt32ToFloat32() ? WASM_UNARY_CONVERT_I32_U_TO_F32 :
             op == BinaryenTruncSatSFloat32ToInt32() ? WASM_UNARY_TRUNC_SAT_F32_TO_I32 : WASM_UNARY_OTHER;
         if (!allocate_children(expression, 1, diagnostics)) goto fail;
-        expression->children[0] = convert_expression(BinaryenUnaryGetValue(source), diagnostics, function_name);
+        expression->children[0] = convert_child(BinaryenUnaryGetValue(source), diagnostics, context, path, 0);
         if (expression->children[0] == NULL) goto fail;
         return expression;
     }
     if (id == BinaryenBinaryId()) {
-        BinaryenOp op = BinaryenBinaryGetOp(source); expression = new_expression(WASM_EXPR_BINARY, diagnostics); if (expression == NULL) return NULL;
+        BinaryenOp op = BinaryenBinaryGetOp(source); expression = new_expression(WASM_EXPR_BINARY, binary_opcode(op), path, diagnostics); if (expression == NULL) return NULL;
         expression->binary_op = op == BinaryenAddInt32() ? WASM_BINARY_ADD :
             op == BinaryenSubInt32() ? WASM_BINARY_SUB :
             op == BinaryenMulInt32() ? WASM_BINARY_MUL :
@@ -214,35 +384,36 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
             op == BinaryenDivFloat32() ? WASM_BINARY_F32_DIV :
             op == BinaryenGtFloat32() ? WASM_BINARY_F32_GT : WASM_BINARY_OTHER;
         if (!allocate_children(expression, 2, diagnostics)) goto fail;
-        expression->children[0] = convert_expression(BinaryenBinaryGetLeft(source), diagnostics, function_name); expression->children[1] = convert_expression(BinaryenBinaryGetRight(source), diagnostics, function_name);
+        expression->children[0] = convert_child(BinaryenBinaryGetLeft(source), diagnostics, context, path, 0); expression->children[1] = convert_child(BinaryenBinaryGetRight(source), diagnostics, context, path, 1);
         if (expression->children[0] == NULL || expression->children[1] == NULL) goto fail;
         return expression;
     }
     if (id == BinaryenSelectId()) {
-        expression = new_expression(WASM_EXPR_SELECT, diagnostics); if (expression == NULL) return NULL;
+        expression = new_expression(WASM_EXPR_SELECT, "select", path, diagnostics); if (expression == NULL) return NULL;
         expression->value_type = convert_type(BinaryenExpressionGetType(source));
-        if (expression->value_type != WASM_VALUE_I32 && expression->value_type != WASM_VALUE_F32) { diagnostics_error(diagnostics, "function '%s' contains an unsupported select result type", function_name); goto fail; }
+        if (expression->value_type != WASM_VALUE_I32 && expression->value_type != WASM_VALUE_F32) { expression_error(diagnostics, context, expression->opcode, path, "unsupported select result type"); goto fail; }
         /* Preserve Wasm evaluation order: first value, second value, condition. */
         if (!allocate_children(expression, 3, diagnostics)) goto fail;
-        expression->children[0] = convert_expression(BinaryenSelectGetIfTrue(source), diagnostics, function_name);
-        expression->children[1] = convert_expression(BinaryenSelectGetIfFalse(source), diagnostics, function_name);
-        expression->children[2] = convert_expression(BinaryenSelectGetCondition(source), diagnostics, function_name);
+        expression->children[0] = convert_child(BinaryenSelectGetIfTrue(source), diagnostics, context, path, 0);
+        expression->children[1] = convert_child(BinaryenSelectGetIfFalse(source), diagnostics, context, path, 1);
+        expression->children[2] = convert_child(BinaryenSelectGetCondition(source), diagnostics, context, path, 2);
         if (expression->children[0] == NULL || expression->children[1] == NULL || expression->children[2] == NULL) goto fail;
         return expression;
     }
     if (id == BinaryenReturnId()) {
-        expression = new_expression(WASM_EXPR_RETURN, diagnostics); if (expression == NULL) return NULL;
-        if (BinaryenReturnGetValue(source) != NULL) { if (!allocate_children(expression, 1, diagnostics)) goto fail; expression->children[0] = convert_expression(BinaryenReturnGetValue(source), diagnostics, function_name); if (expression->children[0] == NULL) goto fail; }
+        expression = new_expression(WASM_EXPR_RETURN, "return", path, diagnostics); if (expression == NULL) return NULL;
+        if (BinaryenReturnGetValue(source) != NULL) { if (!allocate_children(expression, 1, diagnostics)) goto fail; expression->children[0] = convert_child(BinaryenReturnGetValue(source), diagnostics, context, path, 0); if (expression->children[0] == NULL) goto fail; }
         return expression;
     }
     if (id == BinaryenDropId()) {
-        expression = new_expression(WASM_EXPR_DROP, diagnostics); if (expression == NULL) return NULL;
+        expression = new_expression(WASM_EXPR_DROP, "drop", path, diagnostics); if (expression == NULL) return NULL;
         if (!allocate_children(expression, 1, diagnostics)) goto fail;
-        expression->children[0] = convert_expression(BinaryenDropGetValue(source), diagnostics, function_name);
+        expression->children[0] = convert_child(BinaryenDropGetValue(source), diagnostics, context, path, 0);
         if (expression->children[0] == NULL) goto fail;
         return expression;
     }
-    diagnostics_error(diagnostics, "function '%s' contains unsupported Wasm expression kind %u", function_name, (unsigned)id); return NULL;
+    expression_error(diagnostics, context, unsupported_expression_opcode(id), path,
+                     "unsupported Wasm expression kind %u", (unsigned)id); return NULL;
 fail:
     free_expression(expression); return NULL;
 }
@@ -299,6 +470,18 @@ static bool text_data_offsets_are_const(const char *text, size_t count)
     return seen == count;
 }
 
+/* Finds the public export name when Binaryen has no retained name-section name. */
+static const char *exported_function_name(const WasmModule *module, const char *internal_name)
+{
+    size_t index;
+    for (index = 0; index < module->export_count; ++index) {
+        const WasmExport *export_ref = &module->exports[index];
+        if (export_ref->is_function && strcmp(export_ref->value, internal_name) == 0)
+            return export_ref->name;
+    }
+    return NULL;
+}
+
 bool wasm_module_load(const char *path, WasmModule *module, Diagnostics *diagnostics)
 {
     char *contents = NULL, *text = NULL; size_t size = 0; BinaryenModuleRef source = NULL; BinaryenIndex index;
@@ -311,19 +494,23 @@ bool wasm_module_load(const char *path, WasmModule *module, Diagnostics *diagnos
     module->has_imported_memory = text_has_memory_import(text); module->table_count = BinaryenGetNumTables(source); module->global_count = BinaryenGetNumGlobals(source); module->element_segment_count = BinaryenGetNumElementSegments(source); module->data_segment_count = BinaryenGetNumDataSegments(source);
     if (module->data_segment_count != 0 && !text_data_offsets_are_const(text, module->data_segment_count)) { diagnostics_error(diagnostics, "active data segments must use constant i32 offsets"); goto fail; }
     free(text); text = NULL;
+    module->export_count = BinaryenGetNumExports(source); module->exports = calloc(module->export_count, sizeof(*module->exports)); if (module->export_count != 0 && module->exports == NULL) goto fail;
+    for (index = 0; index < module->export_count; ++index) { BinaryenExportRef export_ref = BinaryenGetExportByIndex(source, index); module->exports[index].name = copy_string(BinaryenExportGetName(export_ref)); module->exports[index].value = copy_string(BinaryenExportGetValue(export_ref)); module->exports[index].is_function = BinaryenExportGetKind(export_ref) == BinaryenExternalFunction(); if (!module->exports[index].name || !module->exports[index].value) goto fail; }
     module->function_count = BinaryenGetNumFunctions(source); module->functions = calloc(module->function_count, sizeof(*module->functions)); if (module->function_count != 0 && module->functions == NULL) goto fail;
     for (index = 0; index < module->function_count; ++index) {
-        BinaryenFunctionRef function = BinaryenGetFunctionByIndex(source, index); WasmFunction *out = &module->functions[index]; const char *import_module;
-        out->name = copy_string(BinaryenFunctionGetName(function)); if (out->name == NULL || !convert_tuple_type(BinaryenFunctionGetParams(function), out->params, &out->param_count, diagnostics, out->name ? out->name : "<unnamed>")) goto fail;
-        out->result = convert_type(BinaryenFunctionGetResults(function)); if (out->result == WASM_VALUE_OTHER) { diagnostics_error(diagnostics, "function '%s' has an unsupported result type", out->name); goto fail; }
+        BinaryenFunctionRef function = BinaryenGetFunctionByIndex(source, index); WasmFunction *out = &module->functions[index]; const char *import_module; DecodeContext context;
+        out->index = index; out->name = copy_string(BinaryenFunctionGetName(function));
+        if (out->name == NULL) goto fail;
+        out->diagnostic_name = copy_string(has_descriptive_function_name(out->name) ? out->name : exported_function_name(module, out->name));
+        context.function_index = out->index; context.function_name = out->diagnostic_name;
+        if (!convert_tuple_type(BinaryenFunctionGetParams(function), out->params, &out->param_count, diagnostics, &context)) goto fail;
+        out->result = convert_type(BinaryenFunctionGetResults(function)); if (out->result == WASM_VALUE_OTHER) { function_error(diagnostics, &context, "has an unsupported result type"); goto fail; }
         import_module = BinaryenFunctionImportGetModule(function); out->is_import = import_module != NULL && import_module[0] != '\0';
         if (out->is_import) { out->import_module = copy_string(import_module); out->import_name = copy_string(BinaryenFunctionImportGetBase(function)); if (!out->import_module || !out->import_name) goto fail; continue; }
         out->local_count = BinaryenFunctionGetNumVars(function); out->locals = calloc(out->local_count, sizeof(*out->locals)); if (out->local_count != 0 && out->locals == NULL) goto fail;
-        for (BinaryenIndex local = 0; local < out->local_count; ++local) { out->locals[local] = convert_type(BinaryenFunctionGetVar(function, local)); if (out->locals[local] == WASM_VALUE_OTHER) { diagnostics_error(diagnostics, "function '%s' has an unsupported local type", out->name); goto fail; } }
-        out->body = convert_expression(BinaryenFunctionGetBody(function), diagnostics, out->name); if (out->body == NULL) goto fail;
+        for (BinaryenIndex local = 0; local < out->local_count; ++local) { out->locals[local] = convert_type(BinaryenFunctionGetVar(function, local)); if (out->locals[local] == WASM_VALUE_OTHER) { function_error(diagnostics, &context, "has an unsupported local type"); goto fail; } }
+        out->body = convert_expression(BinaryenFunctionGetBody(function), diagnostics, &context, "body"); if (out->body == NULL) goto fail;
     }
-    module->export_count = BinaryenGetNumExports(source); module->exports = calloc(module->export_count, sizeof(*module->exports)); if (module->export_count != 0 && module->exports == NULL) goto fail;
-    for (index = 0; index < module->export_count; ++index) { BinaryenExportRef export_ref = BinaryenGetExportByIndex(source, index); module->exports[index].name = copy_string(BinaryenExportGetName(export_ref)); module->exports[index].value = copy_string(BinaryenExportGetValue(export_ref)); module->exports[index].is_function = BinaryenExportGetKind(export_ref) == BinaryenExternalFunction(); if (!module->exports[index].name || !module->exports[index].value) goto fail; }
     module->data_segments = calloc(module->data_segment_count, sizeof(*module->data_segments)); if (module->data_segment_count != 0 && module->data_segments == NULL) goto fail;
     for (index = 0; index < module->data_segment_count; ++index) { BinaryenDataSegmentRef segment = BinaryenGetDataSegmentByIndex(source, index); WasmDataSegment *out = &module->data_segments[index]; out->offset = BinaryenGetDataSegmentByteOffset(source, segment); out->size = BinaryenGetDataSegmentByteLength(segment); out->is_passive = BinaryenGetDataSegmentPassive(segment); out->offset_is_i32_const = true; out->bytes = malloc(out->size == 0 ? 1 : out->size); if (out->bytes == NULL) goto fail; BinaryenCopyDataSegmentData(segment, (char *)out->bytes); }
     BinaryenModuleDispose(source); return true;
@@ -335,7 +522,7 @@ void wasm_module_dispose(WasmModule *module)
 {
     size_t index;
     if (module->functions != NULL)
-        for (index = 0; index < module->function_count; ++index) { WasmFunction *f = &module->functions[index]; free(f->name); free(f->import_module); free(f->import_name); free(f->locals); free_expression(f->body); }
+        for (index = 0; index < module->function_count; ++index) { WasmFunction *f = &module->functions[index]; free(f->name); free(f->diagnostic_name); free(f->import_module); free(f->import_name); free(f->locals); free_expression(f->body); }
     if (module->exports != NULL)
         for (index = 0; index < module->export_count; ++index) { free(module->exports[index].name); free(module->exports[index].value); }
     if (module->data_segments != NULL)

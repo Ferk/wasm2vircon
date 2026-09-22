@@ -36,6 +36,9 @@ typedef enum WasmBinaryOp {
 
 typedef struct WasmExpr {
     WasmExprKind kind;
+    /* Frontend-only source identity used in diagnostics, not by V32 IR. */
+    const char *opcode;
+    char *path;
     char *name;
     int32_t i32_value;
     uint64_t i64_value;
@@ -50,7 +53,10 @@ typedef struct WasmExpr {
 } WasmExpr;
 
 typedef struct WasmFunction {
+    /* Stable Wasm function index, including imports. */
+    size_t index;
     char *name;
+    char *diagnostic_name;
     bool is_import;
     char *import_module, *import_name;
     WasmValueType params[4];

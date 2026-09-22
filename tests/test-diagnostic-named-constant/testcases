@@ -1,0 +1,4 @@
+source=unsupported-constant.wat
+entry=world_initialize
+outcome=reject
+error_expectations=expected.error
