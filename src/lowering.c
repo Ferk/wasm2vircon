@@ -39,16 +39,38 @@ static bool emit(Context *context, const char *format, ...)
 static bool fresh_label(Context *context, const char *kind, char *out, size_t size)
 { return snprintf(out, size, "__wasm_%s_%zu_%u", kind, (size_t)(context->function - context->validated->module->functions), context->next_label++) > 0; }
 static bool emit_label(Context *context, const char *label) { return emit(context, "%s:", label); }
+
+/* Counts target words reserved for Wasm locals; restricted i64 locals use two. */
+static size_t local_storage_words(const WasmFunction *function)
+{
+    size_t index, words = 0;
+    for (index = 0; index < function->local_count; ++index)
+        words += function->locals[index] == WASM_VALUE_I64 ? 2u : 1u;
+    return words;
+}
+
 static int temp_slot(Context *context)
 {
     if (context->temp_depth == TEMP_SLOTS) { diagnostics_error(context->diagnostics, "expression nesting exceeds VirconWasm v1 temporary-slot limit"); return 0; }
-    ++context->temp_depth; return -(int)(context->function->local_count + context->temp_depth);
+    ++context->temp_depth;
+    return -(int)(local_storage_words(context->function) + context->temp_depth);
 }
 static void release(Context *context, Value value) { if (value.present && context->temp_depth != 0) --context->temp_depth; }
 static bool load_slot(Context *context, int reg, int slot) { return emit(context, "  mov R%d, [BP%+d]", reg, slot); }
 static bool store_slot(Context *context, int slot, int reg) { return emit(context, "  mov [BP%+d], R%d", slot, reg); }
 static int local_slot(const WasmFunction *function, uint32_t index)
-{ return index < function->param_count ? (int)(2 + index) : -(int)(index - function->param_count + 1); }
+{
+    uint32_t local; int slot = -1;
+    if (index < function->param_count) return (int)(2 + index);
+    local = index - (uint32_t)function->param_count;
+    for (uint32_t cursor = 0; cursor < local; ++cursor)
+        slot -= function->locals[cursor] == WASM_VALUE_I64 ? 2 : 1;
+    return slot;
+}
+
+/* Returns the high target word of a validated restricted i64 local. */
+static int i64_local_high_slot(const WasmFunction *function, uint32_t index)
+{ return local_slot(function, index) - 1; }
 static size_t function_index(const WasmModule *module, const WasmFunction *function) { return (size_t)(function - module->functions); }
 static void function_label(const WasmModule *module, const WasmFunction *function, char *out, size_t size)
 { snprintf(out, size, "__wasm_function_%zu", function_index(module, function)); }
@@ -106,10 +128,11 @@ static bool store_i32_at_r2(Context *context, int value_register)
         !emit(context, "  jf R7, %s", aligned)) return false;
     /* Unaligned accesses split the word into preserving byte stores. */
     for (unsigned byte = 0; byte < 4; ++byte) {
-        if (!emit(context, "  mov R6, R%d", value_register) ||
+        /* store_byte_at_r2 uses R3-R6 internally, so R7 preserves this byte. */
+        if (!emit(context, "  mov R7, R%d", value_register) ||
             (byte != 0 && !emit(context, "  mov R3, -%u", byte * 8)) ||
-            (byte != 0 && !emit(context, "  shl R6, R3")) ||
-            !store_byte_at_r2(context, 6) ||
+            (byte != 0 && !emit(context, "  shl R7, R3")) ||
+            !store_byte_at_r2(context, 7) ||
             (byte != 3 && !emit(context, "  iadd R2, 1"))) return false;
     }
     return emit(context, "  jmp %s", done) && emit_label(context, aligned) &&
@@ -153,6 +176,21 @@ static bool lower_i64_const_store(Context *context, const WasmExpr *expression, 
     return true;
 }
 
+/* Computes the low i32 word after a validated constant logical i64 shift. */
+static bool extract_i64_word(Context *context, int low_slot, int high_slot, uint64_t shift)
+{
+    if (shift == 0) return load_slot(context, 1, low_slot);
+    if (shift < 32) {
+        return load_slot(context, 1, low_slot) &&
+            emit(context, "  mov R2, -%u", (unsigned)shift) && emit(context, "  shl R1, R2") &&
+            load_slot(context, 3, high_slot) && emit(context, "  mov R2, %u", 32u - (unsigned)shift) &&
+            emit(context, "  shl R3, R2") && emit(context, "  or R1, R3");
+    }
+    if (shift == 32) return load_slot(context, 1, high_slot);
+    return load_slot(context, 1, high_slot) &&
+        emit(context, "  mov R2, -%u", (unsigned)(shift - 32)) && emit(context, "  shl R1, R2");
+}
+
 /*
  * Lowers the only dynamic i64 form accepted by this profile: an i64.load used
  * directly as an i64.store value. The two temporary slots hold the loaded low
@@ -190,6 +228,137 @@ static bool lower_i64_load_store(Context *context, const WasmExpr *expression, V
     release(context, source);
     release(context, destination);
     value->present = false;
+    return true;
+}
+
+/* Lowers Zig's local.tee(i64.load) aggregate copy into a two-word local. */
+static bool lower_i64_load_store_local_tee(Context *context, const WasmExpr *expression,
+                                            Value *value)
+{
+    Value destination = {0}, source = {0}, high_word = {0}, destination_address = {0};
+    int local_low = local_slot(context->function, expression->index);
+    int local_high = i64_local_high_slot(context->function, expression->index);
+
+    if (!lower_expression(context, expression->children[0], &destination) ||
+        !lower_expression(context, expression->children[1], &source) ||
+        !destination.present || !source.present ||
+        !effective_address(context, source, expression->source_offset, 8)) return false;
+    high_word.slot = temp_slot(context);
+    if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) ||
+        !load_i32_at_r2(context, 1) || !store_slot(context, source.slot, 1) ||
+        !load_slot(context, 2, high_word.slot) || !emit(context, "  iadd R2, 4") ||
+        !load_i32_at_r2(context, 1) || !store_slot(context, high_word.slot, 1)) return false;
+    high_word.present = true;
+
+    /* local.tee writes the pair before the enclosing i64.store observes it. */
+    if (!load_slot(context, 1, source.slot) || !store_slot(context, local_low, 1) ||
+        !load_slot(context, 1, high_word.slot) || !store_slot(context, local_high, 1) ||
+        !effective_address(context, destination, expression->offset, 8)) return false;
+    destination_address.slot = temp_slot(context);
+    if (destination_address.slot == 0 || !store_slot(context, destination_address.slot, 2) ||
+        !load_slot(context, 2, destination_address.slot) || !load_slot(context, 1, source.slot) ||
+        !store_i32_at_r2(context, 1) || !load_slot(context, 2, destination_address.slot) ||
+        !emit(context, "  iadd R2, 4") || !load_slot(context, 1, high_word.slot) ||
+        !store_i32_at_r2(context, 1)) return false;
+    destination_address.present = true;
+    release(context, destination_address);
+    release(context, high_word);
+    release(context, source);
+    release(context, destination);
+    value->present = false;
+    return true;
+}
+
+/* Lowers Zig's exact computed two-word packing form directly into i32 stores. */
+static bool lower_i64_packed_i32_store(Context *context, const WasmExpr *expression,
+                                        Value *value)
+{
+    Value destination = {0}, high_word = {0}, low_word = {0};
+
+    /* Wasm evaluates the store address, high expression, then low expression. */
+    if (!lower_expression(context, expression->children[0], &destination) ||
+        !lower_expression(context, expression->children[1], &high_word) ||
+        !lower_expression(context, expression->children[2], &low_word) ||
+        !destination.present || !high_word.present || !low_word.present ||
+        !effective_address(context, destination, expression->offset, 8) ||
+        !load_slot(context, 1, low_word.slot) || !store_i32_at_r2(context, 1) ||
+        !load_slot(context, 2, destination.slot) || !emit(context, "  iadd R2, 4") ||
+        !load_slot(context, 1, high_word.slot) || !store_i32_at_r2(context, 1)) return false;
+
+    release(context, low_word);
+    release(context, high_word);
+    release(context, destination);
+    value->present = false;
+    return true;
+}
+
+/*
+ * Lowers i32.wrap_i64 of either an i64.load or an i64.load shifted right by a
+ * constant. The two loaded words stay frontend-local; the result is one
+ * ordinary i32 value and no general i64 register or ABI value exists.
+ */
+static bool lower_i64_word_extract(Context *context, const WasmExpr *expression, Value *value)
+{
+    Value low_word = {0}, high_word = {0};
+    uint64_t shift = expression->i64_value;
+
+    if (!lower_expression(context, expression->children[0], &low_word) ||
+        !low_word.present ||
+        !effective_address(context, low_word, expression->source_offset, 8)) return false;
+    high_word.slot = temp_slot(context);
+    if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) ||
+        !load_i32_at_r2(context, 1) || !store_slot(context, low_word.slot, 1) ||
+        !load_slot(context, 2, high_word.slot) || !emit(context, "  iadd R2, 4") ||
+        !load_i32_at_r2(context, 1) || !store_slot(context, high_word.slot, 1)) return false;
+    high_word.present = true;
+
+    if (!extract_i64_word(context, low_word.slot, high_word.slot, shift)) return false;
+    if (!store_slot(context, low_word.slot, 1)) return false;
+    release(context, high_word);
+    *value = low_word;
+    return true;
+}
+
+/* Reads one i32 word from the validated compiler-owned two-word i64 local. */
+static bool lower_i64_local_word_extract(Context *context, const WasmExpr *expression,
+                                         Value *value)
+{
+    int result_slot = temp_slot(context);
+    int local_low = local_slot(context->function, expression->index);
+    int local_high = i64_local_high_slot(context->function, expression->index);
+    if (result_slot == 0 ||
+        !extract_i64_word(context, local_low, local_high, expression->i64_value) ||
+        !store_slot(context, result_slot, 1)) return false;
+    value->slot = result_slot;
+    value->present = true;
+    return true;
+}
+
+/* Loads a pair into a restricted i64 local and returns one extracted i32 word. */
+static bool lower_i64_local_tee_word_extract(Context *context, const WasmExpr *expression,
+                                             Value *value)
+{
+    Value pointer = {0}, high_word = {0};
+    int result_slot = temp_slot(context);
+    int local_low = local_slot(context->function, expression->index);
+    int local_high = i64_local_high_slot(context->function, expression->index);
+
+    if (result_slot == 0 ||
+        !lower_expression(context, expression->children[0], &pointer) || !pointer.present ||
+        !effective_address(context, pointer, expression->source_offset, 8)) return false;
+    high_word.slot = temp_slot(context);
+    if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) ||
+        !load_i32_at_r2(context, 1) || !store_slot(context, local_low, 1) ||
+        !load_slot(context, 2, high_word.slot) || !emit(context, "  iadd R2, 4") ||
+        !load_i32_at_r2(context, 1) || !store_slot(context, local_high, 1) ||
+        !extract_i64_word(context, local_low, local_high, expression->i64_value) ||
+        !store_slot(context, result_slot, 1)) return false;
+
+    high_word.present = true;
+    release(context, high_word);
+    release(context, pointer);
+    value->slot = result_slot;
+    value->present = true;
     return true;
 }
 
@@ -646,6 +815,15 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     case WASM_EXPR_STORE: return lower_store(context, expression, value);
     case WASM_EXPR_I64_CONST_STORE: return lower_i64_const_store(context, expression, value);
     case WASM_EXPR_I64_LOAD_STORE: return lower_i64_load_store(context, expression, value);
+    case WASM_EXPR_I64_WORD_EXTRACT: return lower_i64_word_extract(context, expression, value);
+    case WASM_EXPR_I64_LOAD_STORE_LOCAL_TEE:
+        return lower_i64_load_store_local_tee(context, expression, value);
+    case WASM_EXPR_I64_LOCAL_WORD_EXTRACT:
+        return lower_i64_local_word_extract(context, expression, value);
+    case WASM_EXPR_I64_LOCAL_TEE_WORD_EXTRACT:
+        return lower_i64_local_tee_word_extract(context, expression, value);
+    case WASM_EXPR_I64_PACKED_I32_STORE:
+        return lower_i64_packed_i32_store(context, expression, value);
     case WASM_EXPR_MEMORY_COPY:
     case WASM_EXPR_MEMORY_FILL:
         return lower_bulk_memory(context, expression, value);
@@ -703,7 +881,7 @@ static bool lower_function(const ValidatedModule *validated, const WasmFunction 
     function_label(validated->module, function, label, sizeof(label));
     snprintf(context.return_label, sizeof(context.return_label), "__wasm_return_%zu",
              function_index(validated->module, function));
-    if (!emit_label(&context, label) || !emit(&context, "  push BP") || !emit(&context, "  mov BP, SP") || !emit(&context, "  isub SP, %u", (unsigned)(function->local_count + TEMP_SLOTS + OUTGOING_SLOTS)) || !lower_expression(&context, function->body, &result)) return false;
+    if (!emit_label(&context, label) || !emit(&context, "  push BP") || !emit(&context, "  mov BP, SP") || !emit(&context, "  isub SP, %u", (unsigned)(local_storage_words(function) + TEMP_SLOTS + OUTGOING_SLOTS)) || !lower_expression(&context, function->body, &result)) return false;
     if (function->result == WASM_VALUE_I32 || function->result == WASM_VALUE_F32) { if (result.present) { if (!load_slot(&context, 0, result.slot)) return false; } else if (!emit(&context, "  mov R0, 0")) return false; }
     release(&context, result);
     return emit_label(&context, context.return_label) && emit(&context, "  mov SP, BP") && emit(&context, "  pop BP") && emit(&context, "  ret");

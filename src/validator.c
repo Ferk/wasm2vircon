@@ -149,8 +149,17 @@ static bool function_has_i32_signature(const WasmFunction *function)
     for (index = 0; index < function->param_count; ++index)
         if (function->params[index] != WASM_VALUE_I32 && function->params[index] != WASM_VALUE_F32) return false;
     for (index = 0; index < function->local_count; ++index)
-        if (function->locals[index] != WASM_VALUE_I32 && function->locals[index] != WASM_VALUE_F32) return false;
+        if (function->locals[index] != WASM_VALUE_I32 && function->locals[index] != WASM_VALUE_F32 &&
+            function->locals[index] != WASM_VALUE_I64) return false;
     return true;
+}
+
+/* Returns a declared local type, including parameters in the Wasm index space. */
+static WasmValueType local_type(const WasmFunction *function, uint32_t index)
+{
+    if (index < function->param_count) return function->params[index];
+    index -= (uint32_t)function->param_count;
+    return index < function->local_count ? function->locals[index] : WASM_VALUE_OTHER;
 }
 
 static size_t function_index(const WasmModule *module, const WasmFunction *function)
@@ -187,9 +196,19 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
                validate_expression(module, function, expression->children[1], reachable, diagnostics);
     case WASM_EXPR_LOCAL_GET:
         if (expression->index >= function->param_count + function->local_count) { validation_expression_error(diagnostics, function, expression, "invalid local index %u", expression->index); return false; }
+        if (local_type(function, expression->index) == WASM_VALUE_I64) {
+            validation_expression_error(diagnostics, function, expression,
+                                        "i64 locals are only accepted by restricted aggregate expressions");
+            return false;
+        }
         return true;
     case WASM_EXPR_LOCAL_SET:
         if (expression->index >= function->param_count + function->local_count) { validation_expression_error(diagnostics, function, expression, "invalid local index %u", expression->index); return false; }
+        if (local_type(function, expression->index) == WASM_VALUE_I64) {
+            validation_expression_error(diagnostics, function, expression,
+                                        "i64 locals are only accepted by restricted aggregate expressions");
+            return false;
+        }
         return validate_expression(module, function, expression->children[0], reachable, diagnostics);
     case WASM_EXPR_STACK_POINTER_GET:
         return true;
@@ -234,6 +253,46 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
         }
         return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&
                validate_expression(module, function, expression->children[1], reachable, diagnostics);
+    case WASM_EXPR_I64_WORD_EXTRACT:
+        if (expression->child_count != 1 || expression->i64_value > 63) {
+            validation_expression_error(diagnostics, function, expression,
+                                        "malformed i64 word extraction");
+            return false;
+        }
+        return validate_expression(module, function, expression->children[0], reachable, diagnostics);
+    case WASM_EXPR_I64_LOAD_STORE_LOCAL_TEE:
+        if (expression->child_count != 2 || local_type(function, expression->index) != WASM_VALUE_I64) {
+            validation_expression_error(diagnostics, function, expression,
+                                        "malformed i64 aggregate local transfer");
+            return false;
+        }
+        return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&
+               validate_expression(module, function, expression->children[1], reachable, diagnostics);
+    case WASM_EXPR_I64_LOCAL_WORD_EXTRACT:
+        if (expression->child_count != 0 || expression->i64_value > 63 ||
+            local_type(function, expression->index) != WASM_VALUE_I64) {
+            validation_expression_error(diagnostics, function, expression,
+                                        "malformed i64 local word extraction");
+            return false;
+        }
+        return true;
+    case WASM_EXPR_I64_LOCAL_TEE_WORD_EXTRACT:
+        if (expression->child_count != 1 || expression->i64_value > 63 ||
+            local_type(function, expression->index) != WASM_VALUE_I64) {
+            validation_expression_error(diagnostics, function, expression,
+                                        "malformed i64 aggregate local extraction");
+            return false;
+        }
+        return validate_expression(module, function, expression->children[0], reachable, diagnostics);
+    case WASM_EXPR_I64_PACKED_I32_STORE:
+        if (expression->child_count != 3) {
+            validation_expression_error(diagnostics, function, expression,
+                                        "malformed packed i64 aggregate store");
+            return false;
+        }
+        return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&
+               validate_expression(module, function, expression->children[1], reachable, diagnostics) &&
+               validate_expression(module, function, expression->children[2], reachable, diagnostics);
     case WASM_EXPR_MEMORY_COPY:
     case WASM_EXPR_MEMORY_FILL:
         if (expression->child_count != 3) {

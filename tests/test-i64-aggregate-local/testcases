@@ -1,0 +1,2 @@
+source=i64-aggregate-local.wat
+expectations=expected.asm
