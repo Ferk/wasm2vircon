@@ -1,0 +1,2 @@
+source=i64-aggregate-transfer.wat
+expectations=expected.asm

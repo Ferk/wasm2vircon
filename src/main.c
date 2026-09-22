@@ -13,7 +13,7 @@ static void print_usage(FILE *stream)
     fprintf(stream,
             "Usage: wasm2vircon input.wasm [--entry NAME] [--allow-stack-pointer] -o output.asm\n"
             "\n"
-            "Translate the supported VirconWasm v1.9 profile into Vircon32 assembly.\n"
+            "Translate the supported VirconWasm v1.10 profile into Vircon32 assembly.\n"
             "The default entry export is __original_main; --entry makes the frontend\n"
             "entry convention explicit. --allow-stack-pointer accepts only the\n"
             "restricted mutable i32 __stack_pointer ABI global.\n");

@@ -72,35 +72,69 @@ static bool store_byte_at_r2(Context *context, int value_register)
      * inverted lane mask required for Wasm's preserving read-modify-write. */
     return emit(context, "  mov R3, R2") && emit(context, "  and R3, 3") && emit(context, "  imul R3, 8") && emit(context, "  mov R4, R2") && emit(context, "  mov R5, -2") && emit(context, "  shl R4, R5") && emit(context, "  iadd R4, %u", LINEAR_BASE) && emit(context, "  mov R5, [R4]") && emit(context, "  mov R6, 0x000000FF") && emit(context, "  shl R6, R3") && emit(context, "  xor R6, 0xFFFFFFFF") && emit(context, "  and R5, R6") && emit(context, "  mov R6, R%d", value_register) && emit(context, "  and R6, 0x000000FF") && emit(context, "  shl R6, R3") && emit(context, "  or R5, R6") && emit(context, "  mov [R4], R5");
 }
+
+/* Loads an i32 at the already checked Wasm byte address in R2. */
+static bool load_i32_at_r2(Context *context, int result_register)
+{
+    char aligned[64], done[64];
+    if (!fresh_label(context, "load_aligned", aligned, sizeof(aligned)) ||
+        !fresh_label(context, "load_done", done, sizeof(done)) ||
+        !emit(context, "  mov R1, R2") || !emit(context, "  and R1, 3") ||
+        !emit(context, "  jf R1, %s", aligned) || !emit(context, "  mov R6, 0")) return false;
+    /* Unaligned accesses reconstruct the word from packed byte lanes. */
+    for (unsigned byte = 0; byte < 4; ++byte) {
+        if (!load_byte_at_r2(context, 5) ||
+            (byte != 0 && !emit(context, "  mov R3, %u", byte * 8)) ||
+            (byte != 0 && !emit(context, "  shl R5, R3")) ||
+            !emit(context, "  or R6, R5") ||
+            (byte != 3 && !emit(context, "  iadd R2, 1"))) return false;
+    }
+    return emit(context, "  mov R%d, R6", result_register) &&
+        emit(context, "  jmp %s", done) && emit_label(context, aligned) &&
+        emit(context, "  mov R3, R2") && emit(context, "  mov R4, -2") &&
+        emit(context, "  shl R3, R4") && emit(context, "  iadd R3, %u", LINEAR_BASE) &&
+        emit(context, "  mov R%d, [R3]", result_register) && emit_label(context, done);
+}
+
+/* Stores an i32 at the already checked Wasm byte address in R2. */
+static bool store_i32_at_r2(Context *context, int value_register)
+{
+    char aligned[64], done[64];
+    if (!fresh_label(context, "store_aligned", aligned, sizeof(aligned)) ||
+        !fresh_label(context, "store_done", done, sizeof(done)) ||
+        !emit(context, "  mov R7, R2") || !emit(context, "  and R7, 3") ||
+        !emit(context, "  jf R7, %s", aligned)) return false;
+    /* Unaligned accesses split the word into preserving byte stores. */
+    for (unsigned byte = 0; byte < 4; ++byte) {
+        if (!emit(context, "  mov R6, R%d", value_register) ||
+            (byte != 0 && !emit(context, "  mov R3, -%u", byte * 8)) ||
+            (byte != 0 && !emit(context, "  shl R6, R3")) ||
+            !store_byte_at_r2(context, 6) ||
+            (byte != 3 && !emit(context, "  iadd R2, 1"))) return false;
+    }
+    return emit(context, "  jmp %s", done) && emit_label(context, aligned) &&
+        emit(context, "  mov R3, R2") && emit(context, "  mov R4, -2") &&
+        emit(context, "  shl R3, R4") && emit(context, "  iadd R3, %u", LINEAR_BASE) &&
+        emit(context, "  mov [R3], R%d", value_register) && emit_label(context, done);
+}
+
 static bool lower_load(Context *context, const WasmExpr *expression, Value *value)
 {
-    Value pointer = {0}; int slot; char aligned[64], done[64];
+    Value pointer = {0}; int slot;
     if (!lower_expression(context, expression->children[0], &pointer) || !pointer.present || !effective_address(context, pointer, expression->offset, expression->bytes)) return false;
     if (expression->bytes == 1) {
         if (!load_byte_at_r2(context, 1) || !store_slot(context, pointer.slot, 1)) return false;
         *value = pointer; return true;
     }
-    if (!fresh_label(context, "load_aligned", aligned, sizeof(aligned)) || !fresh_label(context, "load_done", done, sizeof(done))) return false;
-    if (!emit(context, "  mov R1, R2") || !emit(context, "  and R1, 3") || !emit(context, "  jf R1, %s", aligned)) return false;
-    /* The unaligned path reconstructs the value from four byte lanes. */
-    if (!emit(context, "  mov R6, 0")) return false;
-    for (unsigned byte = 0; byte < 4; ++byte) {
-        if (!load_byte_at_r2(context, 5) || (byte != 0 && !emit(context, "  mov R3, %u", byte * 8)) || (byte != 0 && !emit(context, "  shl R5, R3")) || !emit(context, "  or R6, R5") || (byte != 3 && !emit(context, "  iadd R2, 1"))) return false;
-    }
-    if (!emit(context, "  mov R1, R6") || !emit(context, "  jmp %s", done) || !emit_label(context, aligned) || !emit(context, "  mov R3, R2") || !emit(context, "  mov R4, -2") || !emit(context, "  shl R3, R4") || !emit(context, "  iadd R3, %u", LINEAR_BASE) || !emit(context, "  mov R1, [R3]") || !emit_label(context, done)) return false;
+    if (!load_i32_at_r2(context, 1)) return false;
     slot = pointer.slot; if (!store_slot(context, slot, 1)) return false; *value = pointer; return true;
 }
 static bool lower_store(Context *context, const WasmExpr *expression, Value *value)
 {
-    Value pointer = {0}, input = {0}; char aligned[64], done[64];
+    Value pointer = {0}, input = {0};
     if (!lower_expression(context, expression->children[0], &pointer) || !lower_expression(context, expression->children[1], &input) || !pointer.present || !input.present || !effective_address(context, pointer, expression->offset, expression->bytes) || !load_slot(context, 1, input.slot)) return false;
     if (expression->bytes == 1) { if (!store_byte_at_r2(context, 1)) return false; release(context, input); release(context, pointer); value->present = false; return true; }
-    if (!fresh_label(context, "store_aligned", aligned, sizeof(aligned)) || !fresh_label(context, "store_done", done, sizeof(done))) return false;
-    if (!emit(context, "  mov R7, R2") || !emit(context, "  and R7, 3") || !emit(context, "  jf R7, %s", aligned)) return false;
-    for (unsigned byte = 0; byte < 4; ++byte) {
-        if (!emit(context, "  mov R6, R1") || (byte != 0 && !emit(context, "  mov R3, -%u", byte * 8)) || (byte != 0 && !emit(context, "  shl R6, R3")) || !store_byte_at_r2(context, 6) || (byte != 3 && !emit(context, "  iadd R2, 1"))) return false;
-    }
-    if (!emit(context, "  jmp %s", done) || !emit_label(context, aligned) || !emit(context, "  mov R3, R2") || !emit(context, "  mov R4, -2") || !emit(context, "  shl R3, R4") || !emit(context, "  iadd R3, %u", LINEAR_BASE) || !emit(context, "  mov [R3], R1") || !emit_label(context, done)) return false;
+    if (!store_i32_at_r2(context, 1)) return false;
     release(context, input); release(context, pointer); value->present = false; return true;
 }
 static bool lower_i64_const_store(Context *context, const WasmExpr *expression, Value *value)
@@ -115,6 +149,46 @@ static bool lower_i64_const_store(Context *context, const WasmExpr *expression, 
      * layout without introducing an i64 target value or arithmetic path. */
     if (!emit(context, "  mov R1, 0x%08X", low) || !emit(context, "  mov [%u], R1", word) ||
         !emit(context, "  mov R1, 0x%08X", high) || !emit(context, "  mov [%u], R1", word + 1)) return false;
+    value->present = false;
+    return true;
+}
+
+/*
+ * Lowers the only dynamic i64 form accepted by this profile: an i64.load used
+ * directly as an i64.store value. The two temporary slots hold the loaded low
+ * and high i32 words before either destination write, preserving Wasm's
+ * value-then-store behavior even when the eight-byte ranges overlap.
+ */
+static bool lower_i64_load_store(Context *context, const WasmExpr *expression, Value *value)
+{
+    Value destination = {0}, source = {0}, high_word = {0}, destination_address = {0};
+
+    /* A Wasm store evaluates its destination address before its value. */
+    if (!lower_expression(context, expression->children[0], &destination) ||
+        !lower_expression(context, expression->children[1], &source) ||
+        !destination.present || !source.present ||
+        !effective_address(context, source, expression->source_offset, 8)) return false;
+
+    high_word.slot = temp_slot(context);
+    if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) ||
+        !load_i32_at_r2(context, 1) || !store_slot(context, source.slot, 1) ||
+        !load_slot(context, 2, high_word.slot) || !emit(context, "  iadd R2, 4") ||
+        !load_i32_at_r2(context, 1) || !store_slot(context, high_word.slot, 1)) return false;
+    high_word.present = true;
+
+    if (!effective_address(context, destination, expression->offset, 8)) return false;
+    destination_address.slot = temp_slot(context);
+    if (destination_address.slot == 0 || !store_slot(context, destination_address.slot, 2) ||
+        !load_slot(context, 2, destination_address.slot) || !load_slot(context, 1, source.slot) ||
+        !store_i32_at_r2(context, 1) || !load_slot(context, 2, destination_address.slot) ||
+        !emit(context, "  iadd R2, 4") || !load_slot(context, 1, high_word.slot) ||
+        !store_i32_at_r2(context, 1)) return false;
+
+    destination_address.present = true;
+    release(context, destination_address);
+    release(context, high_word);
+    release(context, source);
+    release(context, destination);
     value->present = false;
     return true;
 }
@@ -571,6 +645,7 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     case WASM_EXPR_LOAD: return lower_load(context, expression, value);
     case WASM_EXPR_STORE: return lower_store(context, expression, value);
     case WASM_EXPR_I64_CONST_STORE: return lower_i64_const_store(context, expression, value);
+    case WASM_EXPR_I64_LOAD_STORE: return lower_i64_load_store(context, expression, value);
     case WASM_EXPR_MEMORY_COPY:
     case WASM_EXPR_MEMORY_FILL:
         return lower_bulk_memory(context, expression, value);
