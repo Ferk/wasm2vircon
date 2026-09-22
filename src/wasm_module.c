@@ -175,6 +175,7 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
         expression = new_expression(WASM_EXPR_UNARY, diagnostics); if (expression == NULL) return NULL;
         expression->unary_op = op == BinaryenEqZInt32() ? WASM_UNARY_EQZ :
             op == BinaryenConvertSInt32ToFloat32() ? WASM_UNARY_CONVERT_I32_S_TO_F32 :
+            op == BinaryenConvertUInt32ToFloat32() ? WASM_UNARY_CONVERT_I32_U_TO_F32 :
             op == BinaryenTruncSatSFloat32ToInt32() ? WASM_UNARY_TRUNC_SAT_F32_TO_I32 : WASM_UNARY_OTHER;
         if (!allocate_children(expression, 1, diagnostics)) goto fail;
         expression->children[0] = convert_expression(BinaryenUnaryGetValue(source), diagnostics, function_name);
@@ -190,7 +191,9 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
             op == BinaryenDivUInt32() ? WASM_BINARY_DIV_U :
             op == BinaryenRemSInt32() ? WASM_BINARY_REM_S :
             op == BinaryenShlInt32() ? WASM_BINARY_SHL :
+            op == BinaryenShrSInt32() ? WASM_BINARY_SHR_S :
             op == BinaryenAndInt32() ? WASM_BINARY_AND :
+            op == BinaryenXorInt32() ? WASM_BINARY_XOR :
             op == BinaryenEqInt32() ? WASM_BINARY_EQ :
             op == BinaryenNeInt32() ? WASM_BINARY_NE :
             op == BinaryenLtSInt32() ? WASM_BINARY_LT_S :
@@ -199,6 +202,7 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
             op == BinaryenGtUInt32() ? WASM_BINARY_GT_U :
             op == BinaryenGeSInt32() ? WASM_BINARY_GE_S :
             op == BinaryenGeUInt32() ? WASM_BINARY_GE_U :
+            op == BinaryenLeSInt32() ? WASM_BINARY_LE_S :
             op == BinaryenOrInt32() ? WASM_BINARY_OR :
             op == BinaryenRemUInt32() ? WASM_BINARY_REM_U :
             op == BinaryenShrUInt32() ? WASM_BINARY_SHR_U :

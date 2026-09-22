@@ -1,2 +1,0 @@
-source=unsupported-i32-xor.wat
-outcome=reject
