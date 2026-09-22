@@ -1,0 +1,4 @@
+source=audio-state-control.c
+include_dirs=../../include
+normalize=true
+expectations=expected.asm

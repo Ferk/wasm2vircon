@@ -76,17 +76,27 @@ int vircon__memcard_read_word(int word_index) VIRCON__IMPORT("vircon_memcard_rea
 void vircon__memcard_write_word(int word_index, int value) VIRCON__IMPORT("vircon_memcard_write_word");
 void vircon__spu_select_channel(int value) VIRCON__IMPORT("vircon_spu_select_channel");
 void vircon__spu_select_sound(int value) VIRCON__IMPORT("vircon_spu_select_sound");
+int vircon__spu_get_selected_sound(void) VIRCON__IMPORT("vircon_spu_get_selected_sound");
+int vircon__spu_get_selected_channel(void) VIRCON__IMPORT("vircon_spu_get_selected_channel");
 void vircon__spu_set_sound_play_with_loop(int value) VIRCON__IMPORT("vircon_spu_set_sound_play_with_loop");
 void vircon__spu_set_sound_loop_start(int value) VIRCON__IMPORT("vircon_spu_set_sound_loop_start");
 void vircon__spu_set_sound_loop_end(int value) VIRCON__IMPORT("vircon_spu_set_sound_loop_end");
 void vircon__spu_set_channel_assigned_sound(int value) VIRCON__IMPORT("vircon_spu_set_channel_assigned_sound");
 void vircon__spu_play_selected_channel(void) VIRCON__IMPORT("vircon_spu_play_selected_channel");
 void vircon__spu_pause_selected_channel(void) VIRCON__IMPORT("vircon_spu_pause_selected_channel");
+void vircon__spu_stop_selected_channel(void) VIRCON__IMPORT("vircon_spu_stop_selected_channel");
 void vircon__spu_set_channel_volume(float value) VIRCON__IMPORT("vircon_spu_set_channel_volume");
 void vircon__spu_set_channel_speed(float value) VIRCON__IMPORT("vircon_spu_set_channel_speed");
+void vircon__spu_set_channel_position(int value) VIRCON__IMPORT("vircon_spu_set_channel_position");
 void vircon__spu_set_channel_loop_enabled(int value) VIRCON__IMPORT("vircon_spu_set_channel_loop_enabled");
 void vircon__spu_set_global_volume(float value) VIRCON__IMPORT("vircon_spu_set_global_volume");
 int vircon__spu_get_channel_state(void) VIRCON__IMPORT("vircon_spu_get_channel_state");
+float vircon__spu_get_channel_speed(void) VIRCON__IMPORT("vircon_spu_get_channel_speed");
+int vircon__spu_get_channel_position(void) VIRCON__IMPORT("vircon_spu_get_channel_position");
+float vircon__spu_get_global_volume(void) VIRCON__IMPORT("vircon_spu_get_global_volume");
+void vircon__spu_pause_all_channels(void) VIRCON__IMPORT("vircon_spu_pause_all_channels");
+void vircon__spu_stop_all_channels(void) VIRCON__IMPORT("vircon_spu_stop_all_channels");
+void vircon__spu_resume_all_channels(void) VIRCON__IMPORT("vircon_spu_resume_all_channels");
 
 /* Keep this header-only library as separate ordinary C functions.  Besides
  * avoiding code duplication at every call site, this deliberately preserves
@@ -349,34 +359,59 @@ static inline void sleep(int frames)
 /* Sound --------------------------------------------------------------------
  * Sound IDs are --sound argument order. Vircon has channels 0..15, and all
  * channel helpers select their supplied channel before acting. */
+#define sound_channels 16
+#define channel_stopped 0x40
+#define channel_paused  0x41
+#define channel_playing 0x42
+
 static inline void select_sound(int id) { vircon__spu_select_sound(id); }
+/* Returns the sound resource selected in the SPU. */
+static inline int get_selected_sound(void) { return vircon__spu_get_selected_sound(); }
 static inline void set_sound_loop(int enabled) { vircon__spu_set_sound_play_with_loop(enabled); }
 /* Loop offsets are samples within the selected sound. */
 static inline void set_sound_loop_start(int position) { vircon__spu_set_sound_loop_start(position); }
 static inline void set_sound_loop_end(int position) { vircon__spu_set_sound_loop_end(position); }
 static inline void select_channel(int id) { vircon__spu_select_channel(id); }
+/* Returns the channel currently selected in the SPU. */
+static inline int get_selected_channel(void) { return vircon__spu_get_selected_channel(); }
 static inline void assign_channel_sound(int channel, int sound)
 { select_channel(channel); vircon__spu_set_channel_assigned_sound(sound); }
 static inline void play_sound_in_channel(int sound, int channel)
 { assign_channel_sound(channel, sound); vircon__spu_play_selected_channel(); }
 static inline void set_channel_volume(float value) { vircon__spu_set_channel_volume(value); }
 static inline void set_channel_speed(float value) { vircon__spu_set_channel_speed(value); }
+/* Sets the selected channel position in samples from its sound start. */
+static inline void set_channel_position(int position) { vircon__spu_set_channel_position(position); }
 static inline void set_channel_loop(int enabled) { vircon__spu_set_channel_loop_enabled(enabled); }
 static inline void set_global_volume(float value) { vircon__spu_set_global_volume(value); }
 static inline void play_channel(int channel)
 { select_channel(channel); vircon__spu_play_selected_channel(); }
 static inline void pause_channel(int channel)
 { select_channel(channel); vircon__spu_pause_selected_channel(); }
-/* States are 0x40 stopped, 0x41 paused, and 0x42 playing. */
+/* Selects and stops one channel. */
+static inline void stop_channel(int channel)
+{ select_channel(channel); vircon__spu_stop_selected_channel(); }
+/* States are channel_stopped, channel_paused, and channel_playing. */
 static inline int get_channel_state(int channel)
 { select_channel(channel); return vircon__spu_get_channel_state(); }
+/* These queries select their channel, matching the official Vircon helpers. */
+static inline float get_channel_speed(int channel)
+{ select_channel(channel); return vircon__spu_get_channel_speed(); }
+static inline int get_channel_position(int channel)
+{ select_channel(channel); return vircon__spu_get_channel_position(); }
+/* Returns the SPU's global volume multiplier. */
+static inline float get_global_volume(void) { return vircon__spu_get_global_volume(); }
+/* Issue the corresponding command to every SPU channel. */
+static inline void pause_all_channels(void) { vircon__spu_pause_all_channels(); }
+static inline void stop_all_channels(void) { vircon__spu_stop_all_channels(); }
+static inline void resume_all_channels(void) { vircon__spu_resume_all_channels(); }
 /* Start on the first stopped channel; return that channel or -1 if none. */
 static inline int play_sound(int sound)
 {
     int channel;
     for (channel = 0; channel < 16; ++channel) {
         select_channel(channel);
-        if (vircon__spu_get_channel_state() == 0x40) {
+        if (vircon__spu_get_channel_state() == channel_stopped) {
             vircon__spu_set_channel_assigned_sound(sound);
             vircon__spu_play_selected_channel();
             return channel;
