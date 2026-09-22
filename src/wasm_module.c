@@ -21,6 +21,7 @@ static char *copy_string(const char *source)
 typedef struct DecodeContext {
     size_t function_index;
     const char *function_name;
+    const WasmModule *module;
 } DecodeContext;
 
 /* Returns whether a Binaryen function name is useful beyond its numeric index. */
@@ -305,6 +306,31 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
         expression->children[0] = convert_child(BinaryenLocalSetGetValue(source), diagnostics, context, path, 0); if (expression->children[0] == NULL) goto fail;
         return expression;
     }
+    if (id == BinaryenGlobalGetId()) {
+        const char *name = BinaryenGlobalGetGetName(source);
+        bool is_stack_pointer = context->module->stack_pointer_global_is_valid &&
+                                strcmp(name, context->module->stack_pointer_name) == 0;
+        expression = new_expression(is_stack_pointer ? WASM_EXPR_STACK_POINTER_GET : WASM_EXPR_GLOBAL_GET,
+                                    "global.get", path, diagnostics);
+        if (expression == NULL) return NULL;
+        expression->name = copy_string(name);
+        if (expression->name == NULL) goto fail;
+        return expression;
+    }
+    if (id == BinaryenGlobalSetId()) {
+        const char *name = BinaryenGlobalSetGetName(source);
+        bool is_stack_pointer = context->module->stack_pointer_global_is_valid &&
+                                strcmp(name, context->module->stack_pointer_name) == 0;
+        expression = new_expression(is_stack_pointer ? WASM_EXPR_STACK_POINTER_SET : WASM_EXPR_GLOBAL_SET,
+                                    "global.set", path, diagnostics);
+        if (expression == NULL) return NULL;
+        expression->name = copy_string(name);
+        if (expression->name == NULL || !allocate_children(expression, 1, diagnostics)) goto fail;
+        expression->children[0] = convert_child(BinaryenGlobalSetGetValue(source), diagnostics,
+                                                context, path, 0);
+        if (expression->children[0] == NULL) goto fail;
+        return expression;
+    }
     if (id == BinaryenLoadId()) {
         expression = new_expression(WASM_EXPR_LOAD, load_opcode(source), path, diagnostics); if (expression == NULL) return NULL;
         expression->bytes = BinaryenLoadGetBytes(source); expression->offset = BinaryenLoadGetOffset(source); expression->align = BinaryenLoadGetAlign(source); expression->is_signed = BinaryenLoadIsSigned(source);
@@ -482,6 +508,34 @@ static const char *exported_function_name(const WasmModule *module, const char *
     return NULL;
 }
 
+/* Records the narrow, linker-defined stack-pointer global if its declaration is valid. */
+static bool read_stack_pointer_global(BinaryenModuleRef source, WasmModule *module,
+                                      Diagnostics *diagnostics)
+{
+    BinaryenGlobalRef global; BinaryenExpressionRef initializer;
+    const char *name, *import_module;
+
+    if (module->global_count != 1) return true;
+    global = BinaryenGetGlobalByIndex(source, 0);
+    name = BinaryenGlobalGetName(global);
+    if (name == NULL || strcmp(name, "__stack_pointer") != 0) return true;
+    module->has_stack_pointer_global = true;
+    import_module = BinaryenGlobalImportGetModule(global);
+    initializer = BinaryenGlobalGetInitExpr(global);
+    if (!BinaryenGlobalIsMutable(global) || BinaryenGlobalGetType(global) != BinaryenTypeInt32() ||
+        (import_module != NULL && import_module[0] != '\0') || initializer == NULL ||
+        BinaryenExpressionGetId(initializer) != BinaryenConstId() ||
+        BinaryenExpressionGetType(initializer) != BinaryenTypeInt32()) return true;
+    module->stack_pointer_name = copy_string(name);
+    if (module->stack_pointer_name == NULL) {
+        diagnostics_error(diagnostics, "out of memory recording Wasm stack-pointer global");
+        return false;
+    }
+    module->stack_pointer_initial = (uint32_t)BinaryenConstGetValueI32(initializer);
+    module->stack_pointer_global_is_valid = true;
+    return true;
+}
+
 bool wasm_module_load(const char *path, WasmModule *module, Diagnostics *diagnostics)
 {
     char *contents = NULL, *text = NULL; size_t size = 0; BinaryenModuleRef source = NULL; BinaryenIndex index;
@@ -492,6 +546,7 @@ bool wasm_module_load(const char *path, WasmModule *module, Diagnostics *diagnos
     text = BinaryenModuleAllocateAndWriteText(source);
     if (text == NULL || !read_memory_text(text, module, diagnostics)) goto fail;
     module->has_imported_memory = text_has_memory_import(text); module->table_count = BinaryenGetNumTables(source); module->global_count = BinaryenGetNumGlobals(source); module->element_segment_count = BinaryenGetNumElementSegments(source); module->data_segment_count = BinaryenGetNumDataSegments(source);
+    if (!read_stack_pointer_global(source, module, diagnostics)) goto fail;
     if (module->data_segment_count != 0 && !text_data_offsets_are_const(text, module->data_segment_count)) { diagnostics_error(diagnostics, "active data segments must use constant i32 offsets"); goto fail; }
     free(text); text = NULL;
     module->export_count = BinaryenGetNumExports(source); module->exports = calloc(module->export_count, sizeof(*module->exports)); if (module->export_count != 0 && module->exports == NULL) goto fail;
@@ -502,7 +557,7 @@ bool wasm_module_load(const char *path, WasmModule *module, Diagnostics *diagnos
         out->index = index; out->name = copy_string(BinaryenFunctionGetName(function));
         if (out->name == NULL) goto fail;
         out->diagnostic_name = copy_string(has_descriptive_function_name(out->name) ? out->name : exported_function_name(module, out->name));
-        context.function_index = out->index; context.function_name = out->diagnostic_name;
+        context.function_index = out->index; context.function_name = out->diagnostic_name; context.module = module;
         if (!convert_tuple_type(BinaryenFunctionGetParams(function), out->params, &out->param_count, diagnostics, &context)) goto fail;
         out->result = convert_type(BinaryenFunctionGetResults(function)); if (out->result == WASM_VALUE_OTHER) { function_error(diagnostics, &context, "has an unsupported result type"); goto fail; }
         import_module = BinaryenFunctionImportGetModule(function); out->is_import = import_module != NULL && import_module[0] != '\0';
@@ -527,7 +582,7 @@ void wasm_module_dispose(WasmModule *module)
         for (index = 0; index < module->export_count; ++index) { free(module->exports[index].name); free(module->exports[index].value); }
     if (module->data_segments != NULL)
         for (index = 0; index < module->data_segment_count; ++index) free(module->data_segments[index].bytes);
-    free(module->functions); free(module->exports); free(module->data_segments); memset(module, 0, sizeof(*module));
+    free(module->functions); free(module->exports); free(module->stack_pointer_name); free(module->data_segments); memset(module, 0, sizeof(*module));
 }
 
 const WasmFunction *wasm_module_find_function(const WasmModule *module, const char *name)

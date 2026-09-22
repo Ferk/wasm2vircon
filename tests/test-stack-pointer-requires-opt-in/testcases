@@ -1,0 +1,4 @@
+source=stack-pointer.wat
+entry=entry
+outcome=reject
+error_expectations=expected.error

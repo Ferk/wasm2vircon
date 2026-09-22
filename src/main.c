@@ -11,11 +11,12 @@
 static void print_usage(FILE *stream)
 {
     fprintf(stream,
-            "Usage: wasm2vircon input.wasm [--entry NAME] -o output.asm\n"
+            "Usage: wasm2vircon input.wasm [--entry NAME] [--allow-stack-pointer] -o output.asm\n"
             "\n"
-            "Translate the supported VirconWasm v1.7 profile into Vircon32 assembly.\n"
+            "Translate the supported VirconWasm v1.8 profile into Vircon32 assembly.\n"
             "The default entry export is __original_main; --entry makes the frontend\n"
-            "entry convention explicit.\n");
+            "entry convention explicit. --allow-stack-pointer accepts only the\n"
+            "restricted mutable i32 __stack_pointer ABI global.\n");
 }
 
 int main(int argc, char **argv)
@@ -23,6 +24,7 @@ int main(int argc, char **argv)
     const char *input_path = NULL;
     const char *output_path = NULL;
     const char *entry_name = "__original_main";
+    bool allow_stack_pointer = false;
     Diagnostics diagnostics;
     WasmModule module;
     ValidatedModule validated;
@@ -49,6 +51,10 @@ int main(int argc, char **argv)
             entry_name = argv[index];
             continue;
         }
+        if (strcmp(argv[index], "--allow-stack-pointer") == 0) {
+            allow_stack_pointer = true;
+            continue;
+        }
         if (strcmp(argv[index], "-o") == 0) {
             if (++index == argc) {
                 diagnostics_error(&diagnostics, "missing path after -o");
@@ -72,7 +78,8 @@ int main(int argc, char **argv)
         goto done;
     }
     if (!wasm_module_load(input_path, &module, &diagnostics) ||
-        !validate_virconwasm_v1(&module, entry_name, &validated, &diagnostics) ||
+        !validate_virconwasm_v1(&module, entry_name, allow_stack_pointer,
+                                 &validated, &diagnostics) ||
         !lower_module_to_vircon_ir(&validated, &program, &diagnostics) ||
         !emit_vircon_assembly(&program, output_path, &diagnostics)) {
         goto done;

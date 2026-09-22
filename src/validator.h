@@ -11,6 +11,7 @@ typedef struct ValidatedModule {
 } ValidatedModule;
 
 bool validate_virconwasm_v1(const WasmModule *module, const char *entry_name,
+                            bool allow_stack_pointer,
                             ValidatedModule *validated, Diagnostics *diagnostics);
 void validated_module_dispose(ValidatedModule *validated);
 

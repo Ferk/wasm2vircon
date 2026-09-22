@@ -1,0 +1,5 @@
+source=arbitrary-global.wat
+entry=entry
+outcome=reject
+allow_stack_pointer=true
+error_expectations=expected.error

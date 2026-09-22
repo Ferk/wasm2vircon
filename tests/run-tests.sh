@@ -62,6 +62,7 @@ run_cases() {
     tilemaps=
     xml_expectations_file=
     normalize=false
+    allow_stack_pointer=false
     sim_commands_file=
     sim_expectations_file=
     sim_watch_for=
@@ -82,6 +83,7 @@ run_cases() {
         tilemaps) tilemaps=$value ;;
         xml_expectations) xml_expectations_file=$value ;;
         normalize) normalize=$value ;;
+        allow_stack_pointer) allow_stack_pointer=$value ;;
         sim_commands) sim_commands_file=$value ;;
         sim_expectations) sim_expectations_file=$value ;;
         sim_watch_for) sim_watch_for=$value ;;
@@ -146,6 +148,12 @@ run_cases() {
             echo "$case_name: normalize must be true or false" >&2
             exit 1
           fi
+          if [ "$allow_stack_pointer" = true ]; then
+            set -- "$@" --allow-stack-pointer
+          elif [ "$allow_stack_pointer" != false ]; then
+            echo "$case_name: allow_stack_pointer must be true or false" >&2
+            exit 1
+          fi
           WASM2VIRCON="$tool" CLANG="$clang" ASSEMBLE="$assemble" PACKROM="$packrom" PNG2VIRCON="$png2vircon" WAV2VIRCON="$wav2vircon" TILED2VIRCON="$tiled2vircon" "$@" "$source_path" "$case_output"
         )
         asm_file="$case_output/$program_name.asm"
@@ -154,8 +162,14 @@ run_cases() {
       *.wat:accept)
         mkdir -p "$case_output"
         "$wasm_as" "$source_path" -o "$case_output/$program_name.wasm"
-        "$tool" "$case_output/$program_name.wasm" --entry "$entry" \
-          -o "$case_output/$program_name.asm"
+        set -- "$tool" "$case_output/$program_name.wasm" --entry "$entry"
+        if [ "$allow_stack_pointer" = true ]; then
+          set -- "$@" --allow-stack-pointer
+        elif [ "$allow_stack_pointer" != false ]; then
+          echo "$case_name: allow_stack_pointer must be true or false" >&2
+          exit 1
+        fi
+        "$@" -o "$case_output/$program_name.asm"
         asm_file="$case_output/$program_name.asm"
         "$assemble" -o "$case_output/$program_name.vbin" "$asm_file"
         ;;
@@ -163,8 +177,14 @@ run_cases() {
         mkdir -p "$case_output"
         "$wasm_as" "$source_path" -o "$case_output/$program_name.wasm"
         error_file="$case_output/$program_name.stderr"
-        if "$tool" "$case_output/$program_name.wasm" --entry "$entry" \
-          -o "$case_output/$program_name.asm" >/dev/null 2>"$error_file"; then
+        set -- "$tool" "$case_output/$program_name.wasm" --entry "$entry"
+        if [ "$allow_stack_pointer" = true ]; then
+          set -- "$@" --allow-stack-pointer
+        elif [ "$allow_stack_pointer" != false ]; then
+          echo "$case_name: allow_stack_pointer must be true or false" >&2
+          exit 1
+        fi
+        if "$@" -o "$case_output/$program_name.asm" >/dev/null 2>"$error_file"; then
           echo "$case_name: invalid Wasm was accepted" >&2
           exit 1
         fi

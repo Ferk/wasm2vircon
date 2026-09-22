@@ -1,0 +1,4 @@
+source=stack-pointer-local.c
+normalize=true
+allow_stack_pointer=true
+expectations=expected.asm
