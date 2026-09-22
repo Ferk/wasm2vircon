@@ -1,0 +1,4 @@
+source=gpu-state-readers.c
+include_dirs=../../include
+normalize=true
+expectations=expected.asm

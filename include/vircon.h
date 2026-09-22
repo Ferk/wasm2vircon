@@ -35,10 +35,17 @@ void vircon__gpu_set_region_minimum(int x, int y) VIRCON__IMPORT("vircon_gpu_set
 void vircon__gpu_set_region_maximum(int x, int y) VIRCON__IMPORT("vircon_gpu_set_region_maximum");
 void vircon__gpu_set_region_hotspot(int x, int y) VIRCON__IMPORT("vircon_gpu_set_region_hotspot");
 void vircon__gpu_set_multiply_color(int value) VIRCON__IMPORT("vircon_gpu_set_multiply_color");
+int vircon__gpu_get_multiply_color(void) VIRCON__IMPORT("vircon_gpu_get_multiply_color");
 void vircon__gpu_set_active_blending(int value) VIRCON__IMPORT("vircon_gpu_set_active_blending");
+int vircon__gpu_get_active_blending(void) VIRCON__IMPORT("vircon_gpu_get_active_blending");
+int vircon__gpu_get_drawing_point_x(void) VIRCON__IMPORT("vircon_gpu_get_drawing_point_x");
+int vircon__gpu_get_drawing_point_y(void) VIRCON__IMPORT("vircon_gpu_get_drawing_point_y");
 void vircon__gpu_set_drawing_scale_bits(int x, int y) VIRCON__IMPORT("vircon_gpu_set_drawing_scale_bits");
 void vircon__gpu_set_drawing_scale(float x, float y) VIRCON__IMPORT("vircon_gpu_set_drawing_scale");
+float vircon__gpu_get_drawing_scale_x(void) VIRCON__IMPORT("vircon_gpu_get_drawing_scale_x");
+float vircon__gpu_get_drawing_scale_y(void) VIRCON__IMPORT("vircon_gpu_get_drawing_scale_y");
 void vircon__gpu_set_drawing_angle(float value) VIRCON__IMPORT("vircon_gpu_set_drawing_angle");
+float vircon__gpu_get_drawing_angle(void) VIRCON__IMPORT("vircon_gpu_get_drawing_angle");
 void vircon__gpu_draw_region_zoomed(void) VIRCON__IMPORT("vircon_gpu_draw_region_zoomed");
 void vircon__gpu_draw_region_rotated(void) VIRCON__IMPORT("vircon_gpu_draw_region_rotated");
 void vircon__gpu_draw_region_rotozoomed(void) VIRCON__IMPORT("vircon_gpu_draw_region_rotozoomed");
@@ -167,14 +174,23 @@ static inline void set_region_maximum(int x, int y) { vircon__gpu_set_region_max
 static inline void set_region_hotspot(int x, int y) { vircon__gpu_set_region_hotspot(x, y); }
 static inline void set_drawing_point(int x, int y) { vircon__gpu_set_drawing_point(x, y); }
 static inline void set_multiply_color(int color) { vircon__gpu_set_multiply_color(color); }
+static inline int get_multiply_color(void) { return vircon__gpu_get_multiply_color(); }
 /* Tested blend mode words: alpha 0x20, add 0x21, subtract 0x22. */
 static inline void set_blending_mode(int mode) { vircon__gpu_set_active_blending(mode); }
+static inline int get_blending_mode(void) { return vircon__gpu_get_active_blending(); }
+/* Stores the current point in normal byte-addressed C int objects. */
+static inline void get_drawing_point(int *x, int *y)
+{ *x = vircon__gpu_get_drawing_point_x(); *y = vircon__gpu_get_drawing_point_y(); }
 /* Use this typed f32 form for calculated scale values. */
 static inline void set_drawing_scale(float x, float y) { vircon__gpu_set_drawing_scale(x, y); }
+/* Stores the current scale in normal byte-addressed C float objects. */
+static inline void get_drawing_scale(float *x, float *y)
+{ *x = vircon__gpu_get_drawing_scale_x(); *y = vircon__gpu_get_drawing_scale_y(); }
 /* For already-known IEEE-754 f32 bits only; calculated values use the typed form. */
 static inline void set_drawing_scale_bits(int x_bits, int y_bits)
 { vircon__gpu_set_drawing_scale_bits(x_bits, y_bits); }
 static inline void set_drawing_angle(float angle) { vircon__gpu_set_drawing_angle(angle); }
+static inline float get_drawing_angle(void) { return vircon__gpu_get_drawing_angle(); }
 static inline void draw_region(void) { vircon__gpu_draw_region(); }
 static inline void draw_region_zoomed(void) { vircon__gpu_draw_region_zoomed(); }
 static inline void draw_region_at(int x, int y)

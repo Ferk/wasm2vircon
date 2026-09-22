@@ -422,6 +422,17 @@ static bool emit_f32_convert_i32_u(Context *context)
         emit(context, "  cif R1") && emit_label(context, done);
 }
 
+/* Reads one hardware port into the normal single-word compiler value model. */
+static bool lower_port_read(Context *context, Value *value, const char *port)
+{
+    int slot = temp_slot(context);
+    if (slot == 0 || !emit(context, "  in R0, %s", port) || !store_slot(context, slot, 0))
+        return false;
+    value->slot = slot;
+    value->present = true;
+    return true;
+}
+
 static bool lower_call(Context *context, const WasmExpr *expression, Value *value)
 {
     const WasmFunction *callee = wasm_module_find_function(context->validated->module, expression->name); Value arguments[4] = {{0}}; char label[64]; size_t index;
@@ -468,11 +479,18 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
             if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  iadd R1, 0x30000000") || !emit(context, "  mov [R1], R2")) return false;
         }
         else if (strcmp(callee->import_name, "vircon_gpu_set_multiply_color") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_MultiplyColor, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_get_multiply_color") == 0) { return lower_port_read(context, value, "GPU_MultiplyColor"); }
         else if (strcmp(callee->import_name, "vircon_gpu_set_active_blending") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_ActiveBlending, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_get_active_blending") == 0) { return lower_port_read(context, value, "GPU_ActiveBlending"); }
+        else if (strcmp(callee->import_name, "vircon_gpu_get_drawing_point_x") == 0) { return lower_port_read(context, value, "GPU_DrawingPointX"); }
+        else if (strcmp(callee->import_name, "vircon_gpu_get_drawing_point_y") == 0) { return lower_port_read(context, value, "GPU_DrawingPointY"); }
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale_bits") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_get_drawing_scale_x") == 0) { return lower_port_read(context, value, "GPU_DrawingScaleX"); }
+        else if (strcmp(callee->import_name, "vircon_gpu_get_drawing_scale_y") == 0) { return lower_port_read(context, value, "GPU_DrawingScaleY"); }
         else if (strcmp(callee->import_name, "vircon_gpu_draw_region_zoomed") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionZoomed")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_angle") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_DrawingAngle, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_get_drawing_angle") == 0) { return lower_port_read(context, value, "GPU_DrawingAngle"); }
         else if (strcmp(callee->import_name, "vircon_gpu_draw_region_rotated") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionRotated")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_draw_region_rotozoomed") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionRotozoomed")) return false; }
         else if (strcmp(callee->import_name, "vircon_cpu_sin") == 0) {
