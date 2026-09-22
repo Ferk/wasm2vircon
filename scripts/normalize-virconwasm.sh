@@ -17,4 +17,4 @@ fi
 # funcref table for this no-start, no-indirect-call profile. These two narrow
 # cleanup passes remove only unused module elements and obvious dead scaffolding;
 # unlike -O2, they keep the runtime's defined functions intact.
-"$wasm_opt" --remove-unused-module-elements --vacuum -g "$1" -o "$2"
+"$wasm_opt" --enable-bulk-memory-opt --remove-unused-module-elements --vacuum -g "$1" -o "$2"

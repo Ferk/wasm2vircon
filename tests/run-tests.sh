@@ -50,6 +50,7 @@ run_cases() {
     found_case=true
 
     source_file=
+    wasm_as_options=
     entry=__original_main
     expectations_file=
     error_expectations_file=
@@ -71,6 +72,7 @@ run_cases() {
       case "$key" in
         ''|'#'*) ;;
         source) source_file=$value ;;
+        wasm_as_options) wasm_as_options=$value ;;
         entry) entry=$value ;;
         expectations) expectations_file=$value ;;
         error_expectations) error_expectations_file=$value ;;
@@ -161,7 +163,7 @@ run_cases() {
         ;;
       *.wat:accept)
         mkdir -p "$case_output"
-        "$wasm_as" "$source_path" -o "$case_output/$program_name.wasm"
+        "$wasm_as" $wasm_as_options "$source_path" -o "$case_output/$program_name.wasm"
         set -- "$tool" "$case_output/$program_name.wasm" --entry "$entry"
         if [ "$allow_stack_pointer" = true ]; then
           set -- "$@" --allow-stack-pointer
@@ -175,7 +177,7 @@ run_cases() {
         ;;
       *.wat:reject)
         mkdir -p "$case_output"
-        "$wasm_as" "$source_path" -o "$case_output/$program_name.wasm"
+        "$wasm_as" $wasm_as_options "$source_path" -o "$case_output/$program_name.wasm"
         error_file="$case_output/$program_name.stderr"
         set -- "$tool" "$case_output/$program_name.wasm" --entry "$entry"
         if [ "$allow_stack_pointer" = true ]; then

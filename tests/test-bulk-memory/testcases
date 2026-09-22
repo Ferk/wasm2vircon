@@ -1,0 +1,4 @@
+source=bulk-memory.wat
+wasm_as_options=--enable-bulk-memory-opt
+entry=entry
+expectations=expected.asm
