@@ -19,11 +19,6 @@ enum {
     BLENDING_SUBTRACT = 0x22
 };
 
-static int make_gray(int brightness)
-{
-    return 0xFF000000 | (brightness << 16) | (brightness << 8) | brightness;
-}
-
 int main(void)
 {
     int elapsed_frames = 0;

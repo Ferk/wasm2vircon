@@ -102,6 +102,44 @@ int vircon__spu_get_channel_state(void) VIRCON__IMPORT("vircon_spu_get_channel_s
 static inline void clear_screen(int color) { vircon__set_background_color(color); }
 static inline void end_frame(void) { vircon__end_frame(); }
 
+/* Video constants and packed Vircon ABGR colour helpers -------------------
+ * Colour function components are expected in 0..255 and intentionally are
+ * not clamped, matching the official header's direct bit packing behavior. */
+#define screen_width 640
+#define screen_height 360
+
+#define color_black     0xFF000000
+#define color_white     0xFFFFFFFF
+#define color_gray      0xFF808080
+#define color_darkgray  0xFF404040
+#define color_lightgray 0xFFC0C0C0
+#define color_red       0xFF0000FF
+#define color_green     0xFF00FF00
+#define color_blue      0xFFFF0000
+#define color_yellow    0xFF00FFFF
+#define color_magenta   0xFFFF00FF
+#define color_cyan      0xFFFFFF00
+#define color_orange    0xFF0080FF
+#define color_brown     0xFF204080
+
+/* Packs an opaque grey RGB value in Vircon's written ABGR word order. */
+static inline int make_gray(int brightness)
+{ return 0xFF000000 | (brightness << 16) | (brightness << 8) | brightness; }
+
+/* Packs opaque RGB components in Vircon's written ABGR word order. */
+static inline int make_color_rgb(int red, int green, int blue)
+{ return 0xFF000000 | (blue << 16) | (green << 8) | red; }
+
+/* Packs RGBA components in Vircon's written ABGR word order. */
+static inline int make_color_rgba(int red, int green, int blue, int alpha)
+{ return (alpha << 24) | (blue << 16) | (green << 8) | red; }
+
+/* Extracts one RGBA component from a packed Vircon colour word. */
+static inline int get_color_red(int color) { return color & 255; }
+static inline int get_color_green(int color) { return (color >> 8) & 255; }
+static inline int get_color_blue(int color) { return (color >> 16) & 255; }
+static inline int get_color_alpha(int color) { return (color >> 24) & 255; }
+
 /* Draw a NUL-terminated CP-1252 byte string using the 10x20 BIOS font.
  * Text is software, not a compiler intrinsic or a hardware command.  Each
  * nonzero byte selects its glyph region in BIOS texture -1. A newline glyph
