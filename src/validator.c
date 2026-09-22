@@ -226,6 +226,14 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
         }
         return true;
     }
+    case WASM_EXPR_I64_LOAD_STORE:
+        if (expression->child_count != 2) {
+            validation_expression_error(diagnostics, function, expression,
+                                        "malformed i64 aggregate transfer");
+            return false;
+        }
+        return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&
+               validate_expression(module, function, expression->children[1], reachable, diagnostics);
     case WASM_EXPR_MEMORY_COPY:
     case WASM_EXPR_MEMORY_FILL:
         if (expression->child_count != 3) {
