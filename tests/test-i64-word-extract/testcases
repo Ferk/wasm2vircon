@@ -1,0 +1,2 @@
+source=i64-word-extract.wat
+expectations=expected.asm

@@ -1,0 +1,2 @@
+source=computed-aggregate-store.wat
+expectations=expected.asm

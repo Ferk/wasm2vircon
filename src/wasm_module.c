@@ -82,6 +82,7 @@ static WasmValueType convert_type(BinaryenType type)
     if (type == BinaryenTypeNone()) return WASM_VALUE_NONE;
     if (type == BinaryenTypeInt32()) return WASM_VALUE_I32;
     if (type == BinaryenTypeFloat32()) return WASM_VALUE_F32;
+    if (type == BinaryenTypeInt64()) return WASM_VALUE_I64;
     return WASM_VALUE_OTHER;
 }
 
@@ -137,6 +138,43 @@ static WasmExpr *convert_child(BinaryenExpressionRef source, Diagnostics *diagno
     char path[128];
     snprintf(path, sizeof(path), "%s/%zu", parent_path, child_index);
     return convert_expression(source, diagnostics, context, path);
+}
+
+/* Returns a local's declared type while decoding that function's body. */
+static WasmValueType decoded_local_type(const DecodeContext *context, uint32_t index)
+{
+    const WasmFunction *function = &context->module->functions[context->function_index];
+    if (index < function->param_count) return function->params[index];
+    index -= (uint32_t)function->param_count;
+    return index < function->local_count ? function->locals[index] : WASM_VALUE_OTHER;
+}
+
+/* Matches Zig's two-i32 aggregate packing form without exposing an i64 value. */
+static bool packed_i64_words(BinaryenExpressionRef source,
+                             BinaryenExpressionRef *high,
+                             BinaryenExpressionRef *low)
+{
+    BinaryenExpressionRef shifted, shift_amount, extended_high;
+    if (BinaryenExpressionGetId(source) != BinaryenBinaryId() ||
+        BinaryenBinaryGetOp(source) != BinaryenOrInt64()) return false;
+
+    shifted = BinaryenBinaryGetLeft(source);
+    if (BinaryenExpressionGetId(shifted) != BinaryenBinaryId() ||
+        BinaryenBinaryGetOp(shifted) != BinaryenShlInt64()) return false;
+    extended_high = BinaryenBinaryGetLeft(shifted);
+    shift_amount = BinaryenBinaryGetRight(shifted);
+    if (BinaryenExpressionGetId(extended_high) != BinaryenUnaryId() ||
+        BinaryenUnaryGetOp(extended_high) != BinaryenExtendUInt32() ||
+        BinaryenExpressionGetId(shift_amount) != BinaryenConstId() ||
+        BinaryenExpressionGetType(shift_amount) != BinaryenTypeInt64() ||
+        BinaryenConstGetValueI64(shift_amount) != 32) return false;
+
+    *low = BinaryenBinaryGetRight(source);
+    if (BinaryenExpressionGetId(*low) != BinaryenUnaryId() ||
+        BinaryenUnaryGetOp(*low) != BinaryenExtendUInt32()) return false;
+    *high = BinaryenUnaryGetValue(extended_high);
+    *low = BinaryenUnaryGetValue(*low);
+    return true;
 }
 
 /* Names the Binaryen unary operations that can reach the restricted frontend. */
@@ -345,6 +383,29 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
         expression->bytes = BinaryenStoreGetBytes(source); expression->offset = BinaryenStoreGetOffset(source); expression->align = BinaryenStoreGetAlign(source);
         if (expression->bytes == 8) {
             BinaryenExpressionRef stored_value = BinaryenStoreGetValue(source);
+            BinaryenExpressionRef packed_high, packed_low;
+            if (BinaryenExpressionGetId(stored_value) == BinaryenLocalSetId() &&
+                BinaryenLocalSetIsTee(stored_value) &&
+                BinaryenExpressionGetType(stored_value) == BinaryenTypeInt64() &&
+                decoded_local_type(context, BinaryenLocalSetGetIndex(stored_value)) == WASM_VALUE_I64) {
+                BinaryenExpressionRef loaded = BinaryenLocalSetGetValue(stored_value);
+                if (BinaryenExpressionGetId(loaded) == BinaryenLoadId() &&
+                    BinaryenExpressionGetType(loaded) == BinaryenTypeInt64() &&
+                    BinaryenLoadGetBytes(loaded) == 8) {
+                    /* Zig's observable aggregate copy holds this exact loaded
+                     * pair in a local before storing and extracting its words. */
+                    expression->kind = WASM_EXPR_I64_LOAD_STORE_LOCAL_TEE;
+                    expression->index = BinaryenLocalSetGetIndex(stored_value);
+                    expression->source_offset = BinaryenLoadGetOffset(loaded);
+                    if (!allocate_children(expression, 2, diagnostics)) goto fail;
+                    expression->children[0] = convert_child(BinaryenStoreGetPtr(source), diagnostics,
+                                                            context, path, 0);
+                    expression->children[1] = convert_child(BinaryenLoadGetPtr(loaded), diagnostics,
+                                                            context, path, 1);
+                    if (expression->children[0] == NULL || expression->children[1] == NULL) goto fail;
+                    return expression;
+                }
+            }
             if (BinaryenStoreGetValueType(source) == BinaryenTypeInt64() &&
                 BinaryenExpressionGetId(stored_value) == BinaryenLoadId() &&
                 BinaryenLoadGetBytes(stored_value) == 8) {
@@ -360,13 +421,29 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
                 if (expression->children[0] == NULL || expression->children[1] == NULL) goto fail;
                 return expression;
             }
+            if (BinaryenStoreGetValueType(source) == BinaryenTypeInt64() &&
+                packed_i64_words(stored_value, &packed_high, &packed_low)) {
+                /* Zig represents a computed two-i32 aggregate as a zero-extend,
+                 * high-word shift, and OR immediately consumed by i64.store. */
+                expression->kind = WASM_EXPR_I64_PACKED_I32_STORE;
+                if (!allocate_children(expression, 3, diagnostics)) goto fail;
+                expression->children[0] = convert_child(BinaryenStoreGetPtr(source), diagnostics,
+                                                        context, path, 0);
+                expression->children[1] = convert_child(packed_high, diagnostics,
+                                                        context, path, 1);
+                expression->children[2] = convert_child(packed_low, diagnostics,
+                                                        context, path, 2);
+                if (expression->children[0] == NULL || expression->children[1] == NULL ||
+                    expression->children[2] == NULL) goto fail;
+                return expression;
+            }
             /* This is intentionally not general i64 support. Clang can fold
              * neighbouring i32 initializers into this exact store shape. */
             if (BinaryenStoreGetValueType(source) != BinaryenTypeInt64() ||
                 BinaryenExpressionGetId(stored_value) != BinaryenConstId() ||
                 BinaryenExpressionGetType(stored_value) != BinaryenTypeInt64()) {
                 expression_error(diagnostics, context, expression->opcode, path,
-                                 "only a literal i64.const initializer or direct i64.load aggregate transfer is accepted");
+                                 "only a literal i64.const initializer, direct i64.load aggregate transfer, or exact two-i32 aggregate packing form is accepted");
                 goto fail;
             }
             expression->kind = WASM_EXPR_I64_CONST_STORE;
@@ -409,6 +486,67 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
     }
     if (id == BinaryenUnaryId()) {
         BinaryenOp op = BinaryenUnaryGetOp(source);
+        if (op == BinaryenWrapInt64()) {
+            BinaryenExpressionRef input = BinaryenUnaryGetValue(source);
+            BinaryenExpressionRef loaded = input;
+            uint64_t shift = 0;
+            if (BinaryenExpressionGetId(input) == BinaryenBinaryId() &&
+                BinaryenBinaryGetOp(input) == BinaryenShrUInt64()) {
+                BinaryenExpressionRef amount = BinaryenBinaryGetRight(input);
+                if (BinaryenExpressionGetId(amount) != BinaryenConstId() ||
+                    BinaryenExpressionGetType(amount) != BinaryenTypeInt64()) loaded = NULL;
+                else {
+                    loaded = BinaryenBinaryGetLeft(input);
+                    shift = (uint64_t)BinaryenConstGetValueI64(amount) & 63u;
+                }
+            }
+            if (loaded != NULL && BinaryenExpressionGetId(loaded) == BinaryenLoadId() &&
+                BinaryenExpressionGetType(loaded) == BinaryenTypeInt64() &&
+                BinaryenLoadGetBytes(loaded) == 8) {
+                /* This keeps a common word extraction in the Wasm frontend;
+                 * it does not create a general i64 compiler value. */
+                expression = new_expression(WASM_EXPR_I64_WORD_EXTRACT, "i32.wrap_i64", path, diagnostics);
+                if (expression == NULL || !allocate_children(expression, 1, diagnostics)) goto fail;
+                expression->source_offset = BinaryenLoadGetOffset(loaded);
+                expression->i64_value = shift;
+                expression->children[0] = convert_child(BinaryenLoadGetPtr(loaded), diagnostics,
+                                                        context, path, 0);
+                if (expression->children[0] == NULL) goto fail;
+                return expression;
+            }
+            if (loaded != NULL && BinaryenExpressionGetId(loaded) == BinaryenLocalGetId() &&
+                BinaryenExpressionGetType(loaded) == BinaryenTypeInt64() &&
+                decoded_local_type(context, BinaryenLocalGetGetIndex(loaded)) == WASM_VALUE_I64) {
+                /* This consumes only a compiler-owned two-word i64 local. */
+                expression = new_expression(WASM_EXPR_I64_LOCAL_WORD_EXTRACT, "i32.wrap_i64", path, diagnostics);
+                if (expression == NULL) goto fail;
+                expression->index = BinaryenLocalGetGetIndex(loaded);
+                expression->i64_value = shift;
+                return expression;
+            }
+            if (loaded != NULL && BinaryenExpressionGetId(loaded) == BinaryenLocalSetId() &&
+                BinaryenLocalSetIsTee(loaded) &&
+                BinaryenExpressionGetType(loaded) == BinaryenTypeInt64() &&
+                decoded_local_type(context, BinaryenLocalSetGetIndex(loaded)) == WASM_VALUE_I64) {
+                BinaryenExpressionRef load = BinaryenLocalSetGetValue(loaded);
+                if (BinaryenExpressionGetId(load) == BinaryenLoadId() &&
+                    BinaryenExpressionGetType(load) == BinaryenTypeInt64() &&
+                    BinaryenLoadGetBytes(load) == 8) {
+                    /* Zig seeds a pair local while extracting its first
+                     * computed field. Keep the pair as two frame words. */
+                    expression = new_expression(WASM_EXPR_I64_LOCAL_TEE_WORD_EXTRACT,
+                                                "i32.wrap_i64", path, diagnostics);
+                    if (expression == NULL || !allocate_children(expression, 1, diagnostics)) goto fail;
+                    expression->index = BinaryenLocalSetGetIndex(loaded);
+                    expression->source_offset = BinaryenLoadGetOffset(load);
+                    expression->i64_value = shift;
+                    expression->children[0] = convert_child(BinaryenLoadGetPtr(load), diagnostics,
+                                                            context, path, 0);
+                    if (expression->children[0] == NULL) goto fail;
+                    return expression;
+                }
+            }
+        }
         expression = new_expression(WASM_EXPR_UNARY, unary_opcode(op), path, diagnostics); if (expression == NULL) return NULL;
         expression->unary_op = op == BinaryenEqZInt32() ? WASM_UNARY_EQZ :
             op == BinaryenConvertSInt32ToFloat32() ? WASM_UNARY_CONVERT_I32_S_TO_F32 :
