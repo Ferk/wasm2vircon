@@ -191,6 +191,17 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
     case WASM_EXPR_LOCAL_SET:
         if (expression->index >= function->param_count + function->local_count) { validation_expression_error(diagnostics, function, expression, "invalid local index %u", expression->index); return false; }
         return validate_expression(module, function, expression->children[0], reachable, diagnostics);
+    case WASM_EXPR_STACK_POINTER_GET:
+        return true;
+    case WASM_EXPR_STACK_POINTER_SET:
+        return expression->child_count == 1 &&
+               validate_expression(module, function, expression->children[0], reachable, diagnostics);
+    case WASM_EXPR_GLOBAL_GET:
+    case WASM_EXPR_GLOBAL_SET:
+        validation_expression_error(diagnostics, function, expression,
+                                    "global '%s' is not the recognized __stack_pointer ABI global",
+                                    expression->name);
+        return false;
     case WASM_EXPR_DROP:
         return expression->child_count == 1 && validate_expression(module, function, expression->children[0], reachable, diagnostics);
     case WASM_EXPR_LOAD:
@@ -259,16 +270,24 @@ static bool validate_function(const WasmModule *module, const WasmFunction *func
 }
 
 bool validate_virconwasm_v1(const WasmModule *module, const char *entry_name,
+                            bool allow_stack_pointer,
                             ValidatedModule *validated, Diagnostics *diagnostics)
 {
     const WasmExport *entry_export = NULL; const WasmFunction *entry; size_t index; uint64_t memory_bytes, available_bytes;
     memset(validated, 0, sizeof(*validated));
     if (module->memory_count != 1 || !module->has_memory) { diagnostics_error(diagnostics, "VirconWasm v1 requires exactly one defined linear memory"); return false; }
     if (module->has_imported_memory || module->memory_is_shared || module->memory_is_64) { diagnostics_error(diagnostics, "memory imports, shared memory, and memory64 are unsupported"); return false; }
-    if (module->table_count != 0 || module->global_count != 0 || module->element_segment_count != 0) { diagnostics_error(diagnostics, "tables, globals, and element segments are unsupported in VirconWasm v1"); return false; }
+    if (module->table_count != 0 || module->element_segment_count != 0) { diagnostics_error(diagnostics, "tables and element segments are unsupported in VirconWasm v1"); return false; }
     memory_bytes = (uint64_t)module->memory_initial_pages * 65536u;
     available_bytes = VIRCON_LINEAR_MEMORY_BYTES;
     if (memory_bytes == 0 || memory_bytes > available_bytes || memory_bytes > UINT32_MAX) { diagnostics_error(diagnostics, "declared Wasm memory does not fit the reserved Vircon32 linear-memory region"); return false; }
+    if (module->global_count != 0) {
+        if (!allow_stack_pointer) { diagnostics_error(diagnostics, "Wasm globals require --allow-stack-pointer; arbitrary globals remain unsupported"); return false; }
+        if (module->global_count != 1 || !module->has_stack_pointer_global ||
+            !module->stack_pointer_global_is_valid) { diagnostics_error(diagnostics, "only one defined mutable i32 __stack_pointer global with an i32.const initializer is supported"); return false; }
+        if ((uint64_t)module->stack_pointer_initial > memory_bytes ||
+            (module->stack_pointer_initial & 3u) != 0) { diagnostics_error(diagnostics, "__stack_pointer initializer must be a 4-byte-aligned byte offset within declared linear memory"); return false; }
+    }
     for (index = 0; index < module->data_segment_count; ++index) { const WasmDataSegment *segment = &module->data_segments[index]; if (segment->is_passive || !segment->offset_is_i32_const || (uint64_t)segment->offset + segment->size > memory_bytes) { diagnostics_error(diagnostics, "data segment %zu is not an in-bounds active constant-offset segment", index); return false; } }
     for (index = 0; index < module->function_count; ++index) { const WasmFunction *function = &module->functions[index]; const ImportSpec *spec; if (!function->is_import) continue; spec = find_import_spec(function->import_module, function->import_name); if (spec == NULL) { validation_function_error(diagnostics, function, "unsupported import '%s.%s'", function->import_module, function->import_name); return false; } if (!matches_signature(function, spec)) { validation_function_error(diagnostics, function, "import '%s.%s' has an unsupported signature", function->import_module, function->import_name); return false; } }
     for (index = 0; index < module->export_count; ++index) if (strcmp(module->exports[index].name, entry_name) == 0) { entry_export = &module->exports[index]; break; }

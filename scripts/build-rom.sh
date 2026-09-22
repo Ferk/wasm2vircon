@@ -6,7 +6,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/build-rom.sh [--entry NAME] [--rom-name NAME] [--include DIR] [--extra-source FILE]
                             [--texture PNG] [--sound WAV] [--embedded-words NAME=FILE]
-                            [--tilemap NAME=TMX] [--normalize]
+                            [--tilemap NAME=TMX] [--normalize] [--allow-stack-pointer]
                             INPUT.c OUTPUT_DIR
 
 Compile INPUT.c plus any --extra-source files as the current freestanding
@@ -41,6 +41,7 @@ sound_sources=()
 embedded_word_specs=()
 tilemap_specs=()
 normalize=false
+allow_stack_pointer=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --entry)
@@ -109,6 +110,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --normalize)
       normalize=true
+      shift
+      ;;
+    --allow-stack-pointer)
+      allow_stack_pointer=true
       shift
       ;;
     --help|-h)
@@ -301,7 +306,11 @@ fi
 if [ "$normalize" = true ]; then
   "$normalizer" "$raw_wasm_file" "$wasm_file"
 fi
-"$compiler" "$wasm_file" --entry "$entry" -o "$asm_file"
+compiler_args=("$wasm_file" --entry "$entry")
+if [ "$allow_stack_pointer" = true ]; then
+  compiler_args+=(--allow-stack-pointer)
+fi
+"$compiler" "${compiler_args[@]}" -o "$asm_file"
 "$assembler" -o "$vbin_file" "$asm_file"
 texture_outputs=()
 sound_outputs=()

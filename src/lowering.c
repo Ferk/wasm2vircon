@@ -383,6 +383,17 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     case WASM_EXPR_LOCAL_SET:
         if (!lower_expression(context, expression->children[0], &left) || !left.present || !load_slot(context, 1, left.slot) || !store_slot(context, local_slot(context->function, expression->index), 1)) return false;
         if (expression->is_tee) { *value = left; return true; } release(context, left); return true;
+    case WASM_EXPR_STACK_POINTER_GET: {
+        int slot = temp_slot(context);
+        if (slot == 0 || !emit(context, "  mov R1, [%u]", VIRCON_WASM_STACK_POINTER_WORD) ||
+            !store_slot(context, slot, 1)) return false;
+        value->slot = slot; value->present = true; return true;
+    }
+    case WASM_EXPR_STACK_POINTER_SET:
+        if (!lower_expression(context, expression->children[0], &left) || !left.present ||
+            !load_slot(context, 1, left.slot) ||
+            !emit(context, "  mov [%u], R1", VIRCON_WASM_STACK_POINTER_WORD)) return false;
+        release(context, left); return true;
     case WASM_EXPR_UNARY:
         if (!lower_expression(context, expression->children[0], &left) || !left.present ||
             !load_slot(context, 1, left.slot)) return false;
@@ -450,6 +461,10 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
         if (!lower_expression(context, expression->children[0], &left)) return false;
         release(context, left); value->present = false; return true;
     case WASM_EXPR_UNREACHABLE: return emit(context, "  jmp __wasm_trap");
+    case WASM_EXPR_GLOBAL_GET:
+    case WASM_EXPR_GLOBAL_SET:
+        diagnostics_error(context->diagnostics, "internal error: unsupported global passed validation");
+        return false;
     }
     diagnostics_error(context->diagnostics, "internal error: unhandled Wasm expression"); return false;
 }
@@ -481,7 +496,13 @@ bool lower_module_to_vircon_ir(const ValidatedModule *validated, VirconIrProgram
     Context startup = {0}; uint32_t memory_bytes = validated->module->memory_initial_pages * 65536u; size_t index; char entry_label[64]; bool needs_unsigned_division = false;
     startup.program = program; startup.diagnostics = diagnostics; startup.memory_bytes = memory_bytes;
     function_label(validated->module, validated->entry, entry_label, sizeof(entry_label));
-    if (!emit_label(&startup, "__wasm_entry") || !initialize_data(validated, &startup) || !emit(&startup, "  call %s", entry_label) || !emit(&startup, "  hlt") || !emit_label(&startup, "__wasm_trap") || !emit(&startup, "  hlt  ; Wasm memory/unreachable trap")) return false;
+    if (!emit_label(&startup, "__wasm_entry") || !initialize_data(validated, &startup) ||
+        (validated->module->global_count != 0 &&
+         (!emit(&startup, "  mov R1, 0x%08X", validated->module->stack_pointer_initial) ||
+          !emit(&startup, "  mov [%u], R1", VIRCON_WASM_STACK_POINTER_WORD))) ||
+        !emit(&startup, "  call %s", entry_label) || !emit(&startup, "  hlt") ||
+        !emit_label(&startup, "__wasm_trap") ||
+        !emit(&startup, "  hlt  ; Wasm memory/unreachable trap")) return false;
     for (index = 0; index < validated->module->function_count; ++index) {
         const WasmFunction *function = &validated->module->functions[index];
         if (validated->reachable[index] && !function->is_import && (expression_uses_binary(function->body, WASM_BINARY_DIV_U) || expression_uses_binary(function->body, WASM_BINARY_REM_U))) needs_unsigned_division = true;

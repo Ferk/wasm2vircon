@@ -13,7 +13,8 @@ typedef enum WasmExprKind {
     WASM_EXPR_I32_CONST, WASM_EXPR_F32_CONST, WASM_EXPR_UNREACHABLE, WASM_EXPR_IF,
     WASM_EXPR_LOCAL_GET, WASM_EXPR_LOCAL_SET, WASM_EXPR_LOAD,
     WASM_EXPR_STORE, WASM_EXPR_I64_CONST_STORE, WASM_EXPR_UNARY, WASM_EXPR_BINARY, WASM_EXPR_SELECT,
-    WASM_EXPR_RETURN, WASM_EXPR_DROP
+    WASM_EXPR_RETURN, WASM_EXPR_DROP, WASM_EXPR_STACK_POINTER_GET,
+    WASM_EXPR_STACK_POINTER_SET, WASM_EXPR_GLOBAL_GET, WASM_EXPR_GLOBAL_SET
 } WasmExprKind;
 typedef enum WasmUnaryOp {
     WASM_UNARY_EQZ,
@@ -81,6 +82,10 @@ typedef struct WasmModule {
     bool has_memory, has_imported_memory, memory_is_shared, memory_is_64, memory_has_max;
     uint32_t memory_initial_pages, memory_max_pages;
     size_t memory_count, table_count, global_count, element_segment_count;
+    /* The only global that can be accepted by the restricted opt-in ABI. */
+    bool has_stack_pointer_global, stack_pointer_global_is_valid;
+    uint32_t stack_pointer_initial;
+    char *stack_pointer_name;
     WasmDataSegment *data_segments; size_t data_segment_count;
 } WasmModule;
 
