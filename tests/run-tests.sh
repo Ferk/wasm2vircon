@@ -52,6 +52,7 @@ run_cases() {
     source_file=
     entry=__original_main
     expectations_file=
+    error_expectations_file=
     outcome=accept
     extra_sources=
     include_dirs=
@@ -71,6 +72,7 @@ run_cases() {
         source) source_file=$value ;;
         entry) entry=$value ;;
         expectations) expectations_file=$value ;;
+        error_expectations) error_expectations_file=$value ;;
         outcome) outcome=$value ;;
         extra_sources) extra_sources=$value ;;
         include_dirs) include_dirs=$value ;;
@@ -160,10 +162,27 @@ run_cases() {
       *.wat:reject)
         mkdir -p "$case_output"
         "$wasm_as" "$source_path" -o "$case_output/$program_name.wasm"
+        error_file="$case_output/$program_name.stderr"
         if "$tool" "$case_output/$program_name.wasm" --entry "$entry" \
-          -o "$case_output/$program_name.asm" >/dev/null 2>&1; then
+          -o "$case_output/$program_name.asm" >/dev/null 2>"$error_file"; then
           echo "$case_name: invalid Wasm was accepted" >&2
           exit 1
+        fi
+        if [ -n "$error_expectations_file" ]; then
+          error_expectations_path="$case_dir/$error_expectations_file"
+          if [ ! -f "$error_expectations_path" ]; then
+            echo "missing error expectations for $case_file" >&2
+            exit 1
+          fi
+          while IFS= read -r expected || [ -n "$expected" ]; do
+            case "$expected" in
+              ''|'#'*) continue ;;
+            esac
+            if ! grep -F -- "$expected" "$error_file" >/dev/null; then
+              echo "$case_name: missing diagnostic fragment: $expected" >&2
+              exit 1
+            fi
+          done < "$error_expectations_path"
         fi
         continue
         ;;

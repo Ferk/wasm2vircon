@@ -1,0 +1,4 @@
+Wasm i64.const
+function 0 'world_initialize'
+expression path body/0/0
+unsupported constant type
