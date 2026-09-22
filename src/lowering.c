@@ -118,6 +118,47 @@ static bool lower_i64_const_store(Context *context, const WasmExpr *expression, 
     value->present = false;
     return true;
 }
+
+/* Emit Wasm's arithmetic right shift. Vircon32 only has a logical right shift
+ * through SHL with a negative count, so negative inputs need an explicit mask. */
+static bool emit_i32_shr_s(Context *context)
+{
+    char logical[64], done[64];
+    if (!fresh_label(context, "shr_s_logical", logical, sizeof(logical)) ||
+        !fresh_label(context, "shr_s_done", done, sizeof(done))) return false;
+
+    return emit(context, "  and R2, 31") && emit(context, "  jf R2, %s", done) &&
+        emit(context, "  mov R3, R1") && emit(context, "  ilt R3, 0") &&
+        emit(context, "  jf R3, %s", logical) && emit(context, "  mov R3, 0") &&
+        emit(context, "  isub R3, R2") && emit(context, "  shl R1, R3") &&
+        emit(context, "  mov R4, 32") && emit(context, "  isub R4, R2") &&
+        emit(context, "  mov R5, 0xFFFFFFFF") && emit(context, "  shl R5, R4") &&
+        emit(context, "  or R1, R5") && emit(context, "  jmp %s", done) &&
+        emit_label(context, logical) && emit(context, "  mov R3, 0") &&
+        emit(context, "  isub R3, R2") && emit(context, "  shl R1, R3") &&
+        emit_label(context, done);
+}
+
+/* Emit a correctly rounded conversion from an unsigned Wasm i32 to f32.
+ * CIF accepts only signed values. For the upper unsigned half, shifting once
+ * and retaining bit zero as a sticky bit preserves round-to-nearest-even when
+ * the converted half is doubled. */
+static bool emit_f32_convert_i32_u(Context *context)
+{
+    char signed_input[64], done[64];
+    if (!fresh_label(context, "u32_to_f32_signed", signed_input, sizeof(signed_input)) ||
+        !fresh_label(context, "u32_to_f32_done", done, sizeof(done))) return false;
+
+    return emit(context, "  mov R2, R1") && emit(context, "  ilt R2, 0") &&
+        emit(context, "  jf R2, %s", signed_input) && emit(context, "  mov R2, R1") &&
+        emit(context, "  and R2, 1") && emit(context, "  mov R3, R1") &&
+        emit(context, "  mov R4, -1") && emit(context, "  shl R3, R4") &&
+        emit(context, "  or R3, R2") && emit(context, "  cif R3") &&
+        emit(context, "  fadd R3, R3") && emit(context, "  mov R1, R3") &&
+        emit(context, "  jmp %s", done) && emit_label(context, signed_input) &&
+        emit(context, "  cif R1") && emit_label(context, done);
+}
+
 static bool lower_call(Context *context, const WasmExpr *expression, Value *value)
 {
     const WasmFunction *callee = wasm_module_find_function(context->validated->module, expression->name); Value arguments[4] = {{0}}; char label[64]; size_t index;
@@ -234,6 +275,7 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     case WASM_BINARY_ADD: if (!emit(context, "  iadd R1, R2")) return false; break;
     case WASM_BINARY_SUB: if (!emit(context, "  isub R1, R2")) return false; break;
     case WASM_BINARY_MUL: if (!emit(context, "  imul R1, R2")) return false; break;
+    case WASM_BINARY_XOR: if (!emit(context, "  xor R1, R2")) return false; break;
     case WASM_BINARY_DIV_S:
         /* Wasm traps for a zero divisor and for INT32_MIN / -1. Vircon IDIV
          * checks only zero, so guard the second case before issuing it. */
@@ -252,6 +294,7 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     case WASM_BINARY_LT_S: if (!emit(context, "  ilt R1, R2")) return false; break;
     case WASM_BINARY_GT_S: if (!emit(context, "  igt R1, R2")) return false; break;
     case WASM_BINARY_GE_S: if (!emit(context, "  ige R1, R2")) return false; break;
+    case WASM_BINARY_LE_S: if (!emit(context, "  ile R1, R2")) return false; break;
     case WASM_BINARY_F32_ADD: if (!emit(context, "  fadd R1, R2")) return false; break;
     case WASM_BINARY_F32_SUB: if (!emit(context, "  fsub R1, R2")) return false; break;
     case WASM_BINARY_F32_LE: if (!emit(context, "  fle R1, R2")) return false; break;
@@ -270,6 +313,9 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
         break;
     case WASM_BINARY_SHR_U:
         if (!emit(context, "  and R2, 31") || !emit(context, "  mov R3, 0") || !emit(context, "  isub R3, R2") || !emit(context, "  shl R1, R3")) return false;
+        break;
+    case WASM_BINARY_SHR_S:
+        if (!emit_i32_shr_s(context)) return false;
         break;
     case WASM_BINARY_SHL:
         if (!emit(context, "  and R2, 31") || !emit(context, "  shl R1, R2")) return false;
@@ -342,6 +388,7 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
             !load_slot(context, 1, left.slot)) return false;
         if (expression->unary_op == WASM_UNARY_EQZ) { if (!emit(context, "  ieq R1, 0")) return false; }
         else if (expression->unary_op == WASM_UNARY_CONVERT_I32_S_TO_F32) { if (!emit(context, "  cif R1")) return false; }
+        else if (expression->unary_op == WASM_UNARY_CONVERT_I32_U_TO_F32) { if (!emit_f32_convert_i32_u(context)) return false; }
         else if (expression->unary_op == WASM_UNARY_TRUNC_SAT_F32_TO_I32) {
             char nan[64], minimum[64], maximum[64], done[64];
             if (!fresh_label(context, "trunc_nan", nan, sizeof(nan)) || !fresh_label(context, "trunc_min", minimum, sizeof(minimum)) || !fresh_label(context, "trunc_max", maximum, sizeof(maximum)) || !fresh_label(context, "trunc_done", done, sizeof(done)) ||

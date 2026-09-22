@@ -1,0 +1,2 @@
+source=operations.c
+expectations=expected.asm
