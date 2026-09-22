@@ -366,6 +366,32 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
         if (expression->children[0] == NULL || expression->children[1] == NULL) goto fail;
         return expression;
     }
+    if (id == BinaryenMemoryCopyId()) {
+        expression = new_expression(WASM_EXPR_MEMORY_COPY, "memory.copy", path, diagnostics);
+        if (expression == NULL || !allocate_children(expression, 3, diagnostics)) goto fail;
+        expression->children[0] = convert_child(BinaryenMemoryCopyGetDest(source), diagnostics,
+                                                context, path, 0);
+        expression->children[1] = convert_child(BinaryenMemoryCopyGetSource(source), diagnostics,
+                                                context, path, 1);
+        expression->children[2] = convert_child(BinaryenMemoryCopyGetSize(source), diagnostics,
+                                                context, path, 2);
+        if (expression->children[0] == NULL || expression->children[1] == NULL ||
+            expression->children[2] == NULL) goto fail;
+        return expression;
+    }
+    if (id == BinaryenMemoryFillId()) {
+        expression = new_expression(WASM_EXPR_MEMORY_FILL, "memory.fill", path, diagnostics);
+        if (expression == NULL || !allocate_children(expression, 3, diagnostics)) goto fail;
+        expression->children[0] = convert_child(BinaryenMemoryFillGetDest(source), diagnostics,
+                                                context, path, 0);
+        expression->children[1] = convert_child(BinaryenMemoryFillGetValue(source), diagnostics,
+                                                context, path, 1);
+        expression->children[2] = convert_child(BinaryenMemoryFillGetSize(source), diagnostics,
+                                                context, path, 2);
+        if (expression->children[0] == NULL || expression->children[1] == NULL ||
+            expression->children[2] == NULL) goto fail;
+        return expression;
+    }
     if (id == BinaryenUnaryId()) {
         BinaryenOp op = BinaryenUnaryGetOp(source);
         expression = new_expression(WASM_EXPR_UNARY, unary_opcode(op), path, diagnostics); if (expression == NULL) return NULL;

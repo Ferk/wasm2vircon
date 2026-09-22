@@ -226,6 +226,16 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
         }
         return true;
     }
+    case WASM_EXPR_MEMORY_COPY:
+    case WASM_EXPR_MEMORY_FILL:
+        if (expression->child_count != 3) {
+            validation_expression_error(diagnostics, function, expression,
+                                        "malformed bulk-memory operands");
+            return false;
+        }
+        return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&
+               validate_expression(module, function, expression->children[1], reachable, diagnostics) &&
+               validate_expression(module, function, expression->children[2], reachable, diagnostics);
     case WASM_EXPR_BINARY:
         if (expression->binary_op == WASM_BINARY_OTHER) { validation_expression_error(diagnostics, function, expression, "unsupported binary operation"); return false; }
         return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&

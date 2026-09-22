@@ -119,6 +119,26 @@ static bool lower_i64_const_store(Context *context, const WasmExpr *expression, 
     return true;
 }
 
+/* Lowers default-memory bulk operations through compiler-generated V32 helpers. */
+static bool lower_bulk_memory(Context *context, const WasmExpr *expression, Value *value)
+{
+    Value arguments[3] = {{0}}; size_t index;
+    const char *helper = expression->kind == WASM_EXPR_MEMORY_COPY ?
+                         "__wasm_memory_copy" : "__wasm_memory_fill";
+
+    /* Wasm evaluates destination, source/value, then length exactly once. */
+    for (index = 0; index < 3; ++index)
+        if (!lower_expression(context, expression->children[index], &arguments[index]) ||
+            !arguments[index].present) return false;
+    for (index = 0; index < 3; ++index)
+        if (!load_slot(context, 1, arguments[index].slot) ||
+            !emit(context, "  mov [SP+%zu], R1", index)) return false;
+    for (index = 3; index != 0; --index) release(context, arguments[index - 1]);
+    if (!emit(context, "  call %s", helper)) return false;
+    value->present = false;
+    return true;
+}
+
 /* Emit Wasm's arithmetic right shift. Vircon32 only has a logical right shift
  * through SHL with a negative count, so negative inputs need an explicit mask. */
 static bool emit_i32_shr_s(Context *context)
@@ -351,6 +371,16 @@ static bool expression_uses_binary(const WasmExpr *expression, WasmBinaryOp oper
     return false;
 }
 
+/* Returns whether a reachable function needs a compiler-generated bulk helper. */
+static bool expression_uses_kind(const WasmExpr *expression, WasmExprKind kind)
+{
+    size_t index;
+    if (expression->kind == kind) return true;
+    for (index = 0; index < expression->child_count; ++index)
+        if (expression_uses_kind(expression->children[index], kind)) return true;
+    return false;
+}
+
 static bool emit_unsigned_division_helper(Context *context)
 {
     return emit_label(context, "__wasm_i32_div_u") &&
@@ -370,6 +400,116 @@ static bool emit_unsigned_division_helper(Context *context)
         emit_label(context, "__wasm_i32_div_u_decrement") && emit(context, "  isub R5, 1") &&
         emit(context, "  jt R5, __wasm_i32_div_u_loop") && emit(context, "  mov R0, R3") &&
         emit(context, "  ret");
+}
+
+/* Emits the shared bounds checks used before either bulk helper mutates RAM. */
+static bool emit_bulk_bounds_checks(Context *context, bool has_source)
+{
+    uint32_t memory_bytes = context->memory_bytes;
+    if (!emit(context, "  mov R1, [BP-3]") || !emit(context, "  ilt R1, 0") ||
+        !emit(context, "  jt R1, __wasm_trap") || !emit(context, "  mov R1, [BP-3]") ||
+        !emit(context, "  igt R1, 0x%08X", memory_bytes) ||
+        !emit(context, "  jt R1, __wasm_trap") || !emit(context, "  mov R2, 0x%08X", memory_bytes) ||
+        !emit(context, "  isub R2, R1") || !emit(context, "  mov R1, [BP-1]") ||
+        !emit(context, "  ilt R1, 0") || !emit(context, "  jt R1, __wasm_trap") ||
+        !emit(context, "  igt R1, R2") || !emit(context, "  jt R1, __wasm_trap")) return false;
+    if (!has_source) return true;
+    return emit(context, "  mov R1, [BP-2]") && emit(context, "  ilt R1, 0") &&
+        emit(context, "  jt R1, __wasm_trap") && emit(context, "  igt R1, R2") &&
+        emit(context, "  jt R1, __wasm_trap");
+}
+
+/* Emits overlap-safe Wasm memory.copy over packed byte-addressed linear memory. */
+static bool emit_memory_copy_helper(Context *context)
+{
+    return emit_label(context, "__wasm_memory_copy") && emit(context, "  push BP") &&
+        emit(context, "  mov BP, SP") && emit(context, "  isub SP, 3") &&
+        emit(context, "  mov R1, [BP+2]") && emit(context, "  mov [BP-1], R1") &&
+        emit(context, "  mov R1, [BP+3]") && emit(context, "  mov [BP-2], R1") &&
+        emit(context, "  mov R1, [BP+4]") && emit(context, "  mov [BP-3], R1") &&
+        emit_bulk_bounds_checks(context, true) &&
+        /* Copy backward only when destination starts inside the source range. */
+        emit(context, "  mov R1, [BP-1]") && emit(context, "  mov R2, [BP-2]") &&
+        emit(context, "  igt R1, R2") && emit(context, "  jf R1, __wasm_memory_copy_forward") &&
+        emit(context, "  mov R1, [BP-2]") && emit(context, "  mov R2, [BP-3]") &&
+        emit(context, "  iadd R1, R2") && emit(context, "  mov R2, [BP-1]") &&
+        emit(context, "  ilt R2, R1") && emit(context, "  jt R2, __wasm_memory_copy_backward") &&
+        emit_label(context, "__wasm_memory_copy_forward") &&
+        emit(context, "  mov R1, [BP-3]") && emit(context, "  jf R1, __wasm_memory_copy_done") &&
+        emit_label(context, "__wasm_memory_copy_forward_loop") &&
+        /* Read source byte R4. */
+        emit(context, "  mov R1, [BP-2]") && emit(context, "  mov R2, R1") &&
+        emit(context, "  and R2, 3") && emit(context, "  imul R2, -8") &&
+        emit(context, "  mov R3, R1") && emit(context, "  mov R5, -2") &&
+        emit(context, "  shl R3, R5") && emit(context, "  iadd R3, %u", LINEAR_BASE) &&
+        emit(context, "  mov R4, [R3]") && emit(context, "  shl R4, R2") &&
+        emit(context, "  and R4, 0x000000FF") &&
+        /* Insert R4 into the destination byte lane. */
+        emit(context, "  mov R1, [BP-1]") && emit(context, "  mov R2, R1") &&
+        emit(context, "  and R2, 3") && emit(context, "  imul R2, 8") &&
+        emit(context, "  mov R3, R1") && emit(context, "  mov R5, -2") &&
+        emit(context, "  shl R3, R5") && emit(context, "  iadd R3, %u", LINEAR_BASE) &&
+        emit(context, "  mov R5, [R3]") && emit(context, "  shl R4, R2") &&
+        emit(context, "  mov R6, 0x000000FF") && emit(context, "  shl R6, R2") &&
+        emit(context, "  xor R6, 0xFFFFFFFF") && emit(context, "  and R5, R6") &&
+        emit(context, "  or R5, R4") && emit(context, "  mov [R3], R5") &&
+        emit(context, "  mov R1, [BP-1]") && emit(context, "  iadd R1, 1") &&
+        emit(context, "  mov [BP-1], R1") && emit(context, "  mov R1, [BP-2]") &&
+        emit(context, "  iadd R1, 1") && emit(context, "  mov [BP-2], R1") &&
+        emit(context, "  mov R1, [BP-3]") && emit(context, "  isub R1, 1") &&
+        emit(context, "  mov [BP-3], R1") && emit(context, "  jt R1, __wasm_memory_copy_forward_loop") &&
+        emit(context, "  jmp __wasm_memory_copy_done") &&
+        emit_label(context, "__wasm_memory_copy_backward") &&
+        emit(context, "  mov R1, [BP-1]") && emit(context, "  mov R2, [BP-3]") &&
+        emit(context, "  iadd R1, R2") && emit(context, "  mov [BP-1], R1") &&
+        emit(context, "  mov R1, [BP-2]") && emit(context, "  iadd R1, R2") &&
+        emit(context, "  mov [BP-2], R1") && emit_label(context, "__wasm_memory_copy_backward_loop") &&
+        emit(context, "  mov R1, [BP-3]") && emit(context, "  jf R1, __wasm_memory_copy_done") &&
+        emit(context, "  mov R1, [BP-1]") && emit(context, "  isub R1, 1") &&
+        emit(context, "  mov [BP-1], R1") && emit(context, "  mov R1, [BP-2]") &&
+        emit(context, "  isub R1, 1") && emit(context, "  mov [BP-2], R1") &&
+        emit(context, "  mov R2, R1") && emit(context, "  and R2, 3") &&
+        emit(context, "  imul R2, -8") && emit(context, "  mov R3, R1") &&
+        emit(context, "  mov R5, -2") && emit(context, "  shl R3, R5") &&
+        emit(context, "  iadd R3, %u", LINEAR_BASE) && emit(context, "  mov R4, [R3]") &&
+        emit(context, "  shl R4, R2") && emit(context, "  and R4, 0x000000FF") &&
+        emit(context, "  mov R1, [BP-1]") && emit(context, "  mov R2, R1") &&
+        emit(context, "  and R2, 3") && emit(context, "  imul R2, 8") && emit(context, "  mov R3, R1") &&
+        emit(context, "  mov R5, -2") && emit(context, "  shl R3, R5") &&
+        emit(context, "  iadd R3, %u", LINEAR_BASE) && emit(context, "  mov R5, [R3]") &&
+        emit(context, "  shl R4, R2") && emit(context, "  mov R6, 0x000000FF") &&
+        emit(context, "  shl R6, R2") && emit(context, "  xor R6, 0xFFFFFFFF") &&
+        emit(context, "  and R5, R6") && emit(context, "  or R5, R4") && emit(context, "  mov [R3], R5") &&
+        emit(context, "  mov R1, [BP-3]") && emit(context, "  isub R1, 1") &&
+        emit(context, "  mov [BP-3], R1") && emit(context, "  jmp __wasm_memory_copy_backward_loop") &&
+        emit_label(context, "__wasm_memory_copy_done") && emit(context, "  mov SP, BP") &&
+        emit(context, "  pop BP") && emit(context, "  ret");
+}
+
+/* Emits Wasm memory.fill over packed byte-addressed linear memory. */
+static bool emit_memory_fill_helper(Context *context)
+{
+    return emit_label(context, "__wasm_memory_fill") && emit(context, "  push BP") &&
+        emit(context, "  mov BP, SP") && emit(context, "  isub SP, 3") &&
+        emit(context, "  mov R1, [BP+2]") && emit(context, "  mov [BP-1], R1") &&
+        emit(context, "  mov R1, [BP+3]") && emit(context, "  mov [BP-2], R1") &&
+        emit(context, "  mov R1, [BP+4]") && emit(context, "  mov [BP-3], R1") &&
+        emit_bulk_bounds_checks(context, false) && emit_label(context, "__wasm_memory_fill_loop") &&
+        emit(context, "  mov R1, [BP-3]") && emit(context, "  jf R1, __wasm_memory_fill_done") &&
+        emit(context, "  mov R1, [BP-1]") && emit(context, "  mov R2, R1") &&
+        emit(context, "  and R2, 3") && emit(context, "  imul R2, 8") &&
+        emit(context, "  mov R3, R1") && emit(context, "  mov R5, -2") &&
+        emit(context, "  shl R3, R5") && emit(context, "  iadd R3, %u", LINEAR_BASE) &&
+        emit(context, "  mov R4, [BP-2]") && emit(context, "  and R4, 0x000000FF") &&
+        emit(context, "  shl R4, R2") && emit(context, "  mov R5, [R3]") &&
+        emit(context, "  mov R6, 0x000000FF") && emit(context, "  shl R6, R2") &&
+        emit(context, "  xor R6, 0xFFFFFFFF") && emit(context, "  and R5, R6") &&
+        emit(context, "  or R5, R4") && emit(context, "  mov [R3], R5") &&
+        emit(context, "  mov R1, [BP-1]") && emit(context, "  iadd R1, 1") &&
+        emit(context, "  mov [BP-1], R1") && emit(context, "  mov R1, [BP-3]") &&
+        emit(context, "  isub R1, 1") && emit(context, "  mov [BP-3], R1") &&
+        emit(context, "  jmp __wasm_memory_fill_loop") && emit_label(context, "__wasm_memory_fill_done") &&
+        emit(context, "  mov SP, BP") && emit(context, "  pop BP") && emit(context, "  ret");
 }
 
 static bool lower_expression(Context *context, const WasmExpr *expression, Value *value)
@@ -431,6 +571,9 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     case WASM_EXPR_LOAD: return lower_load(context, expression, value);
     case WASM_EXPR_STORE: return lower_store(context, expression, value);
     case WASM_EXPR_I64_CONST_STORE: return lower_i64_const_store(context, expression, value);
+    case WASM_EXPR_MEMORY_COPY:
+    case WASM_EXPR_MEMORY_FILL:
+        return lower_bulk_memory(context, expression, value);
     case WASM_EXPR_CALL: return lower_call(context, expression, value);
     case WASM_EXPR_BLOCK:
         if (expression->name != NULL) { if (!fresh_label(context, "block_end", label, sizeof(label)) || context->target_count == 32) return false; context->targets[context->target_count++] = (Target){expression->name, format_text("%s", label)}; }
@@ -493,7 +636,7 @@ static bool lower_function(const ValidatedModule *validated, const WasmFunction 
 
 bool lower_module_to_vircon_ir(const ValidatedModule *validated, VirconIrProgram *program, Diagnostics *diagnostics)
 {
-    Context startup = {0}; uint32_t memory_bytes = validated->module->memory_initial_pages * 65536u; size_t index; char entry_label[64]; bool needs_unsigned_division = false;
+    Context startup = {0}; uint32_t memory_bytes = validated->module->memory_initial_pages * 65536u; size_t index; char entry_label[64]; bool needs_unsigned_division = false, needs_memory_copy = false, needs_memory_fill = false;
     startup.program = program; startup.diagnostics = diagnostics; startup.memory_bytes = memory_bytes;
     function_label(validated->module, validated->entry, entry_label, sizeof(entry_label));
     if (!emit_label(&startup, "__wasm_entry") || !initialize_data(validated, &startup) ||
@@ -506,8 +649,12 @@ bool lower_module_to_vircon_ir(const ValidatedModule *validated, VirconIrProgram
     for (index = 0; index < validated->module->function_count; ++index) {
         const WasmFunction *function = &validated->module->functions[index];
         if (validated->reachable[index] && !function->is_import && (expression_uses_binary(function->body, WASM_BINARY_DIV_U) || expression_uses_binary(function->body, WASM_BINARY_REM_U))) needs_unsigned_division = true;
+        if (validated->reachable[index] && !function->is_import && expression_uses_kind(function->body, WASM_EXPR_MEMORY_COPY)) needs_memory_copy = true;
+        if (validated->reachable[index] && !function->is_import && expression_uses_kind(function->body, WASM_EXPR_MEMORY_FILL)) needs_memory_fill = true;
         if (validated->reachable[index] && !function->is_import && !lower_function(validated, function, program, diagnostics, memory_bytes)) return false;
     }
     if (needs_unsigned_division && !emit_unsigned_division_helper(&startup)) return false;
+    if (needs_memory_copy && !emit_memory_copy_helper(&startup)) return false;
+    if (needs_memory_fill && !emit_memory_fill_helper(&startup)) return false;
     return true;
 }
