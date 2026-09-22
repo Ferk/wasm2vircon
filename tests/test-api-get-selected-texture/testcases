@@ -1,0 +1,4 @@
+source=get-selected-texture.c
+include_dirs=../../include
+normalize=true
+expectations=expected.asm

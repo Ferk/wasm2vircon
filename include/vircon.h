@@ -27,6 +27,7 @@ void vircon__set_background_color(int color) VIRCON__IMPORT("vircon_set_backgrou
 void vircon__end_frame(void) VIRCON__IMPORT("vircon_end_frame");
 int vircon__gpu_get_selected_texture(void) VIRCON__IMPORT("vircon_gpu_get_selected_texture");
 void vircon__gpu_select_texture(int value) VIRCON__IMPORT("vircon_gpu_select_texture");
+int vircon__gpu_get_selected_region(void) VIRCON__IMPORT("vircon_gpu_get_selected_region");
 void vircon__gpu_select_region(int value) VIRCON__IMPORT("vircon_gpu_select_region");
 void vircon__gpu_set_drawing_point(int x, int y) VIRCON__IMPORT("vircon_gpu_set_drawing_point");
 void vircon__gpu_draw_region(void) VIRCON__IMPORT("vircon_gpu_draw_region");
@@ -39,6 +40,7 @@ void vircon__gpu_set_drawing_scale_bits(int x, int y) VIRCON__IMPORT("vircon_gpu
 void vircon__gpu_set_drawing_scale(float x, float y) VIRCON__IMPORT("vircon_gpu_set_drawing_scale");
 void vircon__gpu_set_drawing_angle(float value) VIRCON__IMPORT("vircon_gpu_set_drawing_angle");
 void vircon__gpu_draw_region_zoomed(void) VIRCON__IMPORT("vircon_gpu_draw_region_zoomed");
+void vircon__gpu_draw_region_rotated(void) VIRCON__IMPORT("vircon_gpu_draw_region_rotated");
 void vircon__gpu_draw_region_rotozoomed(void) VIRCON__IMPORT("vircon_gpu_draw_region_rotozoomed");
 float vircon__cpu_sin(float value) VIRCON__IMPORT("vircon_cpu_sin");
 float vircon__cpu_acos(float value) VIRCON__IMPORT("vircon_cpu_acos");
@@ -155,7 +157,11 @@ static inline void print_fixed_2_at(int x, int y, float value)
  * Texture IDs are --texture argument order; region IDs are application-set.
  * These calls change selected GPU state. */
 static inline void select_texture(int id) { vircon__gpu_select_texture(id); }
+/* Returns the texture currently selected in GPU state, including BIOS texture -1. */
+static inline int get_selected_texture(void) { return vircon__gpu_get_selected_texture(); }
 static inline void select_region(int id) { vircon__gpu_select_region(id); }
+/* Returns the region currently selected for the current texture. */
+static inline int get_selected_region(void) { return vircon__gpu_get_selected_region(); }
 static inline void set_region_minimum(int x, int y) { vircon__gpu_set_region_minimum(x, y); }
 static inline void set_region_maximum(int x, int y) { vircon__gpu_set_region_maximum(x, y); }
 static inline void set_region_hotspot(int x, int y) { vircon__gpu_set_region_hotspot(x, y); }
@@ -169,11 +175,47 @@ static inline void set_drawing_scale(float x, float y) { vircon__gpu_set_drawing
 static inline void set_drawing_scale_bits(int x_bits, int y_bits)
 { vircon__gpu_set_drawing_scale_bits(x_bits, y_bits); }
 static inline void set_drawing_angle(float angle) { vircon__gpu_set_drawing_angle(angle); }
+static inline void draw_region(void) { vircon__gpu_draw_region(); }
 static inline void draw_region_zoomed(void) { vircon__gpu_draw_region_zoomed(); }
 static inline void draw_region_at(int x, int y)
 { set_drawing_point(x, y); vircon__gpu_draw_region(); }
+static inline void draw_region_zoomed_at(int x, int y)
+{ set_drawing_point(x, y); vircon__gpu_draw_region_zoomed(); }
+static inline void draw_region_rotated(void) { vircon__gpu_draw_region_rotated(); }
+static inline void draw_region_rotated_at(int x, int y)
+{ set_drawing_point(x, y); vircon__gpu_draw_region_rotated(); }
+static inline void draw_region_rotozoomed(void) { vircon__gpu_draw_region_rotozoomed(); }
 static inline void draw_region_rotozoomed_at(int x, int y)
 { set_drawing_point(x, y); vircon__gpu_draw_region_rotozoomed(); }
+
+/* Function-like macros preserve the official six/four-argument call surface
+ * without exceeding the current four-argument defined-call ABI. Each input is
+ * first evaluated once into a block-local i32, then applied to GPU state. */
+#define define_region(min_x, min_y, max_x, max_y, hotspot_x, hotspot_y) \
+    do { \
+        int vircon__region_min_x = (min_x); \
+        int vircon__region_min_y = (min_y); \
+        int vircon__region_max_x = (max_x); \
+        int vircon__region_max_y = (max_y); \
+        int vircon__region_hotspot_x = (hotspot_x); \
+        int vircon__region_hotspot_y = (hotspot_y); \
+        set_region_minimum(vircon__region_min_x, vircon__region_min_y); \
+        set_region_maximum(vircon__region_max_x, vircon__region_max_y); \
+        set_region_hotspot(vircon__region_hotspot_x, vircon__region_hotspot_y); \
+    } while (0)
+
+/* Defines the selected region with a top-left hotspot. Arguments are evaluated
+ * once; this is a macro because a normal six-argument helper exceeds the ABI. */
+#define define_region_topleft(min_x, min_y, max_x, max_y) \
+    do { \
+        int vircon__region_min_x = (min_x); \
+        int vircon__region_min_y = (min_y); \
+        int vircon__region_max_x = (max_x); \
+        int vircon__region_max_y = (max_y); \
+        define_region(vircon__region_min_x, vircon__region_min_y, \
+                      vircon__region_max_x, vircon__region_max_y, \
+                      vircon__region_min_x, vircon__region_min_y); \
+    } while (0)
 
 /* Define the selected region with its integer-centre hotspot. */
 static inline void define_region_center(int min_x, int min_y, int max_x, int max_y)

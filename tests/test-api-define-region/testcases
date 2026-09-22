@@ -1,0 +1,4 @@
+source=define-region.c
+include_dirs=../../include
+normalize=true
+expectations=expected.asm

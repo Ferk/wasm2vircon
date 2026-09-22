@@ -435,6 +435,11 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
             value->slot = slot; value->present = true; return true;
         }
         else if (strcmp(callee->import_name, "vircon_gpu_select_texture") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_SelectedTexture, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_get_selected_region") == 0) {
+            int slot = temp_slot(context);
+            if (slot == 0 || !emit(context, "  in R0, GPU_SelectedRegion") || !store_slot(context, slot, 0)) return false;
+            value->slot = slot; value->present = true; return true;
+        }
         else if (strcmp(callee->import_name, "vircon_gpu_select_region") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_SelectedRegion, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_point") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingPointX, R1") || !emit(context, "  out GPU_DrawingPointY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_draw_region") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegion")) return false; }
@@ -468,6 +473,7 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) || !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_draw_region_zoomed") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionZoomed")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_angle") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_DrawingAngle, R1")) return false; }
+        else if (strcmp(callee->import_name, "vircon_gpu_draw_region_rotated") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionRotated")) return false; }
         else if (strcmp(callee->import_name, "vircon_gpu_draw_region_rotozoomed") == 0) { if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionRotozoomed")) return false; }
         else if (strcmp(callee->import_name, "vircon_cpu_sin") == 0) {
             int slot = temp_slot(context);
