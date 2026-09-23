@@ -112,6 +112,7 @@ static const ImportSpec IMPORTS[] = {
     {"env", "vircon_cpu_acos", {WASM_VALUE_F32}, 1, WASM_VALUE_F32},
     {"env", "vircon_cpu_log", {WASM_VALUE_F32}, 1, WASM_VALUE_F32},
     {"env", "vircon_cpu_pow", {WASM_VALUE_F32, WASM_VALUE_F32}, 2, WASM_VALUE_F32},
+    {"env", "vircon_cpu_halt", {WASM_VALUE_NONE}, 0, WASM_VALUE_NONE},
     {"env", "vircon_input_select_gamepad", {WASM_VALUE_I32}, 1, WASM_VALUE_NONE},
     {"env", "vircon_input_get_selected_gamepad", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},
     {"env", "vircon_input_gamepad_left", {WASM_VALUE_NONE}, 0, WASM_VALUE_I32},

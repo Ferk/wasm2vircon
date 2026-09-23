@@ -578,6 +578,7 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
             op == BinaryenGeSInt32() ? WASM_BINARY_GE_S :
             op == BinaryenGeUInt32() ? WASM_BINARY_GE_U :
             op == BinaryenLeSInt32() ? WASM_BINARY_LE_S :
+            op == BinaryenLeUInt32() ? WASM_BINARY_LE_U :
             op == BinaryenOrInt32() ? WASM_BINARY_OR :
             op == BinaryenRemUInt32() ? WASM_BINARY_REM_U :
             op == BinaryenShrUInt32() ? WASM_BINARY_SHR_U :

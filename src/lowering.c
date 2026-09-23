@@ -523,6 +523,7 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
             if (slot == 0 || !load_slot(context, 0, arguments[0].slot) || !load_slot(context, 1, arguments[1].slot) || !emit(context, "  pow R0, R1") || !store_slot(context, slot, 0)) return false;
             value->slot = slot; value->present = true; return true;
         }
+        else if (strcmp(callee->import_name, "vircon_cpu_halt") == 0) { if (!emit(context, "  hlt")) return false; }
         else if (strcmp(callee->import_name, "vircon_input_select_gamepad") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out INP_SelectedGamepad, R1")) return false; }
         else if (strcmp(callee->import_name, "vircon_input_get_selected_gamepad") == 0) { return lower_port_read(context, value, "INP_SelectedGamepad"); }
         else if (strcmp(callee->import_name, "vircon_timer_get_cycle_counter") == 0) { return lower_port_read(context, value, "TIM_CycleCounter"); }
@@ -594,6 +595,10 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     case WASM_BINARY_GT_S: if (!emit(context, "  igt R1, R2")) return false; break;
     case WASM_BINARY_GE_S: if (!emit(context, "  ige R1, R2")) return false; break;
     case WASM_BINARY_LE_S: if (!emit(context, "  ile R1, R2")) return false; break;
+    case WASM_BINARY_LE_U:
+        /* Bias both operands so unsigned ordering becomes signed ordering. */
+        if (!emit(context, "  xor R1, 0x80000000") || !emit(context, "  xor R2, 0x80000000") || !emit(context, "  ile R1, R2")) return false;
+        break;
     case WASM_BINARY_F32_ADD: if (!emit(context, "  fadd R1, R2")) return false; break;
     case WASM_BINARY_F32_SUB: if (!emit(context, "  fsub R1, R2")) return false; break;
     case WASM_BINARY_F32_LE: if (!emit(context, "  fle R1, R2")) return false; break;

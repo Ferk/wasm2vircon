@@ -9,8 +9,9 @@
  * and their `vircon__*` calls are private hardware-like Wasm imports.  No
  * runtime .c files need to be carried, compiled, or linked by applications.
  *
- * This is not a hosted libc.  It has no stdio, printf, malloc, files, string
- * library, or UTF-8 support.  Use only the documented public names below;
+ * This is not a hosted libc.  It has no stdio, printf, general malloc/free,
+ * files, locale, or UTF-8 support.  It supplies the documented small byte
+ * string/memory helpers and caller-owned arena below.  Use only public names;
  * `vircon__*` names are implementation details of the current platform ABI.
  * The header is for Clang wasm32.  The host fallback merely permits parsing;
  * it does not supply hardware implementations.
@@ -53,6 +54,7 @@ float vircon__cpu_sin(float value) VIRCON__IMPORT("vircon_cpu_sin");
 float vircon__cpu_acos(float value) VIRCON__IMPORT("vircon_cpu_acos");
 float vircon__cpu_log(float value) VIRCON__IMPORT("vircon_cpu_log");
 float vircon__cpu_pow(float x, float y) VIRCON__IMPORT("vircon_cpu_pow");
+void vircon__cpu_halt(void) VIRCON__IMPORT("vircon_cpu_halt");
 void vircon__input_select_gamepad(int value) VIRCON__IMPORT("vircon_input_select_gamepad");
 int vircon__input_get_selected_gamepad(void) VIRCON__IMPORT("vircon_input_get_selected_gamepad");
 int vircon__input_gamepad_left(void) VIRCON__IMPORT("vircon_input_gamepad_left");
@@ -567,6 +569,232 @@ static inline void card_write_data(const void *source, int card_word_offset, int
         card_write_word(card_word_offset + index, (int)word);
     }
 }
+
+/* Freestanding byte/string helpers ----------------------------------------
+ * These use normal C byte pointers and do not share the official compiler's
+ * word-character string representation.  Callers remain responsible for
+ * valid buffers and capacities, as in the corresponding C routines. */
+static inline int isdigit(int character)
+{ return character >= '0' && character <= '9'; }
+static inline int isxdigit(int character)
+{
+    return isdigit(character)
+        || (character >= 'a' && character <= 'f')
+        || (character >= 'A' && character <= 'F');
+}
+static inline int isalpha(int character)
+{ return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z'); }
+static inline int isascii(int character)
+{ return character >= 0 && character <= 127; }
+static inline int isalphanum(int character)
+{ return isdigit(character) || isalpha(character); }
+/* Includes the Windows-1252 accented Latin ranges used by the BIOS font. */
+static inline int islower(int character)
+{
+    return (character >= 'a' && character <= 'z')
+        || (character >= 224 && character <= 254 && character != 247);
+}
+static inline int isupper(int character)
+{
+    return (character >= 'A' && character <= 'Z')
+        || (character >= 192 && character <= 222 && character != 215);
+}
+static inline int isspace(int character)
+{ return character == ' ' || character == '\n' || character == '\r' || character == '\t'; }
+static inline int tolower(int character)
+{ return isupper(character) ? character + 32 : character; }
+static inline int toupper(int character)
+{ return islower(character) ? character - 32 : character; }
+
+/* Writes count copies of the low byte of value and returns destination. */
+static inline void *memset(void *destination, int value, unsigned count)
+{
+    unsigned char *output = (unsigned char *)destination;
+    while (count != 0) {
+        *output++ = (unsigned char)value;
+        --count;
+    }
+    return destination;
+}
+/* Copies non-overlapping byte regions and returns destination. */
+static inline void *memcpy(void *destination, const void *source, unsigned count)
+{
+    unsigned char *output = (unsigned char *)destination;
+    const unsigned char *input = (const unsigned char *)source;
+    while (count != 0) {
+        *output++ = *input++;
+        --count;
+    }
+    return destination;
+}
+/* Compares byte regions as unsigned bytes, like the standard C routine. */
+static inline int memcmp(const void *first, const void *second, unsigned count)
+{
+    const unsigned char *left = (const unsigned char *)first;
+    const unsigned char *right = (const unsigned char *)second;
+    while (count != 0) {
+        unsigned left_byte = *left++;
+        unsigned right_byte = *right++;
+        if (left_byte != right_byte)
+            return (int)left_byte - (int)right_byte;
+        --count;
+    }
+    return 0;
+}
+/* Returns the count of bytes before a string's NUL terminator. */
+static inline unsigned strlen(const char *text)
+{
+    unsigned length = 0;
+    while (text[length] != 0)
+        ++length;
+    return length;
+}
+/* Compares NUL-terminated strings as unsigned CP-1252-compatible bytes. */
+static inline int strcmp(const char *first, const char *second)
+{
+    while (*(const unsigned char *)first == *(const unsigned char *)second) {
+        if (*first == 0)
+            return 0;
+        ++first;
+        ++second;
+    }
+    return (int)*(const unsigned char *)first - (int)*(const unsigned char *)second;
+}
+/* Compares at most count string bytes as unsigned bytes. */
+static inline int strncmp(const char *first, const char *second, unsigned count)
+{
+    while (count != 0 && *(const unsigned char *)first == *(const unsigned char *)second) {
+        if (*first == 0)
+            return 0;
+        ++first;
+        ++second;
+        --count;
+    }
+    if (count == 0)
+        return 0;
+    return (int)*(const unsigned char *)first - (int)*(const unsigned char *)second;
+}
+/* Copies a NUL-terminated string and returns destination. */
+static inline char *strcpy(char *destination, const char *source)
+{
+    char *result = destination;
+    while (*source != 0)
+        *destination++ = *source++;
+    *destination = 0;
+    return result;
+}
+/* Copies at most count bytes, padding remaining destination bytes with NUL. */
+static inline char *strncpy(char *destination, const char *source, unsigned count)
+{
+    char *result = destination;
+    while (count != 0 && *source != 0) {
+        *destination++ = *source++;
+        --count;
+    }
+    while (count != 0) {
+        /* Volatile preserves standard byte-wise padding and prevents Clang
+         * from replacing several byte stores with an unsupported i64.store. */
+        *(volatile char *)destination++ = 0;
+        --count;
+    }
+    return result;
+}
+/* Appends a NUL-terminated source string and returns destination. */
+static inline char *strcat(char *destination, const char *source)
+{
+    char *result = destination;
+    while (*destination != 0)
+        ++destination;
+    (void)strcpy(destination, source);
+    return result;
+}
+/* Appends at most count source bytes and always writes a terminator. */
+static inline char *strncat(char *destination, const char *source, unsigned count)
+{
+    char *result = destination;
+    volatile char *output;
+    while (*destination != 0)
+        ++destination;
+    output = (volatile char *)destination;
+    while (count != 0 && *source != 0) {
+        *output++ = *source++;
+        --count;
+    }
+    *output = 0;
+    return result;
+}
+
+/* Stores a positive unsigned value in the requested base, in reverse first. */
+static inline void vircon__utoa(unsigned value, char *result, unsigned base)
+{
+    static const char digits[] = "0123456789ABCDEF";
+    char *first = result;
+    char *last;
+    do {
+        *result++ = digits[value % base];
+        value /= base;
+    } while (value != 0);
+    *result = 0;
+    last = result - 1;
+    while (first < last) {
+        char temporary = *first;
+        *first++ = *last;
+        *last-- = temporary;
+    }
+}
+/* Converts i32 values to a NUL-terminated base-2..16 byte string.
+ * Base 10 is signed; all other bases format the i32 bit pattern unsigned. */
+static inline void itoa(int value, char *result, int base)
+{
+    unsigned magnitude;
+    if (base < 2 || base > 16)
+        return;
+    if (base == 10 && value < 0) {
+        *result++ = '-';
+        magnitude = (unsigned)(-(value + 1)) + 1u;
+    }
+    else
+        magnitude = (unsigned)value;
+    vircon__utoa(magnitude, result, (unsigned)base);
+}
+/* Formats a finite practical-range f32 with up to five fractional digits.
+ * It is intentionally a small freestanding formatter, not printf or libc. */
+static inline void ftoa(float value, char *result)
+{
+    char *fraction_start;
+    unsigned integer_part;
+    unsigned fraction_part;
+    unsigned scale;
+    if (value < 0.0f) {
+        *result++ = '-';
+        value = 0.0f - value;
+    }
+    integer_part = (unsigned)(int)value;
+    value = (value - (float)(int)integer_part) * 100000.0f + 0.5f;
+    fraction_part = (unsigned)(int)value;
+    if (fraction_part >= 100000u) {
+        ++integer_part;
+        fraction_part -= 100000u;
+    }
+    itoa((int)integer_part, result, 10);
+    if (fraction_part == 0)
+        return;
+    fraction_start = result;
+    while (*fraction_start != 0)
+        ++fraction_start;
+    *fraction_start++ = '.';
+    scale = 10000u;
+    while (scale > fraction_part) {
+        *fraction_start++ = '0';
+        scale /= 10u;
+    }
+    while (fraction_part % 10u == 0)
+        fraction_part /= 10u;
+    vircon__utoa(fraction_part, fraction_start, 10u);
+}
+
+/* Stops the Vircon CPU. There are no hosted exit-status semantics. */
+static inline void exit(void) { vircon__cpu_halt(); }
 
 /* Finite f32 math ----------------------------------------------------------
  * A narrow ordinary-C math layer over Vircon CPU operations. It is not libm:
