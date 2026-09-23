@@ -16,10 +16,9 @@ enum {
 struct point { int x, y; };
 struct scene_data { struct point player, item; int score; };
 
-static int game_signature[SIGNATURE_WORDS] = {
+static game_signature card_game_signature = {
     'M','E','M','O','R','Y','C','A','R','D','T','E','S','T'
 };
-static int empty_signature[SIGNATURE_WORDS];
 static struct scene_data game_state;
 static struct scene_data saved_game;
 static char score_text[6];
@@ -81,21 +80,11 @@ static void show_message(const char *text)
     while (gamepad_button_start() != 1) end_frame();
 }
 
-static int card_is_empty(void)
-{
-    return card_words_match(empty_signature, 0, SIGNATURE_WORDS);
-}
-
-static int card_signature_matches(void)
-{
-    return card_words_match(game_signature, 0, SIGNATURE_WORDS);
-}
-
 static void draw_card_contents(void)
 {
     select_region(REGION_CONTENTS_TEXT); draw_region_at(187, 158);
     if (card_is_empty()) print_at(362, 178, "EMPTY\nCARD!");
-    else if (!card_signature_matches()) print_at(352, 178, "ANOTHER\n GAME!");
+    else if (!card_signature_matches(&card_game_signature)) print_at(352, 178, "ANOTHER\n GAME!");
     else {
         select_region(REGION_CONTENTS_INFO); draw_region_at(321, 158);
         card_read_words((int *)&saved_game, SIGNATURE_WORDS, SCENE_WORDS);
@@ -107,7 +96,7 @@ static void load_game_scene(void)
 {
     if (!card_is_connected()) { show_message("NO CARD CONNECTED"); return; }
     if (card_is_empty()) { show_message("CARD IS EMPTY"); return; }
-    if (!card_signature_matches()) { show_message("CARD CONTENTS INVALID"); return; }
+    if (!card_signature_matches(&card_game_signature)) { show_message("CARD CONTENTS INVALID"); return; }
     select_region(REGION_WINDOW); draw_region_at(183, 116);
     select_region(REGION_LOAD); draw_region_at(236, 129);
     select_region(REGION_CANCEL); draw_region_at(323, 129);
@@ -135,7 +124,7 @@ static void save_game_scene(void)
         if (gamepad_button_b() == 1) break;
         end_frame();
     }
-    card_write_words(game_signature, 0, SIGNATURE_WORDS);
+    card_write_signature(&card_game_signature);
     card_write_words((const int *)&game_state, SIGNATURE_WORDS, SCENE_WORDS);
     show_message("GAME SAVED");
 }

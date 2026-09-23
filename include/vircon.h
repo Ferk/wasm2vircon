@@ -496,6 +496,9 @@ static inline int play_sound(int sound)
  * `int` words too: a normal C `int *` advances four Wasm bytes while one card
  * index advances one Vircon card word.  Card offsets and counts are words,
  * not byte counts.  The raw memory-mapped device address remains private. */
+#define game_signature_words 20
+typedef int game_signature[game_signature_words];
+
 static inline int card_is_connected(void) { return vircon__memcard_is_connected(); }
 static inline int card_read_word(int word_index)
 { return vircon__memcard_read_word(word_index); }
@@ -520,6 +523,49 @@ static inline int card_words_match(const int *expected, int card_word_offset, in
         if (card_read_word(card_word_offset + index) != expected[index])
             return 0;
     return 1;
+}
+/* Reads/writes the 20-word standard card signature. */
+static inline void card_read_signature(game_signature *signature)
+{ card_read_words(*signature, 0, game_signature_words); }
+static inline void card_write_signature(const game_signature *signature)
+{ card_write_words(*signature, 0, game_signature_words); }
+static inline int card_signature_matches(const game_signature *expected_signature)
+{ return card_words_match(*expected_signature, 0, game_signature_words); }
+/* A card with an all-zero standard signature is considered empty. */
+static inline int card_is_empty(void)
+{
+    static const game_signature zero_signature = {0};
+    return card_signature_matches(&zero_signature);
+}
+/* Copies card words to a byte-addressed C buffer in little-endian order.
+ * card_word_offset and word_count are card words, so the buffer needs at
+ * least word_count * 4 bytes. */
+static inline void card_read_data(void *destination, int card_word_offset, int word_count)
+{
+    unsigned char *bytes = (unsigned char *)destination;
+    int index;
+    for (index = 0; index < word_count; ++index) {
+        unsigned word = (unsigned)card_read_word(card_word_offset + index);
+        bytes[index * 4] = (unsigned char)word;
+        bytes[index * 4 + 1] = (unsigned char)(word >> 8);
+        bytes[index * 4 + 2] = (unsigned char)(word >> 16);
+        bytes[index * 4 + 3] = (unsigned char)(word >> 24);
+    }
+}
+/* Packs a byte-addressed C buffer as little-endian card words before writing.
+ * card_word_offset and word_count are card words, not byte quantities. */
+static inline void card_write_data(const void *source, int card_word_offset, int word_count)
+{
+    const unsigned char *bytes = (const unsigned char *)source;
+    int index;
+    for (index = 0; index < word_count; ++index) {
+        unsigned byte_index = (unsigned)index * 4u;
+        unsigned word = (unsigned)bytes[byte_index]
+            | ((unsigned)bytes[byte_index + 1] << 8)
+            | ((unsigned)bytes[byte_index + 2] << 16)
+            | ((unsigned)bytes[byte_index + 3] << 24);
+        card_write_word(card_word_offset + index, (int)word);
+    }
 }
 
 /* Finite f32 math ----------------------------------------------------------

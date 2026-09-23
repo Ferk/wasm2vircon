@@ -1,0 +1,4 @@
+source=memory-card.c
+include_dirs=../../include
+normalize=true
+expectations=expected.asm
