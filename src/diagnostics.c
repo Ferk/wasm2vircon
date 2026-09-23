@@ -1,21 +1,24 @@
+/* Diagnostics implementation: writes consistent compiler errors to one stream.
+ */
+
 #include "diagnostics.h"
 
 #include <stdarg.h>
 
-void diagnostics_init(Diagnostics *diagnostics, FILE *stream)
-{
-    diagnostics->stream = stream;
-    diagnostics->errors = 0;
+/* Initializes an error sink before any compiler stage reports failures. */
+void diagnostics_init(Diagnostics *diagnostics, FILE *stream) {
+  diagnostics->stream = stream;
+  diagnostics->errors = 0;
 }
 
-void diagnostics_error(Diagnostics *diagnostics, const char *format, ...)
-{
-    va_list arguments;
+/* Prefixes and records one formatted compiler error. */
+void diagnostics_error(Diagnostics *diagnostics, const char *format, ...) {
+  va_list arguments;
 
-    diagnostics->errors++;
-    fprintf(diagnostics->stream, "wasm2vircon: error: ");
-    va_start(arguments, format);
-    vfprintf(diagnostics->stream, format, arguments);
-    va_end(arguments);
-    fputc('\n', diagnostics->stream);
+  diagnostics->errors++;
+  fprintf(diagnostics->stream, "wasm2vircon: error: ");
+  va_start(arguments, format);
+  vfprintf(diagnostics->stream, format, arguments);
+  va_end(arguments);
+  fputc('\n', diagnostics->stream);
 }
