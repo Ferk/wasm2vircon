@@ -433,6 +433,35 @@ static bool lower_port_read(Context *context, Value *value, const char *port)
     return true;
 }
 
+/* Lowers a unary CPU math instruction through the generic value-slot model. */
+static bool lower_cpu_unary(Context *context, const Value *argument,
+                            Value *value, const char *instruction)
+{
+    int slot = temp_slot(context);
+    if (slot == 0 || !load_slot(context, 0, argument->slot) ||
+        !emit(context, "  %s R0", instruction) || !store_slot(context, slot, 0))
+        return false;
+    value->slot = slot;
+    value->present = true;
+    return true;
+}
+
+/* Lowers a binary CPU math instruction through the generic value-slot model. */
+static bool lower_cpu_binary(Context *context, const Value *left,
+                             const Value *right, Value *value,
+                             const char *instruction)
+{
+    int slot = temp_slot(context);
+    if (slot == 0 || !load_slot(context, 0, left->slot) ||
+        !load_slot(context, 1, right->slot) ||
+        !emit(context, "  %s R0, R1", instruction) ||
+        !store_slot(context, slot, 0))
+        return false;
+    value->slot = slot;
+    value->present = true;
+    return true;
+}
+
 static bool lower_call(Context *context, const WasmExpr *expression, Value *value)
 {
     const WasmFunction *callee = wasm_module_find_function(context->validated->module, expression->name); Value arguments[4] = {{0}}; char label[64]; size_t index;
@@ -522,6 +551,39 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
             int slot = temp_slot(context);
             if (slot == 0 || !load_slot(context, 0, arguments[0].slot) || !load_slot(context, 1, arguments[1].slot) || !emit(context, "  pow R0, R1") || !store_slot(context, slot, 0)) return false;
             value->slot = slot; value->present = true; return true;
+        }
+        else if (strcmp(callee->import_name, "vircon_cpu_fmod") == 0) {
+            if (!lower_cpu_binary(context, &arguments[0], &arguments[1], value, "fmod")) return false;
+        }
+        else if (strcmp(callee->import_name, "vircon_cpu_imin") == 0) {
+            if (!lower_cpu_binary(context, &arguments[0], &arguments[1], value, "imin")) return false;
+        }
+        else if (strcmp(callee->import_name, "vircon_cpu_imax") == 0) {
+            if (!lower_cpu_binary(context, &arguments[0], &arguments[1], value, "imax")) return false;
+        }
+        else if (strcmp(callee->import_name, "vircon_cpu_iabs") == 0) {
+            if (!lower_cpu_unary(context, &arguments[0], value, "iabs")) return false;
+        }
+        else if (strcmp(callee->import_name, "vircon_cpu_fmin") == 0) {
+            if (!lower_cpu_binary(context, &arguments[0], &arguments[1], value, "fmin")) return false;
+        }
+        else if (strcmp(callee->import_name, "vircon_cpu_fmax") == 0) {
+            if (!lower_cpu_binary(context, &arguments[0], &arguments[1], value, "fmax")) return false;
+        }
+        else if (strcmp(callee->import_name, "vircon_cpu_fabs") == 0) {
+            if (!lower_cpu_unary(context, &arguments[0], value, "fabs")) return false;
+        }
+        else if (strcmp(callee->import_name, "vircon_cpu_floor") == 0) {
+            if (!lower_cpu_unary(context, &arguments[0], value, "flr")) return false;
+        }
+        else if (strcmp(callee->import_name, "vircon_cpu_ceil") == 0) {
+            if (!lower_cpu_unary(context, &arguments[0], value, "ceil")) return false;
+        }
+        else if (strcmp(callee->import_name, "vircon_cpu_round") == 0) {
+            if (!lower_cpu_unary(context, &arguments[0], value, "round")) return false;
+        }
+        else if (strcmp(callee->import_name, "vircon_cpu_atan2") == 0) {
+            if (!lower_cpu_binary(context, &arguments[0], &arguments[1], value, "atan2")) return false;
         }
         else if (strcmp(callee->import_name, "vircon_cpu_halt") == 0) { if (!emit(context, "  hlt")) return false; }
         else if (strcmp(callee->import_name, "vircon_input_select_gamepad") == 0) { if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out INP_SelectedGamepad, R1")) return false; }

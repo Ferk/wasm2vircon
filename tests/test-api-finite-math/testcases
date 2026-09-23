@@ -1,0 +1,4 @@
+source=finite-math.c
+include_dirs=../../include
+normalize=true
+expectations=expected.asm

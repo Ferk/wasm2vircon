@@ -9,9 +9,9 @@
  * and their `vircon__*` calls are private hardware-like Wasm imports.  No
  * runtime .c files need to be carried, compiled, or linked by applications.
  *
- * This is not a hosted libc.  It has no stdio, printf, general malloc/free,
+ * This is not a hosted libc.  It has no stdio, printf, general allocation,
  * files, locale, or UTF-8 support.  It supplies the documented small byte
- * string/memory helpers and caller-owned arena below.  Use only public names;
+ * string/memory helpers. Use only public names;
  * `vircon__*` names are implementation details of the current platform ABI.
  * The header is for Clang wasm32.  The host fallback merely permits parsing;
  * it does not supply hardware implementations.
@@ -54,6 +54,17 @@ float vircon__cpu_sin(float value) VIRCON__IMPORT("vircon_cpu_sin");
 float vircon__cpu_acos(float value) VIRCON__IMPORT("vircon_cpu_acos");
 float vircon__cpu_log(float value) VIRCON__IMPORT("vircon_cpu_log");
 float vircon__cpu_pow(float x, float y) VIRCON__IMPORT("vircon_cpu_pow");
+float vircon__cpu_fmod(float x, float y) VIRCON__IMPORT("vircon_cpu_fmod");
+int vircon__cpu_imin(int x, int y) VIRCON__IMPORT("vircon_cpu_imin");
+int vircon__cpu_imax(int x, int y) VIRCON__IMPORT("vircon_cpu_imax");
+int vircon__cpu_iabs(int value) VIRCON__IMPORT("vircon_cpu_iabs");
+float vircon__cpu_fmin(float x, float y) VIRCON__IMPORT("vircon_cpu_fmin");
+float vircon__cpu_fmax(float x, float y) VIRCON__IMPORT("vircon_cpu_fmax");
+float vircon__cpu_fabs(float value) VIRCON__IMPORT("vircon_cpu_fabs");
+float vircon__cpu_floor(float value) VIRCON__IMPORT("vircon_cpu_floor");
+float vircon__cpu_ceil(float value) VIRCON__IMPORT("vircon_cpu_ceil");
+float vircon__cpu_round(float value) VIRCON__IMPORT("vircon_cpu_round");
+float vircon__cpu_atan2(float y, float x) VIRCON__IMPORT("vircon_cpu_atan2");
 void vircon__cpu_halt(void) VIRCON__IMPORT("vircon_cpu_halt");
 void vircon__input_select_gamepad(int value) VIRCON__IMPORT("vircon_input_select_gamepad");
 int vircon__input_get_selected_gamepad(void) VIRCON__IMPORT("vircon_input_get_selected_gamepad");
@@ -808,6 +819,31 @@ static inline float asinf(float x) { return 1.57079632679f - acosf(x); }
 static inline float expf(float x) { return vircon__cpu_pow(2.71828182846f, x); }
 static inline float logf(float x) { return vircon__cpu_log(x); }
 static inline float powf(float x, float y) { return vircon__cpu_pow(x, y); }
+
+/* Official Vircon finite-math compatibility functions. These retain the
+ * target CPU's finite-domain and hardware-error behavior. */
+static inline float fmod(float x, float y) { return vircon__cpu_fmod(x, y); }
+static inline int min(int x, int y) { return vircon__cpu_imin(x, y); }
+static inline int max(int x, int y) { return vircon__cpu_imax(x, y); }
+static inline int abs(int value) { return vircon__cpu_iabs(value); }
+static inline float fmin(float x, float y) { return vircon__cpu_fmin(x, y); }
+static inline float fmax(float x, float y) { return vircon__cpu_fmax(x, y); }
+static inline float fabs(float value) { return vircon__cpu_fabs(value); }
+static inline float floor(float value) { return vircon__cpu_floor(value); }
+static inline float ceil(float value) { return vircon__cpu_ceil(value); }
+static inline float round(float value) { return vircon__cpu_round(value); }
+static inline float asin(float value) { return asinf(value); }
+static inline float atan2(float y, float x) { return vircon__cpu_atan2(y, x); }
+static inline float sqrt(float value) { return powf(value, 0.5f); }
+
+/* The unsuffixed names match the official Vircon C header. */
+static inline float sin(float value) { return sinf(value); }
+static inline float cos(float value) { return cosf(value); }
+static inline float tan(float value) { return tanf(value); }
+static inline float acos(float value) { return acosf(value); }
+static inline float exp(float value) { return expf(value); }
+static inline float log(float value) { return logf(value); }
+static inline float pow(float x, float y) { return powf(x, y); }
 
 #if defined(__clang__)
 #pragma clang attribute pop
