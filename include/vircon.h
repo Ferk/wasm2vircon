@@ -54,6 +54,7 @@ float vircon__cpu_acos(float value) VIRCON__IMPORT("vircon_cpu_acos");
 float vircon__cpu_log(float value) VIRCON__IMPORT("vircon_cpu_log");
 float vircon__cpu_pow(float x, float y) VIRCON__IMPORT("vircon_cpu_pow");
 void vircon__input_select_gamepad(int value) VIRCON__IMPORT("vircon_input_select_gamepad");
+int vircon__input_get_selected_gamepad(void) VIRCON__IMPORT("vircon_input_get_selected_gamepad");
 int vircon__input_gamepad_left(void) VIRCON__IMPORT("vircon_input_gamepad_left");
 int vircon__input_gamepad_right(void) VIRCON__IMPORT("vircon_input_gamepad_right");
 int vircon__input_gamepad_up(void) VIRCON__IMPORT("vircon_input_gamepad_up");
@@ -67,6 +68,7 @@ int vircon__input_gamepad_button_l(void) VIRCON__IMPORT("vircon_input_gamepad_bu
 int vircon__input_gamepad_button_r(void) VIRCON__IMPORT("vircon_input_gamepad_button_r");
 int vircon__input_gamepad_button_start(void) VIRCON__IMPORT("vircon_input_gamepad_button_start");
 int vircon__timer_get_frame_counter(void) VIRCON__IMPORT("vircon_timer_get_frame_counter");
+int vircon__timer_get_cycle_counter(void) VIRCON__IMPORT("vircon_timer_get_cycle_counter");
 int vircon__timer_get_current_time(void) VIRCON__IMPORT("vircon_timer_get_current_time");
 int vircon__timer_get_current_date(void) VIRCON__IMPORT("vircon_timer_get_current_date");
 int vircon__rng_get_current_value(void) VIRCON__IMPORT("vircon_rng_get_current_value");
@@ -327,7 +329,25 @@ static inline void draw_bios_vertical_line(int x, int y1, int y2)
 
 /* Input, time and RNG ------------------------------------------------------
  * Select gamepad 0..3 before querying it. Selection is shared device state. */
+#define frames_per_second 60
+#define frame_time (1.0f / frames_per_second)
+
+/* Normal-C forms of the official human-readable timer structures. */
+typedef struct date_info {
+    int year;
+    int month;
+    int day;
+} date_info;
+
+typedef struct time_info {
+    int hours;
+    int minutes;
+    int seconds;
+} time_info;
+
 static inline void select_gamepad(int id) { vircon__input_select_gamepad(id); }
+/* Returns the input device's currently selected gamepad. */
+static inline int get_selected_gamepad(void) { return vircon__input_get_selected_gamepad(); }
 static inline int gamepad_left(void) { return vircon__input_gamepad_left(); }
 static inline int gamepad_right(void) { return vircon__input_gamepad_right(); }
 static inline int gamepad_up(void) { return vircon__input_gamepad_up(); }
@@ -346,10 +366,61 @@ static inline int gamepad_direction_y(void)
 { if (gamepad_up() > 0) return -1; if (gamepad_down() > 0) return 1; return 0; }
 static inline void gamepad_direction(int *x, int *y)
 { *x = gamepad_direction_x(); *y = gamepad_direction_y(); }
+/* Converts D-pad input to a unit vector, normalizing diagonal movement. */
+static inline void gamepad_direction_normalized(float *x, float *y)
+{
+    int direction_x = gamepad_direction_x();
+    int direction_y = gamepad_direction_y();
+    *x = (float)direction_x;
+    *y = (float)direction_y;
+    if (direction_x != 0 && direction_y != 0) {
+        *x *= 0.70710678f;
+        *y *= 0.70710678f;
+    }
+}
+
+/* Reads CPU cycles elapsed in the current frame; emulators need not be exact. */
+static inline int get_cycle_counter(void) { return vircon__timer_get_cycle_counter(); }
 static inline int get_frame_counter(void) { return vircon__timer_get_frame_counter(); }
 /* Raw Vircon time/date values; no calendar or timezone library is included. */
 static inline int get_time(void) { return vircon__timer_get_current_time(); }
 static inline int get_date(void) { return vircon__timer_get_current_date(); }
+/* Splits elapsed seconds since midnight into ordinary clock fields. */
+static inline void translate_time(int time, time_info *translated)
+{
+    /* The hardware's current-time value is always a nonnegative count of
+     * seconds since midnight.  Unsigned intermediates also avoid treating
+     * the packed conversion as a signed hosted-time calculation. */
+    unsigned value = (unsigned)time;
+    translated->hours = (int)(value / 3600u);
+    translated->minutes = (int)((value % 3600u) / 60u);
+    translated->seconds = (int)(value % 60u);
+}
+/* Splits Vircon's packed year/day-of-year value into calendar fields. */
+static inline void translate_date(int date, date_info *translated)
+{
+    static const int month_days[12] = {31, 28, 31, 30, 31, 30,
+                                       31, 31, 30, 31, 30, 31};
+    int days_in_year = date & 0x0000FFFF;
+    int month;
+    int leap_year;
+
+    translated->year = date >> 16;
+    leap_year = ((translated->year % 4) == 0) && ((translated->year % 100) != 0);
+    for (month = 0; month < 11; ++month) {
+        int days_in_month = month_days[month];
+        if (month == 1 && leap_year)
+            days_in_month = 29;
+        if (days_in_year < days_in_month) {
+            translated->month = month + 1;
+            translated->day = days_in_year + 1;
+            return;
+        }
+        days_in_year -= days_in_month;
+    }
+    translated->month = 12;
+    translated->day = days_in_year + 1;
+}
 /* Direct wrappers over Vircon RNG state, not a hosted libc RNG. */
 static inline int rand(void) { return vircon__rng_get_current_value(); }
 static inline void srand(int seed) { vircon__rng_set_current_value(seed); }

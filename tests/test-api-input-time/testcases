@@ -1,0 +1,4 @@
+source=input-time.c
+include_dirs=../../include
+normalize=true
+expectations=expected.asm
