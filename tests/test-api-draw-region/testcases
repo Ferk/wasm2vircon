@@ -1,4 +1,5 @@
 source=draw-region.c
+entry=__original_main
 include_dirs=../../include
 normalize=true
 expectations=expected.asm

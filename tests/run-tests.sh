@@ -51,7 +51,7 @@ run_cases() {
 
     source_file=
     wasm_as_options=
-    entry=__original_main
+    entry=main
     expectations_file=
     error_expectations_file=
     outcome=accept

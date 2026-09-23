@@ -19,9 +19,10 @@ static void print_usage(FILE *stream) {
           "\n"
           "Translate the supported VirconWasm v1.12 profile into Vircon32 "
           "assembly.\n"
-          "The default entry export is __original_main; --entry makes the "
+          "The default entry export is main; --entry selects a different "
           "frontend\n"
-          "entry convention explicit. --allow-stack-pointer accepts only the\n"
+          "entry export. Entries may return void or i32. "
+          "--allow-stack-pointer accepts only the\n"
           "restricted mutable i32 __stack_pointer ABI global.\n");
 }
 
@@ -29,7 +30,7 @@ static void print_usage(FILE *stream) {
 int main(int argc, char **argv) {
   const char *input_path = NULL;
   const char *output_path = NULL;
-  const char *entry_name = "__original_main";
+  const char *entry_name = "main";
   bool allow_stack_pointer = false;
   Diagnostics diagnostics;
   WasmModule module;

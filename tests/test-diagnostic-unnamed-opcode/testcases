@@ -1,3 +1,4 @@
 source=unsupported-rotl.wat
+entry=__original_main
 outcome=reject
 error_expectations=expected.error

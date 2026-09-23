@@ -891,10 +891,11 @@ bool validate_virconwasm_v1(const WasmModule *module, const char *entry_name,
   }
   entry = wasm_module_find_function(module, entry_export->value);
   if (entry == NULL || entry->is_import || entry->param_count != 0 ||
-      entry->result != WASM_VALUE_I32) {
+      (entry->result != WASM_VALUE_NONE && entry->result != WASM_VALUE_I32)) {
     diagnostics_error(
         diagnostics,
-        "entry export '%s' must refer to a defined () -> i32 function",
+        "entry export '%s' must refer to a defined () -> () or () -> i32 "
+        "function",
         entry_name);
     return false;
   }

@@ -22,7 +22,7 @@ definition named NAME, compiled with the application. --tilemap first invokes
 tiled2vircon for a one-layer TMX map and then embeds its generated .vmap under
 NAME. These options affect Wasm active data; they are not cartridge resources.
 
-The default entry export is __original_main. Tool paths may be overridden with
+The default entry export is 'main'. Tool paths may be overridden with
 the CLANG, WASM2VIRCON, ASSEMBLE, and PACKROM environment variables; otherwise
 clang, wasm2vircon, assemble, and packrom are resolved from PATH.
 
@@ -32,7 +32,7 @@ without a filename extension or path.
 EOF
 }
 
-entry=__original_main
+entry=main
 rom_name=
 extra_sources=()
 include_dirs=()

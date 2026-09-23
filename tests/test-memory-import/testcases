@@ -1,2 +1,3 @@
 source=memory-import.wat
+entry=__original_main
 outcome=reject

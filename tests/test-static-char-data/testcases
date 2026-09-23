@@ -1,2 +1,3 @@
 source=static-char-data.c
+entry=__original_main
 expectations=expected.asm

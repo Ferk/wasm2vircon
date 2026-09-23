@@ -8,6 +8,8 @@
  * It is header-only: the public helpers below are ordinary `static` C code,
  * and their `vircon__*` calls are private hardware-like Wasm imports.  No
  * runtime .c files need to be carried, compiled, or linked by applications.
+ * Use `void main(void)` as the application entry point, matching the official
+ * Vircon C convention and the build driver's default `main` export.
  *
  * This is not a hosted libc.  It has no stdio, printf, general allocation,
  * files, locale, or UTF-8 support.  It supplies the documented small byte
