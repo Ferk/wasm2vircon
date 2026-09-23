@@ -579,18 +579,26 @@ static bool validate_expression(const WasmModule *module,
            validate_expression(module, function, expression->children[0],
                                reachable, diagnostics);
   case WASM_EXPR_LOAD:
-    if (!((expression->bytes == 1 && !expression->is_signed) ||
-          expression->bytes == 4)) {
+    if (!((expression->bytes == 1 && !expression->is_signed &&
+           expression->value_type == WASM_VALUE_I32) ||
+          (expression->bytes == 4 &&
+           (expression->value_type == WASM_VALUE_I32 ||
+            expression->value_type == WASM_VALUE_F32)))) {
       validation_expression_error(diagnostics, function, expression,
-                                  "unsupported load width/sign");
+                                  "unsupported load width, sign, or result "
+                                  "type");
       return false;
     }
     return validate_expression(module, function, expression->children[0],
                                reachable, diagnostics);
   case WASM_EXPR_STORE:
-    if (expression->bytes != 1 && expression->bytes != 4) {
+    if (!((expression->bytes == 1 &&
+           expression->value_type == WASM_VALUE_I32) ||
+          (expression->bytes == 4 &&
+           (expression->value_type == WASM_VALUE_I32 ||
+            expression->value_type == WASM_VALUE_F32)))) {
       validation_expression_error(diagnostics, function, expression,
-                                  "unsupported store width");
+                                  "unsupported store width or value type");
       return false;
     }
     return validate_expression(module, function, expression->children[0],

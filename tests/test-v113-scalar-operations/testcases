@@ -1,0 +1,3 @@
+source=scalar-operations.wat
+entry=main
+expectations=expected.asm

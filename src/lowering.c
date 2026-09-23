@@ -597,6 +597,47 @@ static bool emit_i32_shr_s(Context *context) {
          emit(context, "  shl R1, R3") && emit_label(context, done);
 }
 
+/* Sign-extends the low 8 or 16 bits currently held in R1. */
+static bool emit_i32_extend_s(Context *context, unsigned bits) {
+  uint32_t value_mask = bits == 8 ? 0x000000FFu : 0x0000FFFFu;
+  uint32_t sign_mask = bits == 8 ? 0x00000080u : 0x00008000u;
+  uint32_t extension_mask = bits == 8 ? 0xFFFFFF00u : 0xFFFF0000u;
+  char done[64];
+
+  if (!fresh_label(context, "extend_s_done", done, sizeof(done)))
+    return false;
+  return emit(context, "  and R1, 0x%08X", value_mask) &&
+         emit(context, "  mov R2, R1") &&
+         emit(context, "  and R2, 0x%08X", sign_mask) &&
+         emit(context, "  jf R2, %s", done) &&
+         emit(context, "  or R1, 0x%08X", extension_mask) &&
+         emit_label(context, done);
+}
+
+/* Rotates R1 by the low five bits of R2 using Vircon32's bidirectional SHL. */
+static bool emit_i32_rotate(Context *context, bool rotate_left) {
+  char done[64];
+
+  if (!fresh_label(context, rotate_left ? "rotl_done" : "rotr_done", done,
+                   sizeof(done)))
+    return false;
+  if (!emit(context, "  and R2, 31") || !emit(context, "  jf R2, %s", done) ||
+      !emit(context, "  mov R3, R1"))
+    return false;
+
+  if (rotate_left) {
+    if (!emit(context, "  shl R1, R2") || !emit(context, "  mov R4, R2") ||
+        !emit(context, "  isub R4, 32") || !emit(context, "  shl R3, R4"))
+      return false;
+  } else {
+    if (!emit(context, "  mov R4, 0") || !emit(context, "  isub R4, R2") ||
+        !emit(context, "  shl R1, R4") || !emit(context, "  mov R4, 32") ||
+        !emit(context, "  isub R4, R2") || !emit(context, "  shl R3, R4"))
+      return false;
+  }
+  return emit(context, "  or R1, R3") && emit_label(context, done);
+}
+
 /* Emit a correctly rounded conversion from an unsigned Wasm i32 to f32.
  * CIF accepts only signed values. For the upper unsigned half, shifting once
  * and retaining bit zero as a sticky bit preserves round-to-nearest-even when
@@ -1191,6 +1232,14 @@ static bool lower_binary(Context *context, const WasmExpr *expression,
     if (!emit(context, "  fsub R1, R2"))
       return false;
     break;
+  case WASM_BINARY_F32_EQ:
+    if (!emit(context, "  feq R1, R2"))
+      return false;
+    break;
+  case WASM_BINARY_F32_NE:
+    if (!emit(context, "  fne R1, R2"))
+      return false;
+    break;
   case WASM_BINARY_F32_LE:
     if (!emit(context, "  fle R1, R2"))
       return false;
@@ -1209,6 +1258,10 @@ static bool lower_binary(Context *context, const WasmExpr *expression,
     break;
   case WASM_BINARY_F32_GT:
     if (!emit(context, "  fgt R1, R2"))
+      return false;
+    break;
+  case WASM_BINARY_F32_GE:
+    if (!emit(context, "  fge R1, R2"))
       return false;
     break;
   case WASM_BINARY_LT_U:
@@ -1240,6 +1293,14 @@ static bool lower_binary(Context *context, const WasmExpr *expression,
     break;
   case WASM_BINARY_SHL:
     if (!emit(context, "  and R2, 31") || !emit(context, "  shl R1, R2"))
+      return false;
+    break;
+  case WASM_BINARY_ROTL:
+    if (!emit_i32_rotate(context, true))
+      return false;
+    break;
+  case WASM_BINARY_ROTR:
+    if (!emit_i32_rotate(context, false))
       return false;
     break;
   case WASM_BINARY_DIV_U:
@@ -1558,6 +1619,12 @@ static bool lower_expression(Context *context, const WasmExpr *expression,
     if (expression->unary_op == WASM_UNARY_EQZ) {
       if (!emit(context, "  ieq R1, 0"))
         return false;
+    } else if (expression->unary_op == WASM_UNARY_EXTEND8_S) {
+      if (!emit_i32_extend_s(context, 8))
+        return false;
+    } else if (expression->unary_op == WASM_UNARY_EXTEND16_S) {
+      if (!emit_i32_extend_s(context, 16))
+        return false;
     } else if (expression->unary_op == WASM_UNARY_CONVERT_I32_S_TO_F32) {
       if (!emit(context, "  cif R1"))
         return false;
@@ -1585,6 +1652,22 @@ static bool lower_expression(Context *context, const WasmExpr *expression,
           !emit(context, "  jmp %s", done) || !emit_label(context, maximum) ||
           !emit(context, "  mov R1, 0x7FFFFFFF") || !emit_label(context, done))
         return false;
+    } else if (expression->unary_op == WASM_UNARY_F32_NEG) {
+      if (!emit(context, "  fsgn R1"))
+        return false;
+    } else if (expression->unary_op == WASM_UNARY_F32_ABS) {
+      if (!emit(context, "  fabs R1"))
+        return false;
+    } else if (expression->unary_op == WASM_UNARY_F32_FLOOR) {
+      if (!emit(context, "  flr R1"))
+        return false;
+    } else if (expression->unary_op == WASM_UNARY_F32_CEIL) {
+      if (!emit(context, "  ceil R1"))
+        return false;
+    } else if (expression->unary_op == WASM_UNARY_REINTERPRET_F32_TO_I32 ||
+               expression->unary_op == WASM_UNARY_REINTERPRET_I32_TO_F32) {
+      /* Both values already occupy one raw target word, so no instruction is
+       * needed. The frontend records the Wasm type transition. */
     } else
       return false;
     if (!store_slot(context, left.slot, 1))

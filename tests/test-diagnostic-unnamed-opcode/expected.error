@@ -1,4 +1,4 @@
-Wasm i32.rotl
+Wasm i32.clz
 function 0
 expression path body
-unsupported binary operation
+unsupported unary operation

@@ -17,7 +17,7 @@ static void print_usage(FILE *stream) {
           "Usage: wasm2vircon input.wasm [--entry NAME] "
           "[--allow-stack-pointer] -o output.asm\n"
           "\n"
-          "Translate the supported VirconWasm v1.12 profile into Vircon32 "
+          "Translate the supported VirconWasm v1.13 profile into Vircon32 "
           "assembly.\n"
           "The default entry export is main; --entry selects a different "
           "frontend\n"

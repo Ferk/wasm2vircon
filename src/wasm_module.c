@@ -233,12 +233,28 @@ static bool packed_i64_words(BinaryenExpressionRef source,
 static const char *unary_opcode(BinaryenOp op) {
   if (op == BinaryenEqZInt32())
     return "i32.eqz";
+  if (op == BinaryenExtendS8Int32())
+    return "i32.extend8_s";
+  if (op == BinaryenExtendS16Int32())
+    return "i32.extend16_s";
   if (op == BinaryenConvertSInt32ToFloat32())
     return "f32.convert_i32_s";
   if (op == BinaryenConvertUInt32ToFloat32())
     return "f32.convert_i32_u";
   if (op == BinaryenTruncSatSFloat32ToInt32())
     return "i32.trunc_sat_f32_s";
+  if (op == BinaryenReinterpretFloat32())
+    return "i32.reinterpret_f32";
+  if (op == BinaryenReinterpretInt32())
+    return "f32.reinterpret_i32";
+  if (op == BinaryenNegFloat32())
+    return "f32.neg";
+  if (op == BinaryenAbsFloat32())
+    return "f32.abs";
+  if (op == BinaryenFloorFloat32())
+    return "f32.floor";
+  if (op == BinaryenCeilFloat32())
+    return "f32.ceil";
   if (op == BinaryenClzInt32())
     return "i32.clz";
   if (op == BinaryenCtzInt32())
@@ -594,6 +610,7 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source,
     if (expression == NULL)
       return NULL;
     expression->bytes = BinaryenLoadGetBytes(source);
+    expression->value_type = convert_type(BinaryenExpressionGetType(source));
     expression->offset = BinaryenLoadGetOffset(source);
     expression->align = BinaryenLoadGetAlign(source);
     expression->is_signed = BinaryenLoadIsSigned(source);
@@ -606,15 +623,18 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source,
     return expression;
   }
   if (id == BinaryenStoreId()) {
-    expression =
-        new_expression(WASM_EXPR_STORE,
-                       BinaryenStoreGetBytes(source) == 8   ? "i64.store"
-                       : BinaryenStoreGetBytes(source) == 1 ? "i32.store8"
-                                                            : "i32.store",
-                       path, diagnostics);
+    expression = new_expression(
+        WASM_EXPR_STORE,
+        BinaryenStoreGetBytes(source) == 8   ? "i64.store"
+        : BinaryenStoreGetBytes(source) == 1 ? "i32.store8"
+        : BinaryenStoreGetValueType(source) == BinaryenTypeFloat32()
+            ? "f32.store"
+            : "i32.store",
+        path, diagnostics);
     if (expression == NULL)
       return NULL;
     expression->bytes = BinaryenStoreGetBytes(source);
+    expression->value_type = convert_type(BinaryenStoreGetValueType(source));
     expression->offset = BinaryenStoreGetOffset(source);
     expression->align = BinaryenStoreGetAlign(source);
     if (expression->bytes == 8) {
@@ -826,14 +846,23 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source,
         new_expression(WASM_EXPR_UNARY, unary_opcode(op), path, diagnostics);
     if (expression == NULL)
       return NULL;
-    expression->unary_op = op == BinaryenEqZInt32() ? WASM_UNARY_EQZ
-                           : op == BinaryenConvertSInt32ToFloat32()
-                               ? WASM_UNARY_CONVERT_I32_S_TO_F32
-                           : op == BinaryenConvertUInt32ToFloat32()
-                               ? WASM_UNARY_CONVERT_I32_U_TO_F32
-                           : op == BinaryenTruncSatSFloat32ToInt32()
-                               ? WASM_UNARY_TRUNC_SAT_F32_TO_I32
-                               : WASM_UNARY_OTHER;
+    expression->unary_op =
+        op == BinaryenEqZInt32()         ? WASM_UNARY_EQZ
+        : op == BinaryenExtendS8Int32()  ? WASM_UNARY_EXTEND8_S
+        : op == BinaryenExtendS16Int32() ? WASM_UNARY_EXTEND16_S
+        : op == BinaryenConvertSInt32ToFloat32()
+            ? WASM_UNARY_CONVERT_I32_S_TO_F32
+        : op == BinaryenConvertUInt32ToFloat32()
+            ? WASM_UNARY_CONVERT_I32_U_TO_F32
+        : op == BinaryenTruncSatSFloat32ToInt32()
+            ? WASM_UNARY_TRUNC_SAT_F32_TO_I32
+        : op == BinaryenReinterpretFloat32() ? WASM_UNARY_REINTERPRET_F32_TO_I32
+        : op == BinaryenReinterpretInt32()   ? WASM_UNARY_REINTERPRET_I32_TO_F32
+        : op == BinaryenNegFloat32()         ? WASM_UNARY_F32_NEG
+        : op == BinaryenAbsFloat32()         ? WASM_UNARY_F32_ABS
+        : op == BinaryenFloorFloat32()       ? WASM_UNARY_F32_FLOOR
+        : op == BinaryenCeilFloat32()        ? WASM_UNARY_F32_CEIL
+                                             : WASM_UNARY_OTHER;
     if (!allocate_children(expression, 1, diagnostics))
       goto fail;
     expression->children[0] = convert_child(BinaryenUnaryGetValue(source),
@@ -871,13 +900,18 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source,
                             : op == BinaryenOrInt32()    ? WASM_BINARY_OR
                             : op == BinaryenRemUInt32()  ? WASM_BINARY_REM_U
                             : op == BinaryenShrUInt32()  ? WASM_BINARY_SHR_U
+                            : op == BinaryenRotLInt32()  ? WASM_BINARY_ROTL
+                            : op == BinaryenRotRInt32()  ? WASM_BINARY_ROTR
                             : op == BinaryenAddFloat32() ? WASM_BINARY_F32_ADD
                             : op == BinaryenSubFloat32() ? WASM_BINARY_F32_SUB
+                            : op == BinaryenEqFloat32()  ? WASM_BINARY_F32_EQ
+                            : op == BinaryenNeFloat32()  ? WASM_BINARY_F32_NE
                             : op == BinaryenLeFloat32()  ? WASM_BINARY_F32_LE
                             : op == BinaryenLtFloat32()  ? WASM_BINARY_F32_LT
                             : op == BinaryenMulFloat32() ? WASM_BINARY_F32_MUL
                             : op == BinaryenDivFloat32() ? WASM_BINARY_F32_DIV
                             : op == BinaryenGtFloat32()  ? WASM_BINARY_F32_GT
+                            : op == BinaryenGeFloat32()  ? WASM_BINARY_F32_GE
                                                          : WASM_BINARY_OTHER;
     if (!allocate_children(expression, 2, diagnostics))
       goto fail;

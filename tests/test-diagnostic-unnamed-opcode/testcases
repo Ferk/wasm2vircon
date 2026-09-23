@@ -1,4 +1,4 @@
-source=unsupported-rotl.wat
+source=unsupported-clz.wat
 entry=__original_main
 outcome=reject
 error_expectations=expected.error
