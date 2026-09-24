@@ -47,6 +47,14 @@ if(BUILD_TESTING)
   find_program(VIRCON_TILED2VIRCON_EXECUTABLE tiled2vircon REQUIRED)
 
   add_test(
+    NAME wasm2vircon-cli-inspection
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli-inspection-test.sh
+      $<TARGET_FILE:wasm2vircon>
+      ${WASM_AS_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests
+  )
+
+  add_test(
     NAME wasm2vircon-profile
     COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/run-tests.sh
       $<TARGET_FILE:wasm2vircon>

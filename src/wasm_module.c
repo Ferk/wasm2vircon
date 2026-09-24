@@ -1064,6 +1064,139 @@ static bool read_file(const char *path, char **contents, size_t *size,
   return true;
 }
 
+/* Returns a readable name for one scalar/reference Wasm value type. */
+static const char *binaryen_type_name(BinaryenType type) {
+  if (type == BinaryenTypeNone())
+    return "none";
+  if (type == BinaryenTypeInt32())
+    return "i32";
+  if (type == BinaryenTypeInt64())
+    return "i64";
+  if (type == BinaryenTypeFloat32())
+    return "f32";
+  if (type == BinaryenTypeFloat64())
+    return "f64";
+  if (type == BinaryenTypeVec128())
+    return "v128";
+  if (type == BinaryenTypeFuncref())
+    return "funcref";
+  if (type == BinaryenTypeExternref())
+    return "externref";
+  if (type == BinaryenTypeUnreachable())
+    return "unreachable";
+  return "other";
+}
+
+/* Prints a Binaryen function parameter or result tuple without restricting it.
+ */
+static void print_binaryen_type_tuple(FILE *stream, BinaryenType type) {
+  BinaryenIndex arity = BinaryenTypeArity(type), index;
+  BinaryenType *items;
+  if (arity == 0) {
+    fputs("()", stream);
+    return;
+  }
+  items = calloc(arity, sizeof(*items));
+  if (items == NULL) {
+    fputs("(<out of memory>)", stream);
+    return;
+  }
+  BinaryenTypeExpand(type, items);
+  fputc('(', stream);
+  for (index = 0; index < arity; ++index) {
+    if (index != 0)
+      fputs(", ", stream);
+    fputs(binaryen_type_name(items[index]), stream);
+  }
+  fputc(')', stream);
+  free(items);
+}
+
+/* Writes an intentionally non-validating Binaryen module inventory for users.
+ */
+bool wasm_module_report_profile(const char *path, FILE *stream,
+                                Diagnostics *diagnostics) {
+  char *contents = NULL, *text = NULL;
+  size_t size = 0;
+  BinaryenModuleRef source = NULL;
+  BinaryenIndex index, import_count = 0;
+  bool success = false;
+
+  if (!read_file(path, &contents, &size, diagnostics))
+    goto done;
+  source = BinaryenModuleReadWithFeatures(contents, size, BinaryenFeatureAll());
+  if (source == NULL || !BinaryenModuleValidate(source)) {
+    diagnostics_error(diagnostics,
+                      "Binaryen could not load '%s' as a valid Wasm module",
+                      path);
+    goto done;
+  }
+  text = BinaryenModuleAllocateAndWriteText(source);
+  if (text == NULL) {
+    diagnostics_error(diagnostics,
+                      "Binaryen could not print '%s' as Wasm text", path);
+    goto done;
+  }
+  for (index = 0; index < BinaryenGetNumFunctions(source); ++index) {
+    BinaryenFunctionRef function = BinaryenGetFunctionByIndex(source, index);
+    const char *import_module = BinaryenFunctionImportGetModule(function);
+    if (import_module != NULL && import_module[0] != '\0')
+      ++import_count;
+  }
+
+  fprintf(stream, "VirconWasm profile report\n");
+  fprintf(stream, "input: %s\n", path);
+  fprintf(stream, "Binaryen features: 0x%08X\n",
+          (unsigned)BinaryenModuleGetFeatures(source));
+  fprintf(stream, "functions: %u (%u imports, %u defined)\n",
+          (unsigned)BinaryenGetNumFunctions(source), (unsigned)import_count,
+          (unsigned)(BinaryenGetNumFunctions(source) - import_count));
+  fprintf(stream, "exports: %u\n", (unsigned)BinaryenGetNumExports(source));
+  fprintf(stream, "globals: %u\n", (unsigned)BinaryenGetNumGlobals(source));
+  fprintf(stream, "tables: %u\n", (unsigned)BinaryenGetNumTables(source));
+  fprintf(stream, "element segments: %u\n",
+          (unsigned)BinaryenGetNumElementSegments(source));
+  fprintf(stream, "data segments: %u\n",
+          (unsigned)BinaryenGetNumDataSegments(source));
+  fprintf(stream, "memory: %s\n",
+          BinaryenHasMemory(source) ? "present" : "absent");
+  fputs("\nFunctions:\n", stream);
+  for (index = 0; index < BinaryenGetNumFunctions(source); ++index) {
+    BinaryenFunctionRef function = BinaryenGetFunctionByIndex(source, index);
+    const char *name = BinaryenFunctionGetName(function);
+    const char *import_module = BinaryenFunctionImportGetModule(function);
+    const char *import_name = BinaryenFunctionImportGetBase(function);
+    fprintf(stream, "  [%u] %s", (unsigned)index,
+            name != NULL && name[0] != '\0' ? name : "<unnamed>");
+    if (import_module != NULL && import_module[0] != '\0')
+      fprintf(stream, " import %s.%s", import_module,
+              import_name != NULL ? import_name : "<unnamed>");
+    else
+      fprintf(stream, " defined locals=%u",
+              (unsigned)BinaryenFunctionGetNumVars(function));
+    fputs(" params=", stream);
+    print_binaryen_type_tuple(stream, BinaryenFunctionGetParams(function));
+    fputs(" results=", stream);
+    print_binaryen_type_tuple(stream, BinaryenFunctionGetResults(function));
+    fputc('\n', stream);
+  }
+  fputs("\nBinaryen Wasm text (complete module; inspect this for every "
+        "expression):\n",
+        stream);
+  fputs(text, stream);
+  if (text[0] != '\0' && text[strlen(text) - 1] != '\n')
+    fputc('\n', stream);
+  success = ferror(stream) == 0;
+  if (!success)
+    diagnostics_error(diagnostics, "cannot write Wasm profile report");
+done:
+  free(text);
+  free(contents);
+  if (source != NULL)
+    BinaryenModuleDispose(source);
+  return success;
+}
+
 /* Binaryen 130 has no memory enumerator. Its own text form supplies the sole
  * core-memory name and limits; Binaryen still owns all binary decoding. */
 /* Extracts memory declarations from Binaryen's printed module representation.

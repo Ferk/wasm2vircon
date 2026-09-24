@@ -181,6 +181,9 @@ typedef struct WasmModule {
 /* Decodes a Wasm file through Binaryen into the compiler-owned module model. */
 bool wasm_module_load(const char *path, WasmModule *module,
                       Diagnostics *diagnostics);
+/* Writes a Binaryen-decoded module inventory and complete printed Wasm text. */
+bool wasm_module_report_profile(const char *path, FILE *stream,
+                                Diagnostics *diagnostics);
 /* Releases every allocation owned by a decoded module. */
 void wasm_module_dispose(WasmModule *module);
 /* Finds a function by its internal Wasm name. */
