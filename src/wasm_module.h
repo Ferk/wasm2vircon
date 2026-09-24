@@ -23,6 +23,7 @@ typedef enum WasmExprKind {
   WASM_EXPR_LOOP,
   WASM_EXPR_BR,
   WASM_EXPR_BR_IF,
+  WASM_EXPR_BR_TABLE,
   WASM_EXPR_CALL,
   WASM_EXPR_I32_CONST,
   WASM_EXPR_F32_CONST,
@@ -115,6 +116,9 @@ typedef struct WasmExpr {
   const char *opcode;
   char *path;
   char *name;
+  /* Case target labels for br_table; name stores its required default label. */
+  char **branch_targets;
+  size_t branch_target_count;
   int32_t i32_value;
   uint64_t i64_value;
   float f32_value;

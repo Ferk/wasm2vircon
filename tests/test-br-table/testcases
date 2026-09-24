@@ -1,0 +1,3 @@
+source=br-table.wat
+entry=main
+expectations=expected.asm

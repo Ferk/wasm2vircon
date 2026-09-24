@@ -88,6 +88,9 @@ static void free_expression(WasmExpr *expression) {
   for (index = 0; index < expression->child_count; ++index)
     free_expression(expression->children[index]);
   free(expression->children);
+  for (index = 0; index < expression->branch_target_count; ++index)
+    free(expression->branch_targets[index]);
+  free(expression->branch_targets);
   free(expression->path);
   free(expression->name);
   free(expression);
@@ -362,8 +365,6 @@ static const char *load_opcode(BinaryenExpressionRef source) {
 static const char *unsupported_expression_opcode(BinaryenExpressionId id) {
   if (id == BinaryenNopId())
     return "nop";
-  if (id == BinaryenSwitchId())
-    return "br_table";
   if (id == BinaryenCallIndirectId())
     return "call_indirect";
   if (id == BinaryenGlobalGetId())
@@ -473,6 +474,55 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source,
       if (expression->children[0] == NULL)
         goto fail;
     }
+    return expression;
+  }
+  if (id == BinaryenSwitchId()) {
+    BinaryenExpressionRef condition;
+    expression =
+        new_expression(WASM_EXPR_BR_TABLE, "br_table", path, diagnostics);
+    if (expression == NULL)
+      return NULL;
+    expression->name = copy_string(BinaryenSwitchGetDefaultName(source));
+    if (expression->name == NULL) {
+      expression_error(diagnostics, context, expression->opcode, path,
+                       "br_table has no default target");
+      goto fail;
+    }
+    if (BinaryenSwitchGetValue(source) != NULL) {
+      expression_error(diagnostics, context, expression->opcode, path,
+                       "value-carrying br_table branches are unsupported");
+      goto fail;
+    }
+    condition = BinaryenSwitchGetCondition(source);
+    if (BinaryenExpressionGetType(condition) != BinaryenTypeInt32()) {
+      expression_error(diagnostics, context, expression->opcode, path,
+                       "br_table selector must be i32");
+      goto fail;
+    }
+    expression->branch_target_count = BinaryenSwitchGetNumNames(source);
+    if (expression->branch_target_count != 0) {
+      expression->branch_targets = calloc(expression->branch_target_count,
+                                          sizeof(*expression->branch_targets));
+      if (expression->branch_targets == NULL) {
+        diagnostics_error(diagnostics, "out of memory decoding br_table");
+        goto fail;
+      }
+      for (index = 0; index < expression->branch_target_count; ++index) {
+        expression->branch_targets[index] =
+            copy_string(BinaryenSwitchGetNameAt(source, index));
+        if (expression->branch_targets[index] == NULL) {
+          expression_error(diagnostics, context, expression->opcode, path,
+                           "br_table case has no target");
+          goto fail;
+        }
+      }
+    }
+    if (!allocate_children(expression, 1, diagnostics))
+      goto fail;
+    expression->children[0] =
+        convert_child(condition, diagnostics, context, path, 0);
+    if (expression->children[0] == NULL)
+      goto fail;
     return expression;
   }
   if (id == BinaryenCallId()) {

@@ -29,6 +29,12 @@ typedef struct Target {
   const char *wasm_name;
   char *label;
 } Target;
+/* One immutable cartridge-ROM table of V32 code addresses for a br_table. */
+typedef struct JumpTable {
+  char *label;
+  char **target_labels;
+  size_t target_count;
+} JumpTable;
 /* Per-function lowering state, including structured targets and temp slots. */
 typedef struct Context {
   const ValidatedModule *validated;
@@ -37,6 +43,8 @@ typedef struct Context {
   Diagnostics *diagnostics;
   Target targets[32];
   size_t target_count;
+  JumpTable *jump_tables;
+  size_t jump_table_count, jump_table_capacity;
   unsigned next_label, temp_depth;
   char return_label[64];
   uint32_t memory_bytes;
@@ -90,6 +98,106 @@ static bool fresh_label(Context *context, const char *kind, char *out,
 /* Appends one assembly label definition. */
 static bool emit_label(Context *context, const char *label) {
   return emit(context, "%s:", label);
+}
+
+/* Finds an active structured-control target by its Binaryen-assigned name. */
+static const char *find_target_label(const Context *context, const char *name) {
+  size_t index;
+  for (index = context->target_count; index != 0; --index)
+    if (strcmp(context->targets[index - 1].wasm_name, name) == 0)
+      return context->targets[index - 1].label;
+  return NULL;
+}
+
+/* Releases the owned target-address tables accumulated for one function. */
+static void dispose_jump_tables(Context *context) {
+  size_t table_index, target_index;
+  for (table_index = 0; table_index < context->jump_table_count;
+       ++table_index) {
+    JumpTable *table = &context->jump_tables[table_index];
+    free(table->label);
+    for (target_index = 0; target_index < table->target_count; ++target_index)
+      free(table->target_labels[target_index]);
+    free(table->target_labels);
+  }
+  free(context->jump_tables);
+  context->jump_tables = NULL;
+  context->jump_table_count = 0;
+  context->jump_table_capacity = 0;
+}
+
+/* Records a ROM table after resolving each Wasm case label structurally. */
+static bool record_jump_table(Context *context, const char *label,
+                              const WasmExpr *expression) {
+  JumpTable table = {0};
+  JumpTable *tables;
+  size_t index, capacity;
+  if (context->jump_table_count == context->jump_table_capacity) {
+    capacity = context->jump_table_capacity == 0
+                   ? 4
+                   : context->jump_table_capacity * 2;
+    tables = realloc(context->jump_tables, capacity * sizeof(*tables));
+    if (tables == NULL) {
+      diagnostics_error(context->diagnostics,
+                        "out of memory recording br_table targets");
+      return false;
+    }
+    context->jump_tables = tables;
+    context->jump_table_capacity = capacity;
+  }
+  table.label = format_text("%s", label);
+  table.target_count = expression->branch_target_count;
+  table.target_labels =
+      calloc(table.target_count, sizeof(*table.target_labels));
+  if (table.label == NULL || table.target_labels == NULL) {
+    free(table.label);
+    free(table.target_labels);
+    diagnostics_error(context->diagnostics,
+                      "out of memory recording br_table targets");
+    return false;
+  }
+  for (index = 0; index < table.target_count; ++index) {
+    const char *target =
+        find_target_label(context, expression->branch_targets[index]);
+    if (target == NULL) {
+      diagnostics_error(context->diagnostics,
+                        "br_table targets '%s' outside active structured "
+                        "control",
+                        expression->branch_targets[index]);
+      while (index != 0)
+        free(table.target_labels[--index]);
+      free(table.target_labels);
+      free(table.label);
+      return false;
+    }
+    table.target_labels[index] = format_text("%s", target);
+    if (table.target_labels[index] == NULL) {
+      diagnostics_error(context->diagnostics,
+                        "out of memory recording br_table targets");
+      while (index != 0)
+        free(table.target_labels[--index]);
+      free(table.target_labels);
+      free(table.label);
+      return false;
+    }
+  }
+  context->jump_tables[context->jump_table_count++] = table;
+  return true;
+}
+
+/* Emits all function-local br_table address data after executable code. */
+static bool emit_jump_tables(Context *context) {
+  size_t table_index, target_index;
+  for (table_index = 0; table_index < context->jump_table_count;
+       ++table_index) {
+    const JumpTable *table = &context->jump_tables[table_index];
+    if (!emit_label(context, table->label))
+      return false;
+    for (target_index = 0; target_index < table->target_count; ++target_index)
+      if (!emit(context, "  pointer %s", table->target_labels[target_index]))
+        return false;
+  }
+  return true;
 }
 
 /* Counts target words reserved for Wasm locals; restricted i64 locals use two.
@@ -155,6 +263,54 @@ static void function_label(const WasmModule *module,
 
 static bool lower_expression(Context *context, const WasmExpr *expression,
                              Value *value);
+
+/* Lowers a resultless Wasm br_table through an immutable V32 ROM address table.
+ */
+static bool lower_br_table(Context *context, const WasmExpr *expression,
+                           Value *value) {
+  Value selector = {0};
+  const char *default_target;
+  char table_label[64];
+  uint32_t table_count;
+
+  if (!lower_expression(context, expression->children[0], &selector) ||
+      !selector.present)
+    return false;
+  default_target = find_target_label(context, expression->name);
+  if (default_target == NULL) {
+    diagnostics_error(context->diagnostics,
+                      "br_table default targets '%s' outside active "
+                      "structured control",
+                      expression->name);
+    return false;
+  }
+  if (expression->branch_target_count == 0) {
+    release(context, selector);
+    value->present = false;
+    return emit(context, "  jmp %s", default_target);
+  }
+  if (expression->branch_target_count > UINT32_MAX ||
+      !fresh_label(context, "br_table", table_label, sizeof(table_label)) ||
+      !record_jump_table(context, table_label, expression) ||
+      !load_slot(context, 2, selector.slot))
+    return false;
+  table_count = (uint32_t)expression->branch_target_count;
+  release(context, selector);
+  value->present = false;
+
+  /* Wasm selects a table entry only for unsigned selector values below the
+   * table length. Biasing changes that unsigned order into Vircon's signed
+   * ILT comparison; all remaining values take the default branch. */
+  return emit(context, "  mov R1, R2") &&
+         emit(context, "  xor R1, 0x80000000") &&
+         emit(context, "  mov R3, 0x%08X", table_count) &&
+         emit(context, "  xor R3, 0x80000000") &&
+         emit(context, "  ilt R1, R3") &&
+         emit(context, "  jf R1, %s", default_target) &&
+         emit(context, "  mov R3, %s", table_label) &&
+         emit(context, "  iadd R3, R2") && emit(context, "  mov R4, [R3]") &&
+         emit(context, "  jmp R4");
+}
 
 /* Checks a Wasm byte address and leaves its effective byte address in R2. */
 static bool effective_address(Context *context, Value pointer, uint32_t offset,
@@ -1755,10 +1911,11 @@ static bool lower_expression(Context *context, const WasmExpr *expression,
     free(context->targets[--context->target_count].label);
     value->present = false;
     return true;
-  case WASM_EXPR_BR:
-    for (index = context->target_count; index != 0; --index)
-      if (strcmp(context->targets[index - 1].wasm_name, expression->name) == 0)
-        return emit(context, "  jmp %s", context->targets[index - 1].label);
+  case WASM_EXPR_BR: {
+    const char *target = find_target_label(context, expression->name);
+    if (target != NULL)
+      return emit(context, "  jmp %s", target);
+  }
     diagnostics_error(context->diagnostics,
                       "branch targets '%s' outside active structured control",
                       expression->name);
@@ -1768,14 +1925,18 @@ static bool lower_expression(Context *context, const WasmExpr *expression,
         !condition.present || !load_slot(context, 1, condition.slot))
       return false;
     release(context, condition);
-    for (index = context->target_count; index != 0; --index)
-      if (strcmp(context->targets[index - 1].wasm_name, expression->name) == 0)
-        return emit(context, "  jt R1, %s", context->targets[index - 1].label);
+    {
+      const char *target = find_target_label(context, expression->name);
+      if (target != NULL)
+        return emit(context, "  jt R1, %s", target);
+    }
     diagnostics_error(
         context->diagnostics,
         "conditional branch targets '%s' outside active structured control",
         expression->name);
     return false;
+  case WASM_EXPR_BR_TABLE:
+    return lower_br_table(context, expression, value);
   case WASM_EXPR_IF:
     if (!lower_expression(context, expression->children[0], &left) ||
         !left.present || !fresh_label(context, "if_end", end, sizeof(end)) ||
@@ -1864,6 +2025,7 @@ static bool lower_function(const ValidatedModule *validated,
   Context context = {0};
   Value result = {0};
   char label[64];
+  bool success = false;
   context.validated = validated;
   context.function = function;
   context.program = program;
@@ -1878,19 +2040,24 @@ static bool lower_function(const ValidatedModule *validated,
             (unsigned)(local_storage_words(function) + TEMP_SLOTS +
                        OUTGOING_SLOTS)) ||
       !lower_expression(&context, function->body, &result))
-    return false;
+    goto done;
   if (function->result == WASM_VALUE_I32 ||
       function->result == WASM_VALUE_F32) {
     if (result.present) {
       if (!load_slot(&context, 0, result.slot))
-        return false;
+        goto done;
     } else if (!emit(&context, "  mov R0, 0"))
-      return false;
+      goto done;
   }
   release(&context, result);
-  return emit_label(&context, context.return_label) &&
-         emit(&context, "  mov SP, BP") && emit(&context, "  pop BP") &&
-         emit(&context, "  ret");
+  if (!emit_label(&context, context.return_label) ||
+      !emit(&context, "  mov SP, BP") || !emit(&context, "  pop BP") ||
+      !emit(&context, "  ret") || !emit_jump_tables(&context))
+    goto done;
+  success = true;
+done:
+  dispose_jump_tables(&context);
+  return success;
 }
 
 /* Emits startup, shared helpers, and all reachable functions into V32 IR. */

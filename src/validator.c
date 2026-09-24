@@ -523,6 +523,14 @@ static bool validate_expression(const WasmModule *module,
     return expression->child_count == 1 &&
            validate_expression(module, function, expression->children[0],
                                reachable, diagnostics);
+  case WASM_EXPR_BR_TABLE:
+    if (expression->child_count != 1 || expression->name == NULL) {
+      validation_expression_error(diagnostics, function, expression,
+                                  "malformed br_table expression");
+      return false;
+    }
+    return validate_expression(module, function, expression->children[0],
+                               reachable, diagnostics);
   case WASM_EXPR_IF:
     if (expression->child_count != 2) {
       validation_expression_error(
