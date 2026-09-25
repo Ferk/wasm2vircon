@@ -1,3 +1,4 @@
 source=br-table.wat
 entry=main
 expectations=expected.asm
+cli_inspection=validate_accept

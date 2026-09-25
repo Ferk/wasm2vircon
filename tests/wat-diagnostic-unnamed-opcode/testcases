@@ -2,3 +2,5 @@ source=unsupported-clz.wat
 entry=__original_main
 outcome=reject
 error_expectations=expected.error
+cli_inspection=validate_reject
+cli_profile_expectations=profile.expected

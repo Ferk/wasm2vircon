@@ -1,0 +1,7 @@
+# This fixture is intentionally accepted only when embedded Binaryen cleanup
+# is enabled. The CLI inspection runner owns its build-mode-specific outcome.
+source=optimizer-only.wat
+entry=main
+cli_inspection=embedded_optimizer
+cli_only=true
+cli_skip_error_expectations=expected.error

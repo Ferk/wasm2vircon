@@ -1,0 +1,4 @@
+# A focused unused-global fixture for the non-emitting CLI/legalizer checks.
+source=linker-global.wat
+entry=main
+cli_inspection=legalizer
