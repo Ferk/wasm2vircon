@@ -39,11 +39,18 @@ fi
 
 "$wasm_as" "$tests_dir/embedded-optimizer-input.wat" \
   -o "$work_dir/optimizer-input.wasm"
+"$tool" --validate-only "$work_dir/optimizer-input.wasm" --entry main \
+  > "$work_dir/legalized.out"
+"$tool" --validate-only "$work_dir/optimizer-input.wasm" --entry main \
+  --skip-input-optimization > "$work_dir/legalized-unoptimized.out"
+
+"$wasm_as" "$tests_dir/embedded-optimizer-only-input.wat" \
+  -o "$work_dir/optimizer-only-input.wasm"
 if "$tool" --help | grep -F "Embedded Binaryen normalization is enabled" \
   >/dev/null; then
-  "$tool" --validate-only "$work_dir/optimizer-input.wasm" --entry main \
+  "$tool" --validate-only "$work_dir/optimizer-only-input.wasm" --entry main \
     > "$work_dir/optimized.out"
-  if "$tool" --validate-only "$work_dir/optimizer-input.wasm" --entry main \
+  if "$tool" --validate-only "$work_dir/optimizer-only-input.wasm" --entry main \
     --skip-input-optimization > "$work_dir/unoptimized.out" \
     2> "$work_dir/unoptimized.err"; then
     echo "--skip-input-optimization did not disable the embedded optimizer" >&2
@@ -51,7 +58,7 @@ if "$tool" --help | grep -F "Embedded Binaryen normalization is enabled" \
   fi
   grep -F "globals remain unsupported" "$work_dir/unoptimized.err" >/dev/null
 else
-  if "$tool" --validate-only "$work_dir/optimizer-input.wasm" --entry main \
+  if "$tool" --validate-only "$work_dir/optimizer-only-input.wasm" --entry main \
     --skip-input-optimization > "$work_dir/unoptimized.out" \
     2> "$work_dir/unoptimized.err"; then
     echo "external build accepted the unsupported global unexpectedly" >&2

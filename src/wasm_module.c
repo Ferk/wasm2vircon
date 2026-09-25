@@ -426,15 +426,15 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source,
     return expression;
   }
   if (id == BinaryenLoopId()) {
+    BinaryenType loop_type;
     expression = new_expression(WASM_EXPR_LOOP, "loop", path, diagnostics);
     if (expression == NULL)
       return NULL;
-    if (BinaryenExpressionGetType(source) != BinaryenTypeNone() &&
-        BinaryenExpressionGetType(source) != BinaryenTypeUnreachable()) {
-      expression_error(diagnostics, context, expression->opcode, path,
-                       "value-producing loops are unsupported");
-      goto fail;
-    }
+    loop_type = BinaryenExpressionGetType(source);
+    expression->value_type =
+        loop_type == BinaryenTypeNone() || loop_type == BinaryenTypeUnreachable()
+            ? WASM_VALUE_NONE
+            : convert_type(loop_type);
     expression->name = copy_string(BinaryenLoopGetName(source));
     if (expression->name == NULL) {
       expression_error(diagnostics, context, expression->opcode, path,
@@ -1548,12 +1548,15 @@ bool wasm_module_load(const char *path, bool optimize_input,
     goto fail;
   for (index = 0; index < module->export_count; ++index) {
     BinaryenExportRef export_ref = BinaryenGetExportByIndex(source, index);
+    BinaryenExternalKind export_kind = BinaryenExportGetKind(export_ref);
     module->exports[index].name =
         copy_string(BinaryenExportGetName(export_ref));
     module->exports[index].value =
         copy_string(BinaryenExportGetValue(export_ref));
     module->exports[index].is_function =
-        BinaryenExportGetKind(export_ref) == BinaryenExternalFunction();
+        export_kind == BinaryenExternalFunction();
+    module->exports[index].is_global = export_kind == BinaryenExternalGlobal();
+    module->exports[index].is_table = export_kind == BinaryenExternalTable();
     if (!module->exports[index].name || !module->exports[index].value)
       goto fail;
   }

@@ -1,0 +1,5 @@
+source=exported-global.wat
+entry=main
+outcome=reject
+skip_input_optimization=true
+error_expectations=expected.error

@@ -50,6 +50,7 @@ add_executable(wasm2vircon
   src/main.c
   src/diagnostics.c
   src/wasm_module.c
+  src/legalize.c
   src/validator.c
   src/vircon_ir.c
   src/lowering.c

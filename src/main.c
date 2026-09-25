@@ -3,6 +3,7 @@
 
 #include "diagnostics.h"
 #include "emitter.h"
+#include "legalize.h"
 #include "lowering.h"
 #include "validator.h"
 #include "vircon_ir.h"
@@ -159,6 +160,10 @@ int main(int argc, char **argv) {
   }
   if (!wasm_module_load(input_path, !skip_input_optimization, &module,
                         &diagnostics)) {
+    report_external_normalization_hint(input_path, &diagnostics);
+    goto done;
+  }
+  if (!wasm_module_legalize_linker_artifacts(&module, &diagnostics)) {
     report_external_normalization_hint(input_path, &diagnostics);
     goto done;
   }

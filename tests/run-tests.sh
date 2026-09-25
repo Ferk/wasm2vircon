@@ -64,6 +64,7 @@ run_cases() {
     xml_expectations_file=
     normalize=false
     allow_stack_pointer=false
+    skip_input_optimization=false
     sim_commands_file=
     sim_expectations_file=
     sim_watch_for=
@@ -86,6 +87,7 @@ run_cases() {
         xml_expectations) xml_expectations_file=$value ;;
         normalize) normalize=$value ;;
         allow_stack_pointer) allow_stack_pointer=$value ;;
+        skip_input_optimization) skip_input_optimization=$value ;;
         sim_commands) sim_commands_file=$value ;;
         sim_expectations) sim_expectations_file=$value ;;
         sim_watch_for) sim_watch_for=$value ;;
@@ -171,6 +173,12 @@ run_cases() {
           echo "$case_name: allow_stack_pointer must be true or false" >&2
           exit 1
         fi
+        if [ "$skip_input_optimization" = true ]; then
+          set -- "$@" --skip-input-optimization
+        elif [ "$skip_input_optimization" != false ]; then
+          echo "$case_name: skip_input_optimization must be true or false" >&2
+          exit 1
+        fi
         "$@" -o "$case_output/$program_name.asm"
         asm_file="$case_output/$program_name.asm"
         "$assemble" -o "$case_output/$program_name.vbin" "$asm_file"
@@ -184,6 +192,12 @@ run_cases() {
           set -- "$@" --allow-stack-pointer
         elif [ "$allow_stack_pointer" != false ]; then
           echo "$case_name: allow_stack_pointer must be true or false" >&2
+          exit 1
+        fi
+        if [ "$skip_input_optimization" = true ]; then
+          set -- "$@" --skip-input-optimization
+        elif [ "$skip_input_optimization" != false ]; then
+          echo "$case_name: skip_input_optimization must be true or false" >&2
           exit 1
         fi
         if "$@" -o "$case_output/$program_name.asm" >/dev/null 2>"$error_file"; then

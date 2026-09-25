@@ -1,0 +1,4 @@
+source=raw-linked.wat
+entry=main
+skip_input_optimization=true
+expectations=expected.asm

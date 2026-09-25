@@ -150,7 +150,7 @@ typedef struct WasmFunction {
 /* An exported internal Wasm function name. */
 typedef struct WasmExport {
   char *name, *value;
-  bool is_function;
+  bool is_function, is_global, is_table;
 } WasmExport;
 /* An active or passive Wasm data segment in byte-addressed source memory. */
 typedef struct WasmDataSegment {
