@@ -1,9 +1,8 @@
 # Cross-platform C-to-ROM integration runner driven by per-case testcases metadata.
 #
-# This deliberately mirrors the supported frontend contract, but it does not
-# invoke scripts/build-rom.sh.  Keeping the test harness in CMake makes CTest
-# usable with native Windows tool installations while the user-facing shell
-# driver remains available unchanged.
+# This deliberately mirrors the supported frontend contract without invoking
+# the public CMake ROM driver. Keeping the test harness in CMake makes CTest
+# usable with native Windows tool installations.
 
 foreach(required_variable IN ITEMS TOOL CLANG WASM_LD ASSEMBLE PACKROM PNG2VIRCON WAV2VIRCON TILED2VIRCON TESTS_DIR)
   if(NOT DEFINED ${required_variable})
@@ -82,8 +81,7 @@ function(require_expectations case_name artifact expectation_file artifact_kind)
 endfunction()
 
 # Convert a project-supplied little-endian word file to the small C definition
-# used by the tile-map cases. This is equivalent to build-rom.sh's od/awk path
-# without requiring host command-line text utilities.
+# used by the tile-map cases, without requiring host command-line text utilities.
 function(write_embedded_words output_c identifier input_words)
   if(NOT identifier MATCHES "^[A-Za-z_][A-Za-z0-9_]*$")
     message(FATAL_ERROR "embedded word name is not a C identifier: ${identifier}")

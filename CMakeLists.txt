@@ -22,8 +22,8 @@ endif()
 
 # The decoder always uses Binaryen's C API. This option controls only the
 # additional in-memory cleanup pass before the compiler-owned frontend model is
-# built. AUTO enables it when a static Binaryen archive is installed; OFF keeps
-# the established external wasm-opt normalization contract.
+# built. AUTO enables it when a static Binaryen archive is installed; OFF uses
+# compiler-owned linker-artifact legalization alone.
 set(WASM2VIRCON_EMBEDDED_BINARYEN "AUTO" CACHE STRING
   "Use static Binaryen for in-memory Wasm normalization (AUTO, ON, or OFF)")
 set_property(CACHE WASM2VIRCON_EMBEDDED_BINARYEN PROPERTY STRINGS AUTO ON OFF)
@@ -50,7 +50,7 @@ if(WASM2VIRCON_EMBEDDED_BINARYEN STREQUAL "ON")
   if(NOT BINARYEN_STATIC_LIBRARY)
     message(FATAL_ERROR
       "WASM2VIRCON_EMBEDDED_BINARYEN=ON requires Binaryen's static library. Install the "
-      "static Binaryen development archive, or select OFF to use wasm-opt.")
+      "static Binaryen development archive, or select OFF to use compiler-owned cleanup only.")
   endif()
   set(WASM2VIRCON_USE_EMBEDDED_BINARYEN ON)
 elseif(WASM2VIRCON_EMBEDDED_BINARYEN STREQUAL "AUTO")
@@ -58,7 +58,7 @@ elseif(WASM2VIRCON_EMBEDDED_BINARYEN STREQUAL "AUTO")
     set(WASM2VIRCON_USE_EMBEDDED_BINARYEN ON)
   else()
     message(STATUS
-      "Static Binaryen library is unavailable; retaining external wasm-opt normalization")
+      "Static Binaryen library is unavailable; using compiler-owned cleanup only")
   endif()
 endif()
 
@@ -77,7 +77,7 @@ target_compile_features(wasm2vircon PRIVATE c_std_11)
 wasm2vircon_enable_warnings(wasm2vircon)
 target_include_directories(wasm2vircon PRIVATE src ${BINARYEN_INCLUDE_DIR})
 
-# Even an external-normalization build needs Binaryen for Wasm decoding. If
+# Even a compiler-owned-cleanup-only build needs Binaryen for Wasm decoding. If
 # CMake selects a static archive for that dependency, it needs the same C++ and
 # system libraries as an explicitly embedded archive.
 set(WASM2VIRCON_BINARYEN_LINK_LIBRARY ${BINARYEN_LIBRARY})
@@ -117,7 +117,7 @@ if(WASM2VIRCON_USE_EMBEDDED_BINARYEN)
   target_compile_definitions(wasm2vircon PRIVATE USE_EMBEDDED_BINARYEN=1)
   message(STATUS "Using embedded static Binaryen normalization")
 else()
-  message(STATUS "Using external wasm-opt normalization")
+  message(STATUS "Using compiler-owned linker-artifact cleanup only")
 endif()
 
 include(CTest)
