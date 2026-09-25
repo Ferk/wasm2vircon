@@ -14,29 +14,28 @@
 
 /* Prints the deliberately small public command-line interface. */
 static void print_usage(FILE *stream) {
-  fprintf(stream,
-          "Usage: wasm2vircon input.wasm [--entry NAME] "
-          "[--allow-stack-pointer] [--skip-input-optimization] -o output.asm\n"
-          "       wasm2vircon --validate-only input.wasm [--entry NAME] "
-          "[--allow-stack-pointer] [--skip-input-optimization]\n"
-          "       wasm2vircon --report-profile input.wasm\n"
-          "\n"
-          "Translate the supported VirconWasm v1.14 profile into Vircon32 "
-          "assembly.\n"
-          "The default entry export is main; --entry selects a different "
-          "frontend\n"
-          "entry export. Entries may return void or i32. "
-          "--allow-stack-pointer accepts only the\n"
-          "restricted mutable i32 __stack_pointer ABI global.\n"
-          "\n"
-          "--validate-only performs decoding and VirconWasm validation without "
-          "writing assembly.\n"
-          "--skip-input-optimization disables only the optional embedded input "
-          "optimizer; compiler-owned processing and validation still run.\n"
-          "--report-profile writes a Binaryen-decoded module inventory and "
-          "complete Wasm text; it\n"
-          "does not claim that the module is accepted by the restricted "
-          "VirconWasm profile.\n");
+  fprintf(stream, "Usage: wasm2vircon input.wasm [--entry NAME] "
+                  "[--allow-stack-pointer] [--skip-input-optimization] -o output.asm\n"
+                  "       wasm2vircon --validate-only input.wasm [--entry NAME] "
+                  "[--allow-stack-pointer] [--skip-input-optimization]\n"
+                  "       wasm2vircon --report-profile input.wasm\n"
+                  "\n"
+                  "Translate the supported VirconWasm v1.14 profile into Vircon32 "
+                  "assembly.\n"
+                  "The default entry export is main; --entry selects a different "
+                  "frontend\n"
+                  "entry export. Entries may return void or i32. "
+                  "--allow-stack-pointer accepts only the\n"
+                  "restricted mutable i32 __stack_pointer ABI global.\n"
+                  "\n"
+                  "--validate-only performs decoding and VirconWasm validation without "
+                  "writing assembly.\n"
+                  "--skip-input-optimization disables only the optional embedded input "
+                  "optimizer; compiler-owned processing and validation still run.\n"
+                  "--report-profile writes a Binaryen-decoded module inventory and "
+                  "complete Wasm text; it\n"
+                  "does not claim that the module is accepted by the restricted "
+                  "VirconWasm profile.\n");
 #ifdef USE_EMBEDDED_BINARYEN
   fputs("Embedded Binaryen normalization is enabled at build time.\n", stream);
 #else
@@ -48,22 +47,17 @@ static void print_usage(FILE *stream) {
 
 /* Explains the established external cleanup contract in non-embedded builds.
  */
-static void report_external_normalization_hint(const char *input_path,
-                                               Diagnostics *diagnostics) {
+static void report_external_normalization_hint(const char *input_path, Diagnostics *diagnostics) {
 #ifndef USE_EMBEDDED_BINARYEN
-  diagnostics_note(
-      diagnostics,
-      "this build has no embedded Binaryen normalizer; raw clang/wasm-ld "
-      "output may need the supported cleanup profile before translation");
-  diagnostics_note(
-      diagnostics,
-      "run: wasm-opt --enable-bulk-memory-opt "
-      "--remove-unused-module-elements --vacuum -g %s -o normalized.wasm",
-      input_path);
+  diagnostics_note(diagnostics, "this build has no embedded Binaryen normalizer; raw clang/wasm-ld "
+                                "output may need the supported cleanup profile before translation");
   diagnostics_note(diagnostics,
-                   "then run wasm2vircon normalized.wasm with the same entry "
-                   "option; scripts/normalize-virconwasm.sh provides this "
-                   "profile");
+                   "run: wasm-opt --enable-bulk-memory-opt "
+                   "--remove-unused-module-elements --vacuum -g %s -o normalized.wasm",
+                   input_path);
+  diagnostics_note(diagnostics, "then run wasm2vircon normalized.wasm with the same entry "
+                                "option; scripts/normalize-virconwasm.sh provides this "
+                                "profile");
 #else
   (void)input_path;
   (void)diagnostics;
@@ -134,21 +128,18 @@ int main(int argc, char **argv) {
       goto done;
     }
     if (input_path != NULL) {
-      diagnostics_error(&diagnostics,
-                        "only one input Wasm module is supported");
+      diagnostics_error(&diagnostics, "only one input Wasm module is supported");
       goto done;
     }
     input_path = argv[index];
   }
   if (validate_only && report_profile) {
-    diagnostics_error(&diagnostics,
-                      "--validate-only and --report-profile cannot be used "
-                      "together");
+    diagnostics_error(&diagnostics, "--validate-only and --report-profile cannot be used "
+                                    "together");
     goto done;
   }
-  if (input_path == NULL ||
-      ((!validate_only && !report_profile && output_path == NULL) ||
-       ((validate_only || report_profile) && output_path != NULL))) {
+  if (input_path == NULL || ((!validate_only && !report_profile && output_path == NULL) ||
+                             ((validate_only || report_profile) && output_path != NULL))) {
     print_usage(stderr);
     goto done;
   }
@@ -158,8 +149,7 @@ int main(int argc, char **argv) {
     status = 0;
     goto done;
   }
-  if (!wasm_module_load(input_path, !skip_input_optimization, &module,
-                        &diagnostics)) {
+  if (!wasm_module_load(input_path, !skip_input_optimization, &module, &diagnostics)) {
     report_external_normalization_hint(input_path, &diagnostics);
     goto done;
   }
@@ -167,14 +157,12 @@ int main(int argc, char **argv) {
     report_external_normalization_hint(input_path, &diagnostics);
     goto done;
   }
-  if (!validate_virconwasm_v1(&module, entry_name, allow_stack_pointer,
-                              &validated, &diagnostics)) {
+  if (!validate_virconwasm_v1(&module, entry_name, allow_stack_pointer, &validated, &diagnostics)) {
     report_external_normalization_hint(input_path, &diagnostics);
     goto done;
   }
   if (validate_only) {
-    fprintf(stdout, "%s: VirconWasm v1.14 validation passed for entry '%s'\n",
-            input_path, entry_name);
+    fprintf(stdout, "%s: VirconWasm v1.14 validation passed for entry '%s'\n", input_path, entry_name);
     status = 0;
     goto done;
   }

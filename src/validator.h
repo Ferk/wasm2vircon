@@ -15,10 +15,8 @@ typedef struct ValidatedModule {
 
 /* Checks one decoded module against the current restricted VirconWasm profile.
  */
-bool validate_virconwasm_v1(const WasmModule *module, const char *entry_name,
-                            bool allow_stack_pointer,
-                            ValidatedModule *validated,
-                            Diagnostics *diagnostics);
+bool validate_virconwasm_v1(const WasmModule *module, const char *entry_name, bool allow_stack_pointer,
+                            ValidatedModule *validated, Diagnostics *diagnostics);
 /* Releases validation-owned reachability state. */
 void validated_module_dispose(ValidatedModule *validated);
 

@@ -23,6 +23,5 @@ void vircon_ir_init(VirconIrProgram *program);
 /* Releases all program-owned instruction text. */
 void vircon_ir_dispose(VirconIrProgram *program);
 /* Takes ownership of text and appends it to program. */
-bool vircon_ir_append_text(VirconIrProgram *program, char *text,
-                           Diagnostics *diagnostics);
+bool vircon_ir_append_text(VirconIrProgram *program, char *text, Diagnostics *diagnostics);
 #endif

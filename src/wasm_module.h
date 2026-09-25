@@ -166,8 +166,7 @@ typedef struct WasmModule {
   size_t function_count;
   WasmExport *exports;
   size_t export_count;
-  bool has_memory, has_imported_memory, memory_is_shared, memory_is_64,
-      memory_has_max;
+  bool has_memory, has_imported_memory, memory_is_shared, memory_is_64, memory_has_max;
   uint32_t memory_initial_pages, memory_max_pages;
   size_t memory_count, table_count, global_count, element_segment_count;
   /* The only global that can be accepted by the restricted opt-in ABI. */
@@ -180,15 +179,12 @@ typedef struct WasmModule {
 
 /* Decodes a Wasm file into the compiler-owned model, optionally optimizing
  * linker scaffolding before the frontend conversion in embedded builds. */
-bool wasm_module_load(const char *path, bool optimize_input,
-                      WasmModule *module, Diagnostics *diagnostics);
+bool wasm_module_load(const char *path, bool optimize_input, WasmModule *module, Diagnostics *diagnostics);
 /* Writes a Binaryen-decoded module inventory and complete printed Wasm text. */
-bool wasm_module_report_profile(const char *path, FILE *stream,
-                                Diagnostics *diagnostics);
+bool wasm_module_report_profile(const char *path, FILE *stream, Diagnostics *diagnostics);
 /* Releases every allocation owned by a decoded module. */
 void wasm_module_dispose(WasmModule *module);
 /* Finds a function by its internal Wasm name. */
-const WasmFunction *wasm_module_find_function(const WasmModule *module,
-                                              const char *name);
+const WasmFunction *wasm_module_find_function(const WasmModule *module, const char *name);
 
 #endif

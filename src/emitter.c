@@ -5,8 +5,7 @@
 #include <stdio.h>
 
 /* Serializes every V32 IR line to one assembler input file. */
-bool emit_vircon_assembly(const VirconIrProgram *program, const char *path,
-                          Diagnostics *diagnostics) {
+bool emit_vircon_assembly(const VirconIrProgram *program, const char *path, Diagnostics *diagnostics) {
   FILE *file;
   size_t index;
   file = fopen(path, "w");
@@ -18,8 +17,7 @@ bool emit_vircon_assembly(const VirconIrProgram *program, const char *path,
   for (index = 0; index < program->count; ++index)
     fprintf(file, "%s\n", program->instructions[index].text);
   if (fclose(file) != 0) {
-    diagnostics_error(diagnostics, "could not finish assembly output '%s'",
-                      path);
+    diagnostics_error(diagnostics, "could not finish assembly output '%s'", path);
     return false;
   }
   return true;

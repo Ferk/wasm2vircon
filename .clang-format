@@ -1,0 +1,7 @@
+# Project-wide C/C++ formatting policy.
+#
+# Keep ordinary code comfortably readable on modern displays without forcing
+# artificial 80-column wrapping. Long strings and generated assembly may still
+# need their own sensible layout.
+BasedOnStyle: LLVM
+ColumnLimit: 120

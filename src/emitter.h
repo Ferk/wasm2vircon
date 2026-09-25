@@ -7,7 +7,6 @@
 #include "vircon_ir.h"
 
 /* Writes program to path, reporting a file error through diagnostics. */
-bool emit_vircon_assembly(const VirconIrProgram *program, const char *path,
-                          Diagnostics *diagnostics);
+bool emit_vircon_assembly(const VirconIrProgram *program, const char *path, Diagnostics *diagnostics);
 
 #endif

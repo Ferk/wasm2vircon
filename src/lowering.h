@@ -6,7 +6,5 @@
 #include "validator.h"
 #include "vircon_ir.h"
 /* Lowers one validated module without exposing Binaryen to the backend. */
-bool lower_module_to_vircon_ir(const ValidatedModule *module,
-                               VirconIrProgram *program,
-                               Diagnostics *diagnostics);
+bool lower_module_to_vircon_ir(const ValidatedModule *module, VirconIrProgram *program, Diagnostics *diagnostics);
 #endif
