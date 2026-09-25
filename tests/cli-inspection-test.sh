@@ -23,6 +23,42 @@ if "$tool" --validate-only "$work_dir/unsupported.wasm" \
   exit 1
 fi
 grep -F "Wasm i32.clz" "$work_dir/unsupported.err" >/dev/null
+if "$tool" --help | grep -F "Embedded Binaryen normalization is enabled" \
+  >/dev/null; then
+  if grep -F "normalizer; raw clang/wasm-ld output" "$work_dir/unsupported.err" \
+    >/dev/null; then
+    echo "embedded build printed an external-normalization hint" >&2
+    exit 1
+  fi
+else
+  grep -F "raw clang/wasm-ld output may need the supported cleanup profile" \
+    "$work_dir/unsupported.err" >/dev/null
+  grep -F "scripts/normalize-virconwasm.sh" "$work_dir/unsupported.err" \
+    >/dev/null
+fi
+
+"$wasm_as" "$tests_dir/embedded-optimizer-input.wat" \
+  -o "$work_dir/optimizer-input.wasm"
+if "$tool" --help | grep -F "Embedded Binaryen normalization is enabled" \
+  >/dev/null; then
+  "$tool" --validate-only "$work_dir/optimizer-input.wasm" --entry main \
+    > "$work_dir/optimized.out"
+  if "$tool" --validate-only "$work_dir/optimizer-input.wasm" --entry main \
+    --skip-input-optimization > "$work_dir/unoptimized.out" \
+    2> "$work_dir/unoptimized.err"; then
+    echo "--skip-input-optimization did not disable the embedded optimizer" >&2
+    exit 1
+  fi
+  grep -F "globals remain unsupported" "$work_dir/unoptimized.err" >/dev/null
+else
+  if "$tool" --validate-only "$work_dir/optimizer-input.wasm" --entry main \
+    --skip-input-optimization > "$work_dir/unoptimized.out" \
+    2> "$work_dir/unoptimized.err"; then
+    echo "external build accepted the unsupported global unexpectedly" >&2
+    exit 1
+  fi
+  grep -F "globals remain unsupported" "$work_dir/unoptimized.err" >/dev/null
+fi
 
 "$tool" --report-profile "$work_dir/unsupported.wasm" > "$work_dir/report.out"
 grep -F "VirconWasm profile report" "$work_dir/report.out" >/dev/null

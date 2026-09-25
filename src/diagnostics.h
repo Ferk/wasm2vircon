@@ -17,5 +17,8 @@ void diagnostics_init(Diagnostics *diagnostics, FILE *stream);
 /* Emits one printf-style compiler error and increments the error count. */
 void diagnostics_error(Diagnostics *diagnostics, const char *format, ...)
     __attribute__((format(printf, 2, 3)));
+/* Emits supplementary diagnostic guidance without changing the error count. */
+void diagnostics_note(Diagnostics *diagnostics, const char *format, ...)
+    __attribute__((format(printf, 2, 3)));
 
 #endif

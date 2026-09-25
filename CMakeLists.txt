@@ -11,6 +11,41 @@ if(NOT BINARYEN_INCLUDE_DIR OR NOT BINARYEN_LIBRARY)
     "(header binaryen-c.h and library libbinaryen), then configure again.")
 endif()
 
+# The decoder always uses Binaryen's C API. This option controls only the
+# additional in-memory cleanup pass before the compiler-owned frontend model is
+# built. AUTO enables it when a static Binaryen archive is installed; OFF keeps
+# the established external wasm-opt normalization contract.
+set(WASM2VIRCON_EMBEDDED_BINARYEN "AUTO" CACHE STRING
+  "Use static Binaryen for in-memory Wasm normalization (AUTO, ON, or OFF)")
+set_property(CACHE WASM2VIRCON_EMBEDDED_BINARYEN PROPERTY STRINGS AUTO ON OFF)
+string(TOUPPER "${WASM2VIRCON_EMBEDDED_BINARYEN}" WASM2VIRCON_EMBEDDED_BINARYEN)
+if(NOT WASM2VIRCON_EMBEDDED_BINARYEN STREQUAL "AUTO"
+   AND NOT WASM2VIRCON_EMBEDDED_BINARYEN STREQUAL "ON"
+   AND NOT WASM2VIRCON_EMBEDDED_BINARYEN STREQUAL "OFF")
+  message(FATAL_ERROR
+    "WASM2VIRCON_EMBEDDED_BINARYEN must be AUTO, ON, or OFF")
+endif()
+
+get_filename_component(BINARYEN_LIBRARY_DIRECTORY "${BINARYEN_LIBRARY}" DIRECTORY)
+find_file(BINARYEN_STATIC_LIBRARY NAMES libbinaryen.a
+  HINTS "${BINARYEN_LIBRARY_DIRECTORY}" /usr/local/lib /usr/lib /usr/lib64)
+set(WASM2VIRCON_USE_EMBEDDED_BINARYEN OFF)
+if(WASM2VIRCON_EMBEDDED_BINARYEN STREQUAL "ON")
+  if(NOT BINARYEN_STATIC_LIBRARY)
+    message(FATAL_ERROR
+      "WASM2VIRCON_EMBEDDED_BINARYEN=ON requires libbinaryen.a. Install the "
+      "static Binaryen development archive, or select OFF to use wasm-opt.")
+  endif()
+  set(WASM2VIRCON_USE_EMBEDDED_BINARYEN ON)
+elseif(WASM2VIRCON_EMBEDDED_BINARYEN STREQUAL "AUTO")
+  if(BINARYEN_STATIC_LIBRARY)
+    set(WASM2VIRCON_USE_EMBEDDED_BINARYEN ON)
+  else()
+    message(STATUS
+      "Static libbinaryen.a is unavailable; retaining external wasm-opt normalization")
+  endif()
+endif()
+
 add_executable(wasm2vircon
   src/main.c
   src/diagnostics.c
@@ -24,7 +59,40 @@ add_executable(wasm2vircon
 target_compile_features(wasm2vircon PRIVATE c_std_11)
 target_compile_options(wasm2vircon PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_include_directories(wasm2vircon PRIVATE src ${BINARYEN_INCLUDE_DIR})
-target_link_libraries(wasm2vircon PRIVATE ${BINARYEN_LIBRARY})
+
+# Even an external-normalization build needs Binaryen for Wasm decoding. If
+# CMake selects a static archive for that dependency, it needs the same C++ and
+# system libraries as an explicitly embedded archive.
+set(WASM2VIRCON_BINARYEN_LINK_LIBRARY ${BINARYEN_LIBRARY})
+set(WASM2VIRCON_BINARYEN_IS_STATIC OFF)
+if(WASM2VIRCON_USE_EMBEDDED_BINARYEN)
+  set(WASM2VIRCON_BINARYEN_LINK_LIBRARY ${BINARYEN_STATIC_LIBRARY})
+  set(WASM2VIRCON_BINARYEN_IS_STATIC ON)
+elseif(BINARYEN_LIBRARY MATCHES "\\.a$")
+  set(WASM2VIRCON_BINARYEN_IS_STATIC ON)
+endif()
+
+target_link_libraries(wasm2vircon PRIVATE ${WASM2VIRCON_BINARYEN_LINK_LIBRARY})
+if(WASM2VIRCON_BINARYEN_IS_STATIC)
+  # Binaryen is implemented in C++, although wasm2vircon itself remains C.
+  # Supply the host C++ runtime explicitly when the static archive is linked.
+  find_library(BINARYEN_CXX_RUNTIME NAMES stdc++ c++)
+  if(NOT BINARYEN_CXX_RUNTIME)
+    message(FATAL_ERROR
+      "Static Binaryen requires a C++ standard library (libstdc++)")
+  endif()
+  find_package(Threads REQUIRED)
+  find_library(BINARYEN_MATH_LIBRARY NAMES m)
+  target_link_libraries(wasm2vircon PRIVATE ${BINARYEN_CXX_RUNTIME}
+    Threads::Threads ${CMAKE_DL_LIBS}
+    ${BINARYEN_MATH_LIBRARY})
+endif()
+if(WASM2VIRCON_USE_EMBEDDED_BINARYEN)
+  target_compile_definitions(wasm2vircon PRIVATE USE_EMBEDDED_BINARYEN=1)
+  message(STATUS "Using embedded static Binaryen normalization")
+else()
+  message(STATUS "Using external wasm-opt normalization")
+endif()
 
 include(CTest)
 if(BUILD_TESTING)

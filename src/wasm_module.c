@@ -1133,8 +1133,8 @@ bool wasm_module_report_profile(const char *path, FILE *stream,
   }
   text = BinaryenModuleAllocateAndWriteText(source);
   if (text == NULL) {
-    diagnostics_error(diagnostics,
-                      "Binaryen could not print '%s' as Wasm text", path);
+    diagnostics_error(diagnostics, "Binaryen could not print '%s' as Wasm text",
+                      path);
     goto done;
   }
   for (index = 0; index < BinaryenGetNumFunctions(source); ++index) {
@@ -1334,9 +1334,167 @@ static bool read_stack_pointer_global(BinaryenModuleRef source,
   return true;
 }
 
+/* Copies Binaryen data segments into the compiler-owned module representation.
+ */
+static bool read_data_segments(BinaryenModuleRef source, WasmModule *module,
+                               Diagnostics *diagnostics) {
+  BinaryenIndex index;
+  module->data_segment_count = BinaryenGetNumDataSegments(source);
+  module->data_segments =
+      calloc(module->data_segment_count, sizeof(*module->data_segments));
+  if (module->data_segment_count != 0 && module->data_segments == NULL) {
+    diagnostics_error(diagnostics, "out of memory reading Wasm data segments");
+    return false;
+  }
+  for (index = 0; index < module->data_segment_count; ++index) {
+    BinaryenDataSegmentRef segment =
+        BinaryenGetDataSegmentByIndex(source, index);
+    WasmDataSegment *out = &module->data_segments[index];
+    out->offset = BinaryenGetDataSegmentByteOffset(source, segment);
+    out->size = BinaryenGetDataSegmentByteLength(segment);
+    out->is_passive = BinaryenGetDataSegmentPassive(segment);
+    out->offset_is_i32_const = true;
+    out->bytes = malloc(out->size == 0 ? 1 : out->size);
+    if (out->bytes == NULL) {
+      diagnostics_error(diagnostics, "out of memory copying Wasm data segment");
+      return false;
+    }
+    BinaryenCopyDataSegmentData(segment, (char *)out->bytes);
+  }
+  return true;
+}
+
+#ifdef USE_EMBEDDED_BINARYEN
+/* Returns whether a module has linker scaffolding targeted by the cleanup
+ * profile. Hand-authored Wasm without it retains the existing direct-input
+ * validation behavior; linked frontend modules normally carry a table, global,
+ * or element segment that triggers the profile. */
+static bool needs_embedded_normalization(BinaryenModuleRef source) {
+  return BinaryenGetNumGlobals(source) != 0 || BinaryenGetNumTables(source) != 0 ||
+         BinaryenGetNumElementSegments(source) != 0;
+}
+
+/* Restores the input memory image after a cleanup pass removed part of it.
+ *
+ * Active data is meaningful to this frontend even when Binaryen determines
+ * that the Wasm body does not read it: wasm2vircon uses it to initialize the
+ * cartridge's writable linear-memory image. */
+static bool restore_memory_image(BinaryenModuleRef source,
+                                 const WasmModule *original,
+                                 Diagnostics *diagnostics) {
+  const char **data = NULL;
+  BinaryenExpressionRef *offsets = NULL;
+  BinaryenIndex *sizes = NULL;
+  bool *passives = NULL;
+  size_t index;
+
+  if (original->data_segment_count != 0) {
+    data = calloc(original->data_segment_count, sizeof(*data));
+    offsets = calloc(original->data_segment_count, sizeof(*offsets));
+    sizes = calloc(original->data_segment_count, sizeof(*sizes));
+    passives = calloc(original->data_segment_count, sizeof(*passives));
+    if (data == NULL || offsets == NULL || sizes == NULL || passives == NULL) {
+      diagnostics_error(diagnostics,
+                        "out of memory restoring embedded Wasm data segments");
+      free(data);
+      free(offsets);
+      free(sizes);
+      free(passives);
+      return false;
+    }
+    for (index = 0; index < original->data_segment_count; ++index) {
+      const WasmDataSegment *segment = &original->data_segments[index];
+      data[index] = (const char *)segment->bytes;
+      offsets[index] = BinaryenConst(
+          source, BinaryenLiteralInt32((int32_t)segment->offset));
+      sizes[index] = (BinaryenIndex)segment->size;
+      passives[index] = segment->is_passive;
+    }
+  }
+  BinaryenSetMemory(
+      source, original->memory_initial_pages,
+      original->memory_has_max ? original->memory_max_pages : UINT32_MAX, NULL,
+      NULL, data, passives, offsets, sizes,
+      (BinaryenIndex)original->data_segment_count, original->memory_is_shared,
+      original->memory_is_64, "0");
+  free(data);
+  free(offsets);
+  free(sizes);
+  free(passives);
+  return true;
+}
+
+/* Runs the supported narrow Binaryen cleanup profile without creating a file.
+ *
+ * The compiler-owned decoder still receives a fresh Binaryen module from the
+ * optimized bytes. This keeps Binaryen objects at the Wasm frontend boundary
+ * rather than leaking them into validation or V32 lowering. */
+static BinaryenModuleRef normalize_embedded_binaryen(BinaryenModuleRef source,
+                                                     Diagnostics *diagnostics) {
+  static const char *passes[] = {"remove-unused-module-elements", "vacuum"};
+  BinaryenModuleAllocateAndWriteResult encoded;
+  BinaryenModuleRef normalized;
+  WasmModule original_image = {0};
+  bool previous_debug_info;
+  char *text = BinaryenModuleAllocateAndWriteText(source);
+
+  /* The cleanup pass may remove an unused memory. VirconWasm requires the
+   * frontend-visible memory declaration even for a control-only module, so
+   * retain its original empty declaration without retaining removed code/data.
+   */
+  if (text == NULL || !read_memory_text(text, &original_image, diagnostics)) {
+    free(text);
+    return NULL;
+  }
+  free(text);
+  if (!read_data_segments(source, &original_image, diagnostics)) {
+    wasm_module_dispose(&original_image);
+    return NULL;
+  }
+
+  /* Match the supported external profile's -g setting. Besides diagnostics,
+   * this keeps the canonical __stack_pointer global name intact while passes
+   * rebuild the module. The setting is process-global in Binaryen, so restore
+   * the caller's state as soon as the normalized bytes are produced. */
+  previous_debug_info = BinaryenGetDebugInfo();
+  BinaryenSetDebugInfo(true);
+  BinaryenModuleRunPasses(source, passes, sizeof(passes) / sizeof(*passes));
+  if (original_image.has_memory &&
+      (!BinaryenHasMemory(source) ||
+       BinaryenGetNumDataSegments(source) != original_image.data_segment_count) &&
+      !restore_memory_image(source, &original_image, diagnostics)) {
+    BinaryenSetDebugInfo(previous_debug_info);
+    wasm_module_dispose(&original_image);
+    return NULL;
+  }
+  encoded = BinaryenModuleAllocateAndWrite(source, NULL);
+  BinaryenSetDebugInfo(previous_debug_info);
+  wasm_module_dispose(&original_image);
+  if (encoded.binary == NULL || encoded.binaryBytes == 0) {
+    diagnostics_error(diagnostics,
+                      "embedded Binaryen could not serialize normalized Wasm");
+    free(encoded.binary);
+    free(encoded.sourceMap);
+    return NULL;
+  }
+  normalized = BinaryenModuleReadWithFeatures(
+      (char *)encoded.binary, encoded.binaryBytes, BinaryenFeatureAll());
+  free(encoded.binary);
+  free(encoded.sourceMap);
+  if (normalized == NULL || !BinaryenModuleValidate(normalized)) {
+    diagnostics_error(diagnostics,
+                      "embedded Binaryen produced invalid normalized Wasm");
+    if (normalized != NULL)
+      BinaryenModuleDispose(normalized);
+    return NULL;
+  }
+  return normalized;
+}
+#endif
+
 /* Loads, validates, and converts one Wasm module through the Binaryen C API. */
-bool wasm_module_load(const char *path, WasmModule *module,
-                      Diagnostics *diagnostics) {
+bool wasm_module_load(const char *path, bool optimize_input,
+                      WasmModule *module, Diagnostics *diagnostics) {
   char *contents = NULL, *text = NULL;
   size_t size = 0;
   BinaryenModuleRef source = NULL;
@@ -1354,6 +1512,18 @@ bool wasm_module_load(const char *path, WasmModule *module,
       BinaryenModuleDispose(source);
     return false;
   }
+#ifdef USE_EMBEDDED_BINARYEN
+  if (optimize_input && needs_embedded_normalization(source)) {
+    BinaryenModuleRef normalized =
+        normalize_embedded_binaryen(source, diagnostics);
+    BinaryenModuleDispose(source);
+    if (normalized == NULL)
+      return false;
+    source = normalized;
+  }
+#else
+  (void)optimize_input;
+#endif
   text = BinaryenModuleAllocateAndWriteText(source);
   if (text == NULL || !read_memory_text(text, module, diagnostics))
     goto fail;
@@ -1442,23 +1612,8 @@ bool wasm_module_load(const char *path, WasmModule *module,
     if (out->body == NULL)
       goto fail;
   }
-  module->data_segments =
-      calloc(module->data_segment_count, sizeof(*module->data_segments));
-  if (module->data_segment_count != 0 && module->data_segments == NULL)
+  if (!read_data_segments(source, module, diagnostics))
     goto fail;
-  for (index = 0; index < module->data_segment_count; ++index) {
-    BinaryenDataSegmentRef segment =
-        BinaryenGetDataSegmentByIndex(source, index);
-    WasmDataSegment *out = &module->data_segments[index];
-    out->offset = BinaryenGetDataSegmentByteOffset(source, segment);
-    out->size = BinaryenGetDataSegmentByteLength(segment);
-    out->is_passive = BinaryenGetDataSegmentPassive(segment);
-    out->offset_is_i32_const = true;
-    out->bytes = malloc(out->size == 0 ? 1 : out->size);
-    if (out->bytes == NULL)
-      goto fail;
-    BinaryenCopyDataSegmentData(segment, (char *)out->bytes);
-  }
   BinaryenModuleDispose(source);
   return true;
 fail:
