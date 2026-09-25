@@ -102,27 +102,37 @@ static WasmValueType convert_type(BinaryenType type) {
   return WASM_VALUE_OTHER;
 }
 
-/* Expands a Binaryen parameter tuple while enforcing the arity limit. */
-static bool convert_tuple_type(BinaryenType type, WasmValueType *values, size_t *count, Diagnostics *diagnostics,
+/* Expands a Binaryen parameter tuple into module-owned parameter storage. */
+static bool convert_tuple_type(BinaryenType type, WasmValueType **values, size_t *count, Diagnostics *diagnostics,
                                const DecodeContext *context) {
   BinaryenIndex arity = BinaryenTypeArity(type), index;
-  BinaryenType expanded[4];
-  if (arity > 4) {
-    function_error(diagnostics, context, "has more than four parameters");
-    return false;
-  }
-  if (arity == 0) {
-    *count = 0;
+  BinaryenType *expanded;
+  WasmValueType *converted;
+
+  *values = NULL;
+  *count = 0;
+  if (arity == 0)
     return true;
+  expanded = calloc(arity, sizeof(*expanded));
+  converted = calloc(arity, sizeof(*converted));
+  if (expanded == NULL || converted == NULL) {
+    free(expanded);
+    free(converted);
+    function_error(diagnostics, context, "ran out of memory decoding parameters");
+    return false;
   }
   BinaryenTypeExpand(type, expanded);
   for (index = 0; index < arity; ++index) {
-    values[index] = convert_type(expanded[index]);
-    if (values[index] == WASM_VALUE_OTHER) {
+    converted[index] = convert_type(expanded[index]);
+    if (converted[index] == WASM_VALUE_OTHER) {
+      free(expanded);
+      free(converted);
       function_error(diagnostics, context, "has an unsupported parameter type");
       return false;
     }
   }
+  free(expanded);
+  *values = converted;
   *count = arity;
   return true;
 }
@@ -1395,7 +1405,8 @@ bool wasm_module_load(const char *path, bool optimize_input, WasmModule *module,
     context.function_index = out->index;
     context.function_name = out->diagnostic_name;
     context.module = module;
-    if (!convert_tuple_type(BinaryenFunctionGetParams(function), out->params, &out->param_count, diagnostics, &context))
+    if (!convert_tuple_type(BinaryenFunctionGetParams(function), &out->params, &out->param_count, diagnostics,
+                            &context))
       goto fail;
     out->result = convert_type(BinaryenFunctionGetResults(function));
     if (out->result == WASM_VALUE_OTHER) {
@@ -1448,6 +1459,7 @@ void wasm_module_dispose(WasmModule *module) {
       free(f->diagnostic_name);
       free(f->import_module);
       free(f->import_name);
+      free(f->params);
       free(f->locals);
       free_expression(f->body);
     }

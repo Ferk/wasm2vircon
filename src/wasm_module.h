@@ -139,7 +139,8 @@ typedef struct WasmFunction {
   char *diagnostic_name;
   bool is_import;
   char *import_module, *import_name;
-  WasmValueType params[4];
+  /* Owned parameter types. Functions may use any practical arity. */
+  WasmValueType *params;
   size_t param_count;
   WasmValueType result;
   WasmValueType *locals;

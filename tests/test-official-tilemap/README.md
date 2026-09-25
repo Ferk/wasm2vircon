@@ -12,4 +12,5 @@ The source changes from the official dialect are limited to ISO C array/type
 syntax, `int main(void)`, replacing `embedded` with the generated ordinary C
 array, and using the project runtime. The original ten-argument
 `define_region_matrix` call becomes a pointer to an equivalent ordinary C
-runtime structure so it remains within the current four-argument call ABI.
+runtime structure, which is a more natural representation for its region
+matrix data.

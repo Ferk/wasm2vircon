@@ -17,7 +17,8 @@
 
 #define LINEAR_BASE VIRCON_LINEAR_MEMORY_BASE
 #define TEMP_SLOTS 48u
-#define OUTGOING_SLOTS 4u
+/* Keep common small calls allocation-free; this is not an ABI arity limit. */
+#define INLINE_CALL_ARGUMENTS 4u
 
 /* A temporary stack-frame slot containing one Wasm i32 or f32 value. */
 typedef struct Value {
@@ -192,6 +193,27 @@ static size_t local_storage_words(const WasmFunction *function) {
   for (index = 0; index < function->local_count; ++index)
     words += function->locals[index] == WASM_VALUE_I64 ? 2u : 1u;
   return words;
+}
+
+/* Finds the largest caller-owned argument area required by one function body.
+ * Platform imports write ports directly, but defined calls and compiler
+ * bulk-memory helpers pass their arguments through the normal stack ABI. */
+static size_t outgoing_call_slots(const WasmModule *module, const WasmExpr *expression) {
+  size_t index, slots = 0;
+
+  if (expression->kind == WASM_EXPR_CALL) {
+    const WasmFunction *callee = wasm_module_find_function(module, expression->name);
+    if (callee != NULL && !callee->is_import)
+      slots = expression->child_count;
+  } else if (expression->kind == WASM_EXPR_MEMORY_COPY || expression->kind == WASM_EXPR_MEMORY_FILL) {
+    slots = 3;
+  }
+  for (index = 0; index < expression->child_count; ++index) {
+    size_t child_slots = outgoing_call_slots(module, expression->children[index]);
+    if (child_slots > slots)
+      slots = child_slots;
+  }
+  return slots;
 }
 
 /* Reserves one compiler-managed word below the current function's locals. */
@@ -721,12 +743,26 @@ static bool lower_cpu_binary(Context *context, const Value *left, const Value *r
 /* Evaluates arguments, then lowers either a platform import or direct call. */
 static bool lower_call(Context *context, const WasmExpr *expression, Value *value) {
   const WasmFunction *callee = wasm_module_find_function(context->validated->module, expression->name);
-  Value arguments[4] = {{0}};
+  Value inline_arguments[INLINE_CALL_ARGUMENTS] = {{0}};
+  Value *arguments = inline_arguments;
+  bool heap_arguments = false;
   char label[64];
   size_t index;
-  for (index = 0; index < expression->child_count; ++index)
-    if (!lower_expression(context, expression->children[index], &arguments[index]) || !arguments[index].present)
+
+  if (expression->child_count > INLINE_CALL_ARGUMENTS) {
+    arguments = calloc(expression->child_count, sizeof(*arguments));
+    if (arguments == NULL) {
+      diagnostics_error(context->diagnostics, "out of memory lowering %zu call arguments", expression->child_count);
       return false;
+    }
+    heap_arguments = true;
+  }
+  for (index = 0; index < expression->child_count; ++index)
+    if (!lower_expression(context, expression->children[index], &arguments[index]) || !arguments[index].present) {
+      if (heap_arguments)
+        free(arguments);
+      return false;
+    }
   if (callee->is_import) {
     if (strcmp(callee->import_name, "vircon_set_background_color") == 0) {
       if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_ClearColor, R1") ||
@@ -1018,21 +1054,32 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
     return true;
   }
   for (index = 0; index < expression->child_count; ++index)
-    if (!load_slot(context, 1, arguments[index].slot) || !emit(context, "  mov [SP+%zu], R1", index))
+    if (!load_slot(context, 1, arguments[index].slot) || !emit(context, "  mov [SP+%zu], R1", index)) {
+      if (heap_arguments)
+        free(arguments);
       return false;
+    }
   for (index = expression->child_count; index != 0; --index)
     release(context, arguments[index - 1]);
   function_label(context->validated->module, callee, label, sizeof(label));
-  if (!emit(context, "  call %s", label))
+  if (!emit(context, "  call %s", label)) {
+    if (heap_arguments)
+      free(arguments);
     return false;
+  }
   if (callee->result == WASM_VALUE_I32 || callee->result == WASM_VALUE_F32) {
     int slot = temp_slot(context);
-    if (slot == 0 || !store_slot(context, slot, 0))
+    if (slot == 0 || !store_slot(context, slot, 0)) {
+      if (heap_arguments)
+        free(arguments);
       return false;
+    }
     value->slot = slot;
     value->present = true;
   } else
     value->present = false;
+  if (heap_arguments)
+    free(arguments);
   return true;
 }
 
@@ -1631,17 +1678,30 @@ static bool lower_function(const ValidatedModule *validated, const WasmFunction 
   Value result = {0};
   char label[64];
   bool success = false;
+  size_t outgoing_slots, frame_slots;
   context.validated = validated;
   context.function = function;
   context.program = program;
   context.diagnostics = diagnostics;
   context.memory_bytes = memory_bytes;
+  outgoing_slots = outgoing_call_slots(validated->module, function->body);
+  frame_slots = local_storage_words(function);
+  if (frame_slots > SIZE_MAX - TEMP_SLOTS || outgoing_slots > SIZE_MAX - frame_slots - TEMP_SLOTS) {
+    diagnostics_error(diagnostics, "function %zu requires an unrepresentable stack frame",
+                      function_index(validated->module, function));
+    goto done;
+  }
+  frame_slots += TEMP_SLOTS + outgoing_slots;
+  if (frame_slots > UINT32_MAX) {
+    diagnostics_error(diagnostics, "function %zu requires a stack frame larger than Vircon32 can address",
+                      function_index(validated->module, function));
+    goto done;
+  }
   function_label(validated->module, function, label, sizeof(label));
   snprintf(context.return_label, sizeof(context.return_label), "__wasm_return_%zu",
            function_index(validated->module, function));
   if (!emit_label(&context, label) || !emit(&context, "  push BP") || !emit(&context, "  mov BP, SP") ||
-      !emit(&context, "  isub SP, %u", (unsigned)(local_storage_words(function) + TEMP_SLOTS + OUTGOING_SLOTS)) ||
-      !lower_expression(&context, function->body, &result))
+      !emit(&context, "  isub SP, %zu", frame_slots) || !lower_expression(&context, function->body, &result))
     goto done;
   if (function->result == WASM_VALUE_I32 || function->result == WASM_VALUE_F32) {
     if (result.present) {
