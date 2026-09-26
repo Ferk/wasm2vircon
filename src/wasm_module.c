@@ -1211,12 +1211,11 @@ static bool read_data_segments(BinaryenModuleRef source, WasmModule *module, Dia
   return true;
 }
 
-#ifdef USE_EMBEDDED_BINARYEN
 /* Returns whether a module has linker scaffolding targeted by the cleanup
  * profile. Hand-authored Wasm without it retains the existing direct-input
  * validation behavior; linked frontend modules normally carry a table, global,
  * or element segment that triggers the profile. */
-static bool needs_embedded_normalization(BinaryenModuleRef source) {
+static bool needs_binaryen_normalization(BinaryenModuleRef source) {
   return BinaryenGetNumGlobals(source) != 0 || BinaryenGetNumTables(source) != 0 ||
          BinaryenGetNumElementSegments(source) != 0;
 }
@@ -1239,7 +1238,7 @@ static bool restore_memory_image(BinaryenModuleRef source, const WasmModule *ori
     sizes = calloc(original->data_segment_count, sizeof(*sizes));
     passives = calloc(original->data_segment_count, sizeof(*passives));
     if (data == NULL || offsets == NULL || sizes == NULL || passives == NULL) {
-      diagnostics_error(diagnostics, "out of memory restoring embedded Wasm data segments");
+      diagnostics_error(diagnostics, "out of memory restoring normalized Wasm data segments");
       free(data);
       free(offsets);
       free(sizes);
@@ -1270,7 +1269,7 @@ static bool restore_memory_image(BinaryenModuleRef source, const WasmModule *ori
  * The compiler-owned decoder still receives a fresh Binaryen module from the
  * optimized bytes. This keeps Binaryen objects at the Wasm frontend boundary
  * rather than leaking them into validation or V32 lowering. */
-static BinaryenModuleRef normalize_embedded_binaryen(BinaryenModuleRef source, Diagnostics *diagnostics) {
+static BinaryenModuleRef normalize_binaryen_module(BinaryenModuleRef source, Diagnostics *diagnostics) {
   static const char *passes[] = {"remove-unused-module-elements", "vacuum"};
   BinaryenModuleAllocateAndWriteResult encoded;
   BinaryenModuleRef normalized;
@@ -1310,7 +1309,7 @@ static BinaryenModuleRef normalize_embedded_binaryen(BinaryenModuleRef source, D
   BinaryenSetDebugInfo(previous_debug_info);
   wasm_module_dispose(&original_image);
   if (encoded.binary == NULL || encoded.binaryBytes == 0) {
-    diagnostics_error(diagnostics, "embedded Binaryen could not serialize normalized Wasm");
+    diagnostics_error(diagnostics, "Binaryen could not serialize normalized Wasm");
     free(encoded.binary);
     free(encoded.sourceMap);
     return NULL;
@@ -1319,14 +1318,13 @@ static BinaryenModuleRef normalize_embedded_binaryen(BinaryenModuleRef source, D
   free(encoded.binary);
   free(encoded.sourceMap);
   if (normalized == NULL || !BinaryenModuleValidate(normalized)) {
-    diagnostics_error(diagnostics, "embedded Binaryen produced invalid normalized Wasm");
+    diagnostics_error(diagnostics, "Binaryen produced invalid normalized Wasm");
     if (normalized != NULL)
       BinaryenModuleDispose(normalized);
     return NULL;
   }
   return normalized;
 }
-#endif
 
 /* Loads, validates, and converts one Wasm module through the Binaryen C API. */
 bool wasm_module_load(const char *path, bool optimize_input, WasmModule *module, Diagnostics *diagnostics) {
@@ -1345,17 +1343,13 @@ bool wasm_module_load(const char *path, bool optimize_input, WasmModule *module,
       BinaryenModuleDispose(source);
     return false;
   }
-#ifdef USE_EMBEDDED_BINARYEN
-  if (optimize_input && needs_embedded_normalization(source)) {
-    BinaryenModuleRef normalized = normalize_embedded_binaryen(source, diagnostics);
+  if (optimize_input && needs_binaryen_normalization(source)) {
+    BinaryenModuleRef normalized = normalize_binaryen_module(source, diagnostics);
     BinaryenModuleDispose(source);
     if (normalized == NULL)
       return false;
     source = normalized;
   }
-#else
-  (void)optimize_input;
-#endif
   text = BinaryenModuleAllocateAndWriteText(source);
   if (text == NULL || !read_memory_text(text, module, diagnostics))
     goto fail;

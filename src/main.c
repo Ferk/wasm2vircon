@@ -30,18 +30,14 @@ static void print_usage(FILE *stream) {
                   "\n"
                   "--validate-only performs decoding and VirconWasm validation without "
                   "writing assembly.\n"
-                  "--skip-input-optimization disables only the optional embedded input "
-                  "optimizer; compiler-owned processing and validation still run.\n"
+                  "Binaryen normalization runs before compiler-owned processing and validation. "
+                  "--skip-input-optimization\n"
+                  "bypasses only those in-process passes for diagnostics and tests.\n"
                   "--report-profile writes a Binaryen-decoded module inventory and "
                   "complete Wasm text; it\n"
                   "does not claim that the module is accepted by the restricted "
                   "VirconWasm profile.\n");
-#ifdef USE_EMBEDDED_BINARYEN
-  fputs("Embedded Binaryen normalization is enabled at build time.\n", stream);
-#else
-  fputs("Embedded Binaryen normalization is disabled; compiler-owned linker-artifact legalization still runs.\n",
-        stream);
-#endif
+  fputs("In-process Binaryen normalization is always enabled.\n", stream);
 }
 
 /* Parses one module invocation and releases every compiler stage on exit. */

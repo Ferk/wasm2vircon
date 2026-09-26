@@ -164,32 +164,26 @@ if(NOT result EQUAL 0)
   message(FATAL_ERROR "--help failed: ${help_error}")
 endif()
 require_fragment("--help" "${help}" "Usage: wasm2vircon input.wasm")
-string(FIND "${help}" "Embedded Binaryen normalization is enabled" embedded_normalizer)
-
 find_cli_cases(legalizer legalizer_cases)
 foreach(legalizer_case IN LISTS legalizer_cases)
   get_filename_component(legalizer_name "${legalizer_case}" NAME)
   assemble_cli_fixture("${legalizer_case}" "${work_dir}/${legalizer_name}.wasm" legalizer)
-  foreach(extra_arguments IN ITEMS "" "--skip-input-optimization")
-    execute_process(
-      COMMAND "${TOOL}" --validate-only "${work_dir}/${legalizer_name}.wasm"
-        --entry "${legalizer_entry}" ${extra_arguments}
-      RESULT_VARIABLE result ERROR_VARIABLE error)
-    if(NOT result EQUAL 0)
-      message(FATAL_ERROR "${legalizer_name}: linker-artifact legalization failed (${extra_arguments}): ${error}")
-    endif()
-  endforeach()
+  execute_process(
+    COMMAND "${TOOL}" --validate-only "${work_dir}/${legalizer_name}.wasm"
+      --entry "${legalizer_entry}"
+    RESULT_VARIABLE result ERROR_VARIABLE error)
+  if(NOT result EQUAL 0)
+    message(FATAL_ERROR "${legalizer_name}: linker-artifact legalization failed: ${error}")
+  endif()
 endforeach()
 
 require_one_cli_case(embedded_optimizer optimizer_case)
 assemble_cli_fixture("${optimizer_case}" "${work_dir}/optimizer.wasm" optimizer)
-if(NOT embedded_normalizer EQUAL -1)
-  execute_process(
-    COMMAND "${TOOL}" --validate-only "${work_dir}/optimizer.wasm" --entry "${optimizer_entry}"
-    RESULT_VARIABLE result ERROR_VARIABLE error)
-  if(NOT result EQUAL 0)
-    message(FATAL_ERROR "embedded optimizer rejected its declared fixture: ${error}")
-  endif()
+execute_process(
+  COMMAND "${TOOL}" --validate-only "${work_dir}/optimizer.wasm" --entry "${optimizer_entry}"
+  RESULT_VARIABLE result ERROR_VARIABLE error)
+if(NOT result EQUAL 0)
+  message(FATAL_ERROR "in-process optimizer rejected its declared fixture: ${error}")
 endif()
 execute_process(
   COMMAND "${TOOL}" --validate-only "${work_dir}/optimizer.wasm" --entry "${optimizer_entry}"

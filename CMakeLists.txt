@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.20)
 
 project(wasm2vircon VERSION 0.1.0 LANGUAGES C)
 
+# Respect Binaryen_ROOT with CMake versions that know the modern package-root
+# policy, while remaining compatible with the project's CMake 3.20 minimum.
+if(POLICY CMP0144)
+  cmake_policy(SET CMP0144 NEW)
+endif()
+
 # Keep warning policy consistent without passing GNU-only flags to MSVC.
 function(wasm2vircon_enable_warnings target)
   if(MSVC)
@@ -11,21 +17,58 @@ function(wasm2vircon_enable_warnings target)
   endif()
 endfunction()
 
-find_path(BINARYEN_INCLUDE_DIR binaryen-c.h)
-find_library(BINARYEN_LIBRARY NAMES binaryen)
+# Prefer Binaryen's exported CMake package.  A package target carries its own
+# include directories and, importantly, any C++ runtime/system dependencies
+# required by a static Binaryen archive.  Some distro packages still install
+# only a header and library, so retain a conventional fallback below.
+find_package(Binaryen CONFIG QUIET)
 
-if(NOT BINARYEN_INCLUDE_DIR OR NOT BINARYEN_LIBRARY)
-  message(FATAL_ERROR
-    "Binaryen C API was not found. Install Binaryen development files "
-    "(header binaryen-c.h and library libbinaryen), then configure again.")
+set(WASM2VIRCON_BINARYEN_TARGET "")
+foreach(candidate IN ITEMS Binaryen::Binaryen Binaryen::binaryen binaryen::binaryen binaryen)
+  if(TARGET "${candidate}")
+    set(WASM2VIRCON_BINARYEN_TARGET "${candidate}")
+    break()
+  endif()
+endforeach()
+
+set(WASM2VIRCON_BINARYEN_IS_STATIC OFF)
+set(WASM2VIRCON_BINARYEN_NEEDS_MANUAL_STATIC_DEPS OFF)
+
+if(WASM2VIRCON_BINARYEN_TARGET)
+  # An imported target is the preferred package interface.  Determine whether
+  # it is static so link-mode selection can use it accurately.
+  get_target_property(WASM2VIRCON_BINARYEN_TARGET_TYPE
+    "${WASM2VIRCON_BINARYEN_TARGET}" TYPE)
+  if(WASM2VIRCON_BINARYEN_TARGET_TYPE STREQUAL "STATIC_LIBRARY")
+    set(WASM2VIRCON_BINARYEN_IS_STATIC ON)
+  endif()
+  set(WASM2VIRCON_BINARYEN_INCLUDE_DIR "")
+  set(WASM2VIRCON_BINARYEN_LIBRARY "${WASM2VIRCON_BINARYEN_TARGET}")
+  message(STATUS "Using Binaryen CMake package target: ${WASM2VIRCON_BINARYEN_TARGET}")
+else()
+  # Legacy Binaryen installations do not provide a package config.  Locate
+  # their C API explicitly and add static-library dependencies ourselves.
+  find_path(WASM2VIRCON_BINARYEN_INCLUDE_DIR binaryen-c.h)
+  find_library(WASM2VIRCON_BINARYEN_LIBRARY NAMES binaryen)
+  if(NOT WASM2VIRCON_BINARYEN_INCLUDE_DIR OR NOT WASM2VIRCON_BINARYEN_LIBRARY)
+    message(FATAL_ERROR
+      "Binaryen C API was not found. Install Binaryen's CMake package or development files "
+      "(header binaryen-c.h and library binaryen), then configure again.")
+  endif()
+  get_filename_component(WASM2VIRCON_BINARYEN_EXTENSION
+    "${WASM2VIRCON_BINARYEN_LIBRARY}" EXT)
+  if(WASM2VIRCON_BINARYEN_EXTENSION STREQUAL "${CMAKE_STATIC_LIBRARY_SUFFIX}")
+    set(WASM2VIRCON_BINARYEN_IS_STATIC ON)
+    set(WASM2VIRCON_BINARYEN_NEEDS_MANUAL_STATIC_DEPS ON)
+  endif()
+  message(STATUS "Using Binaryen header/library fallback")
 endif()
 
-# The decoder always uses Binaryen's C API. This option controls only the
-# additional in-memory cleanup pass before the compiler-owned frontend model is
-# built. AUTO enables it when a static Binaryen archive is installed; OFF uses
-# compiler-owned linker-artifact legalization alone.
+# Binaryen normalization is always enabled because Binaryen is already the
+# required Wasm decoder. This option controls linkage only: AUTO prefers a
+# static archive, ON requires one, and OFF uses the normally discovered library.
 set(WASM2VIRCON_EMBEDDED_BINARYEN "AUTO" CACHE STRING
-  "Use static Binaryen for in-memory Wasm normalization (AUTO, ON, or OFF)")
+  "Prefer static Binaryen linkage (AUTO, ON, or OFF)")
 set_property(CACHE WASM2VIRCON_EMBEDDED_BINARYEN PROPERTY STRINGS AUTO ON OFF)
 string(TOUPPER "${WASM2VIRCON_EMBEDDED_BINARYEN}" WASM2VIRCON_EMBEDDED_BINARYEN)
 if(NOT WASM2VIRCON_EMBEDDED_BINARYEN STREQUAL "AUTO"
@@ -35,31 +78,51 @@ if(NOT WASM2VIRCON_EMBEDDED_BINARYEN STREQUAL "AUTO"
     "WASM2VIRCON_EMBEDDED_BINARYEN must be AUTO, ON, or OFF")
 endif()
 
-# Look for the host platform's conventional static-library name.  Do not
-# assume Unix's libbinaryen.a: Windows commonly uses binaryen.lib.
-get_filename_component(BINARYEN_LIBRARY_DIRECTORY "${BINARYEN_LIBRARY}" DIRECTORY)
-set(BINARYEN_STATIC_LIBRARY_NAMES
-  "${CMAKE_STATIC_LIBRARY_PREFIX}binaryen${CMAKE_STATIC_LIBRARY_SUFFIX}"
-  "binaryen${CMAKE_STATIC_LIBRARY_SUFFIX}")
-list(REMOVE_DUPLICATES BINARYEN_STATIC_LIBRARY_NAMES)
-find_file(BINARYEN_STATIC_LIBRARY
-  NAMES ${BINARYEN_STATIC_LIBRARY_NAMES}
-  HINTS "${BINARYEN_LIBRARY_DIRECTORY}")
-set(WASM2VIRCON_USE_EMBEDDED_BINARYEN OFF)
+# The package's imported target is reusable for static linkage when it is
+# static. For legacy discovery, look for the host platform's conventional
+# static-library name beside the selected library; do not assume libbinaryen.a.
+if(WASM2VIRCON_BINARYEN_TARGET AND WASM2VIRCON_BINARYEN_IS_STATIC)
+  set(WASM2VIRCON_BINARYEN_STATIC_LIBRARY "${WASM2VIRCON_BINARYEN_TARGET}")
+elseif(NOT WASM2VIRCON_BINARYEN_TARGET)
+  unset(WASM2VIRCON_BINARYEN_STATIC_LIBRARY CACHE)
+  unset(WASM2VIRCON_BINARYEN_STATIC_LIBRARY)
+  get_filename_component(WASM2VIRCON_BINARYEN_LIBRARY_DIRECTORY
+    "${WASM2VIRCON_BINARYEN_LIBRARY}" DIRECTORY)
+  set(WASM2VIRCON_BINARYEN_STATIC_LIBRARY_NAMES
+    "${CMAKE_STATIC_LIBRARY_PREFIX}binaryen${CMAKE_STATIC_LIBRARY_SUFFIX}"
+    "binaryen${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  list(REMOVE_DUPLICATES WASM2VIRCON_BINARYEN_STATIC_LIBRARY_NAMES)
+  find_file(WASM2VIRCON_BINARYEN_STATIC_LIBRARY
+    NAMES ${WASM2VIRCON_BINARYEN_STATIC_LIBRARY_NAMES}
+    HINTS "${WASM2VIRCON_BINARYEN_LIBRARY_DIRECTORY}")
+else()
+  set(WASM2VIRCON_BINARYEN_STATIC_LIBRARY "")
+endif()
+
+set(WASM2VIRCON_BINARYEN_LINK_LIBRARY "${WASM2VIRCON_BINARYEN_LIBRARY}")
 if(WASM2VIRCON_EMBEDDED_BINARYEN STREQUAL "ON")
-  if(NOT BINARYEN_STATIC_LIBRARY)
+  if(NOT WASM2VIRCON_BINARYEN_STATIC_LIBRARY)
     message(FATAL_ERROR
       "WASM2VIRCON_EMBEDDED_BINARYEN=ON requires Binaryen's static library. Install the "
-      "static Binaryen development archive, or select OFF to use compiler-owned cleanup only.")
+      "static Binaryen development archive, or select AUTO/OFF for the normal library selection.")
   endif()
-  set(WASM2VIRCON_USE_EMBEDDED_BINARYEN ON)
+  set(WASM2VIRCON_BINARYEN_LINK_LIBRARY "${WASM2VIRCON_BINARYEN_STATIC_LIBRARY}")
+  set(WASM2VIRCON_BINARYEN_IS_STATIC ON)
+  if(NOT WASM2VIRCON_BINARYEN_TARGET)
+    set(WASM2VIRCON_BINARYEN_NEEDS_MANUAL_STATIC_DEPS ON)
+  endif()
 elseif(WASM2VIRCON_EMBEDDED_BINARYEN STREQUAL "AUTO")
-  if(BINARYEN_STATIC_LIBRARY)
-    set(WASM2VIRCON_USE_EMBEDDED_BINARYEN ON)
-  else()
-    message(STATUS
-      "Static Binaryen library is unavailable; using compiler-owned cleanup only")
+  if(WASM2VIRCON_BINARYEN_STATIC_LIBRARY)
+    set(WASM2VIRCON_BINARYEN_LINK_LIBRARY "${WASM2VIRCON_BINARYEN_STATIC_LIBRARY}")
+    set(WASM2VIRCON_BINARYEN_IS_STATIC ON)
+    if(NOT WASM2VIRCON_BINARYEN_TARGET)
+      set(WASM2VIRCON_BINARYEN_NEEDS_MANUAL_STATIC_DEPS ON)
+    endif()
   endif()
+elseif(WASM2VIRCON_BINARYEN_IS_STATIC)
+  message(FATAL_ERROR
+    "WASM2VIRCON_EMBEDDED_BINARYEN=OFF requires a dynamically linked Binaryen library, "
+    "but discovery selected a static archive. Install Binaryen's shared library or use AUTO/ON.")
 endif()
 
 add_executable(wasm2vircon
@@ -75,25 +138,15 @@ add_executable(wasm2vircon
 
 target_compile_features(wasm2vircon PRIVATE c_std_11)
 wasm2vircon_enable_warnings(wasm2vircon)
-target_include_directories(wasm2vircon PRIVATE src ${BINARYEN_INCLUDE_DIR})
-
-# Even a compiler-owned-cleanup-only build needs Binaryen for Wasm decoding. If
-# CMake selects a static archive for that dependency, it needs the same C++ and
-# system libraries as an explicitly embedded archive.
-set(WASM2VIRCON_BINARYEN_LINK_LIBRARY ${BINARYEN_LIBRARY})
-set(WASM2VIRCON_BINARYEN_IS_STATIC OFF)
-if(WASM2VIRCON_USE_EMBEDDED_BINARYEN)
-  set(WASM2VIRCON_BINARYEN_LINK_LIBRARY ${BINARYEN_STATIC_LIBRARY})
-  set(WASM2VIRCON_BINARYEN_IS_STATIC ON)
-else()
-  get_filename_component(BINARYEN_LIBRARY_EXTENSION "${BINARYEN_LIBRARY}" EXT)
-  if(BINARYEN_LIBRARY_EXTENSION STREQUAL CMAKE_STATIC_LIBRARY_SUFFIX)
-    set(WASM2VIRCON_BINARYEN_IS_STATIC ON)
-  endif()
+target_include_directories(wasm2vircon PRIVATE src)
+if(WASM2VIRCON_BINARYEN_INCLUDE_DIR)
+  target_include_directories(wasm2vircon PRIVATE "${WASM2VIRCON_BINARYEN_INCLUDE_DIR}")
 endif()
 
+# A legacy static archive needs explicit C++ runtime/system libraries. An
+# exported Binaryen target owns those transitive dependencies itself.
 target_link_libraries(wasm2vircon PRIVATE ${WASM2VIRCON_BINARYEN_LINK_LIBRARY})
-if(WASM2VIRCON_BINARYEN_IS_STATIC)
+if(WASM2VIRCON_BINARYEN_IS_STATIC AND WASM2VIRCON_BINARYEN_NEEDS_MANUAL_STATIC_DEPS)
   # Binaryen is implemented in C++, although wasm2vircon itself remains C.
   # Link through the host C++ driver on Windows, where C++ archive dependencies
   # are normally supplied by the toolchain. Unix-like toolchains need their
@@ -113,11 +166,10 @@ if(WASM2VIRCON_BINARYEN_IS_STATIC)
       Threads::Threads ${CMAKE_DL_LIBS} ${BINARYEN_MATH_LIBRARY})
   endif()
 endif()
-if(WASM2VIRCON_USE_EMBEDDED_BINARYEN)
-  target_compile_definitions(wasm2vircon PRIVATE USE_EMBEDDED_BINARYEN=1)
-  message(STATUS "Using embedded static Binaryen normalization")
+if(WASM2VIRCON_BINARYEN_IS_STATIC)
+  message(STATUS "Using static Binaryen linkage with in-process normalization")
 else()
-  message(STATUS "Using compiler-owned linker-artifact cleanup only")
+  message(STATUS "Using dynamic Binaryen linkage with in-process normalization")
 endif()
 
 include(CTest)
@@ -202,6 +254,7 @@ if(BUILD_TESTING)
     set_tests_properties(wasm2vircon-simulator PROPERTIES LABELS simulator)
   else()
     message(STATUS
-      "v32sim execution tests are disabled; set WASM2VIRCON_V32SIM_EXECUTABLE and WASM2VIRCON_V32SIM_BIOS to enable them")
+      "v32sim execution tests are disabled; set WASM2VIRCON_V32SIM_EXECUTABLE "
+      "and WASM2VIRCON_V32SIM_BIOS to enable them")
   endif()
 endif()
