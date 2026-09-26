@@ -300,15 +300,18 @@ static bool lower_br_table(Context *context, const WasmExpr *expression, Value *
          emit(context, "  mov R4, [R3]") && emit(context, "  jmp R4");
 }
 
-/* Checks a Wasm byte address and leaves its effective byte address in R2. */
+/* Checks a Wasm byte address against the current dynamic length and leaves
+ * its effective byte address in R2. Valid target sizes are below 2^31 bytes,
+ * so a negative signed value identifies every out-of-range unsigned address. */
 static bool effective_address(Context *context, Value pointer, uint32_t offset, uint32_t width) {
-  uint32_t maximum;
-  if ((uint64_t)offset + width > context->memory_bytes)
+  uint64_t required = (uint64_t)offset + width;
+  if (required > VIRCON_LINEAR_MEMORY_BYTES)
     return emit(context, "  jmp __wasm_trap");
-  maximum = context->memory_bytes - offset - width;
   return load_slot(context, 2, pointer.slot) && emit(context, "  mov R1, R2") && emit(context, "  ilt R1, 0") &&
-         emit(context, "  jt R1, __wasm_trap") && emit(context, "  mov R1, R2") &&
-         emit(context, "  igt R1, 0x%08X", maximum) && emit(context, "  jt R1, __wasm_trap") &&
+         emit(context, "  jt R1, __wasm_trap") && emit(context, "  mov R1, [%u]", VIRCON_WASM_MEMORY_PAGES_WORD) &&
+         emit(context, "  imul R1, 65536") && emit(context, "  mov R3, 0x%08X", (uint32_t)required) &&
+         emit(context, "  igt R3, R1") && emit(context, "  jt R3, __wasm_trap") && emit(context, "  isub R1, R3") &&
+         emit(context, "  igt R2, R1") && emit(context, "  jt R2, __wasm_trap") &&
          (offset == 0 || emit(context, "  iadd R2, 0x%08X", offset));
 }
 /* Extracts one little-endian Wasm byte at the checked byte address in R2. */
@@ -633,6 +636,59 @@ static bool lower_bulk_memory(Context *context, const WasmExpr *expression, Valu
   if (!emit(context, "  call %s", helper))
     return false;
   value->present = false;
+  return true;
+}
+
+/* Returns the largest page count this target can honor for this memory. A
+ * module may declare a larger maximum, but Wasm permits an implementation to
+ * impose a smaller physical limit and report memory.grow failure. */
+static uint32_t memory_growth_limit_pages(const Context *context) {
+  uint32_t limit = (uint32_t)VIRCON_LINEAR_MEMORY_MAX_PAGES;
+  if (context->validated->module->memory_has_max && context->validated->module->memory_max_pages < limit)
+    limit = context->validated->module->memory_max_pages;
+  return limit;
+}
+
+/* Lowers memory.size by reading compiler-owned current-page state. */
+static bool lower_memory_size(Context *context, Value *value) {
+  int slot = temp_slot(context);
+  if (slot == 0 || !emit(context, "  mov R1, [%u]", VIRCON_WASM_MEMORY_PAGES_WORD) || !store_slot(context, slot, 1))
+    return false;
+  value->slot = slot;
+  value->present = true;
+  return true;
+}
+
+/* Lowers memory.grow, including Wasm's zero-initialization and -1 failure
+ * result. The generated loop writes target words, while Wasm remains in byte
+ * units everywhere outside this target-specific legalization. */
+static bool lower_memory_grow(Context *context, const WasmExpr *expression, Value *value) {
+  Value delta = {0};
+  char clear[64], failed[64], succeeded[64], done[64];
+  uint32_t maximum = memory_growth_limit_pages(context);
+
+  if (!lower_expression(context, expression->children[0], &delta) || !delta.present ||
+      !fresh_label(context, "memory_grow_clear", clear, sizeof(clear)) ||
+      !fresh_label(context, "memory_grow_failed", failed, sizeof(failed)) ||
+      !fresh_label(context, "memory_grow_succeeded", succeeded, sizeof(succeeded)) ||
+      !fresh_label(context, "memory_grow_done", done, sizeof(done)) || !load_slot(context, 2, delta.slot))
+    return false;
+  /* R6 preserves the old page count for the successful Wasm result. */
+  if (!emit(context, "  mov R6, [%u]", VIRCON_WASM_MEMORY_PAGES_WORD) || !emit(context, "  mov R1, R2") ||
+      !emit(context, "  ilt R1, 0") || !emit(context, "  jt R1, %s", failed) ||
+      !emit(context, "  mov R1, 0x%08X", maximum) || !emit(context, "  isub R1, R6") ||
+      !emit(context, "  igt R2, R1") || !emit(context, "  jt R2, %s", failed) || !emit(context, "  mov R5, R6") ||
+      !emit(context, "  iadd R5, R2") || !emit(context, "  mov R3, R6") || !emit(context, "  imul R3, 16384") ||
+      !emit(context, "  iadd R3, %u", LINEAR_BASE) || !emit(context, "  mov R4, R2") ||
+      !emit(context, "  imul R4, 16384") || !emit(context, "  mov R1, 0") || !emit_label(context, clear) ||
+      !emit(context, "  jf R4, %s", succeeded) ||
+      !emit(context, "  mov [R3], R1") || !emit(context, "  iadd R3, 1") || !emit(context, "  isub R4, 1") ||
+      !emit(context, "  jmp %s", clear) || !emit_label(context, succeeded) ||
+      !emit(context, "  mov [%u], R5", VIRCON_WASM_MEMORY_PAGES_WORD) || !emit(context, "  mov R1, R6") ||
+      !emit(context, "  jmp %s", done) || !emit_label(context, failed) || !emit(context, "  mov R1, -1") ||
+      !emit_label(context, done) || !store_slot(context, delta.slot, 1))
+    return false;
+  *value = delta;
   return true;
 }
 
@@ -1305,18 +1361,18 @@ static bool emit_unsigned_division_helper(Context *context) {
 
 /* Emits the shared bounds checks used before either bulk helper mutates RAM. */
 static bool emit_bulk_bounds_checks(Context *context, bool has_source) {
-  uint32_t memory_bytes = context->memory_bytes;
-  if (!emit(context, "  mov R1, [BP-3]") || !emit(context, "  ilt R1, 0") || !emit(context, "  jt R1, __wasm_trap") ||
-      !emit(context, "  mov R1, [BP-3]") || !emit(context, "  igt R1, 0x%08X", memory_bytes) ||
-      !emit(context, "  jt R1, __wasm_trap") || !emit(context, "  mov R2, 0x%08X", memory_bytes) ||
-      !emit(context, "  isub R2, R1") || !emit(context, "  mov R1, [BP-1]") || !emit(context, "  ilt R1, 0") ||
-      !emit(context, "  jt R1, __wasm_trap") || !emit(context, "  igt R1, R2") ||
-      !emit(context, "  jt R1, __wasm_trap"))
+  if (!emit(context, "  mov R2, [%u]", VIRCON_WASM_MEMORY_PAGES_WORD) || !emit(context, "  imul R2, 65536") ||
+      !emit(context, "  mov R1, [BP-1]") || !emit(context, "  ilt R1, 0") || !emit(context, "  jt R1, __wasm_trap") ||
+      !emit(context, "  igt R1, R2") || !emit(context, "  jt R1, __wasm_trap") || !emit(context, "  mov R3, R2") ||
+      !emit(context, "  isub R3, R1") || !emit(context, "  mov R1, [BP-3]") || !emit(context, "  ilt R1, 0") ||
+      !emit(context, "  jt R1, __wasm_trap") || !emit(context, "  igt R1, R3") || !emit(context, "  jt R1, __wasm_trap"))
     return false;
   if (!has_source)
     return true;
   return emit(context, "  mov R1, [BP-2]") && emit(context, "  ilt R1, 0") && emit(context, "  jt R1, __wasm_trap") &&
-         emit(context, "  igt R1, R2") && emit(context, "  jt R1, __wasm_trap");
+         emit(context, "  igt R1, R2") && emit(context, "  jt R1, __wasm_trap") && emit(context, "  mov R3, R2") &&
+         emit(context, "  isub R3, R1") && emit(context, "  mov R1, [BP-3]") &&
+         emit(context, "  igt R1, R3") && emit(context, "  jt R1, __wasm_trap");
 }
 
 /* Emits overlap-safe Wasm memory.copy over packed byte-addressed linear memory.
@@ -1549,6 +1605,10 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
   case WASM_EXPR_MEMORY_COPY:
   case WASM_EXPR_MEMORY_FILL:
     return lower_bulk_memory(context, expression, value);
+  case WASM_EXPR_MEMORY_SIZE:
+    return lower_memory_size(context, value);
+  case WASM_EXPR_MEMORY_GROW:
+    return lower_memory_grow(context, expression, value);
   case WASM_EXPR_CALL:
     return lower_call(context, expression, value);
   case WASM_EXPR_BLOCK:
@@ -1732,6 +1792,8 @@ bool lower_module_to_vircon_ir(const ValidatedModule *validated, VirconIrProgram
   startup.memory_bytes = memory_bytes;
   function_label(validated->module, validated->entry, entry_label, sizeof(entry_label));
   if (!emit_label(&startup, "__wasm_entry") || !initialize_data(validated, &startup) ||
+      !emit(&startup, "  mov R1, %u", validated->module->memory_initial_pages) ||
+      !emit(&startup, "  mov [%u], R1", VIRCON_WASM_MEMORY_PAGES_WORD) ||
       (validated->module->global_count != 0 &&
        (!emit(&startup, "  mov R1, 0x%08X", validated->module->stack_pointer_initial) ||
         !emit(&startup, "  mov [%u], R1", VIRCON_WASM_STACK_POINTER_WORD))) ||

@@ -1,0 +1,3 @@
+source=memory-growth.wat
+entry=main
+expectations=expected.asm

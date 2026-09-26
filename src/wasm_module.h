@@ -50,7 +50,9 @@ typedef enum WasmExprKind {
   WASM_EXPR_GLOBAL_GET,
   WASM_EXPR_GLOBAL_SET,
   WASM_EXPR_MEMORY_COPY,
-  WASM_EXPR_MEMORY_FILL
+  WASM_EXPR_MEMORY_FILL,
+  WASM_EXPR_MEMORY_SIZE,
+  WASM_EXPR_MEMORY_GROW
 } WasmExprKind;
 /* Supported unary operations; OTHER preserves a useful rejection diagnostic. */
 typedef enum WasmUnaryOp {

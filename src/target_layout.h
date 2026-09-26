@@ -13,6 +13,9 @@
 /* Holds a Wasm byte-offset stack pointer; it is outside linear memory and the
  * native stack. */
 #define VIRCON_WASM_STACK_POINTER_WORD (VIRCON_RESERVED_LOW_WORDS - 1u)
+/* Tracks the current Wasm linear-memory length in 64 KiB pages. It is
+ * compiler-owned state, deliberately outside the byte-addressed memory. */
+#define VIRCON_WASM_MEMORY_PAGES_WORD (VIRCON_RESERVED_LOW_WORDS - 2u)
 #define VIRCON_LINEAR_MEMORY_BASE VIRCON_RESERVED_LOW_WORDS
 #define VIRCON_LINEAR_MEMORY_LIMIT (VIRCON_RAM_WORDS - VIRCON_RESERVED_HIGH_WORDS)
 #define VIRCON_LINEAR_MEMORY_WORDS (VIRCON_LINEAR_MEMORY_LIMIT - VIRCON_LINEAR_MEMORY_BASE)

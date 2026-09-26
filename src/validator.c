@@ -362,6 +362,18 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
     return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&
            validate_expression(module, function, expression->children[1], reachable, diagnostics) &&
            validate_expression(module, function, expression->children[2], reachable, diagnostics);
+  case WASM_EXPR_MEMORY_SIZE:
+    if (expression->child_count != 0) {
+      validation_expression_error(diagnostics, function, expression, "malformed memory.size");
+      return false;
+    }
+    return true;
+  case WASM_EXPR_MEMORY_GROW:
+    if (expression->child_count != 1) {
+      validation_expression_error(diagnostics, function, expression, "malformed memory.grow");
+      return false;
+    }
+    return validate_expression(module, function, expression->children[0], reachable, diagnostics);
   case WASM_EXPR_BINARY:
     if (expression->binary_op == WASM_BINARY_OTHER) {
       validation_expression_error(diagnostics, function, expression, "unsupported binary operation");
@@ -465,6 +477,10 @@ bool validate_virconwasm_v1(const WasmModule *module, const char *entry_name, bo
   if (memory_bytes == 0 || memory_bytes > available_bytes || memory_bytes > UINT32_MAX) {
     diagnostics_error(diagnostics, "declared Wasm memory does not fit the "
                                    "reserved Vircon32 linear-memory region");
+    return false;
+  }
+  if (module->memory_has_max && module->memory_max_pages < module->memory_initial_pages) {
+    diagnostics_error(diagnostics, "declared Wasm memory maximum is invalid");
     return false;
   }
   if (module->global_count != 0) {

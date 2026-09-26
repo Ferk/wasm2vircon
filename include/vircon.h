@@ -11,8 +11,8 @@
  * Use `void main(void)` as the application entry point, matching the official
  * Vircon C convention and the build driver's default `main` export.
  *
- * This is not a hosted libc.  It has no stdio, printf, general allocation,
- * files, locale, or UTF-8 support.  It supplies the documented small byte
+ * This is not a hosted libc.  It has no stdio, printf, files, locale, or
+ * UTF-8 support. It supplies the documented small byte
  * string/memory helpers. Use only public names;
  * `vircon__*` names are implementation details of the current platform ABI.
  * The header is for Clang wasm32.  The host fallback merely permits parsing;
@@ -676,6 +676,141 @@ static inline void *memcpy(void *destination, const void *source, unsigned count
     --count;
   }
   return destination;
+}
+
+/* Wasm page allocation -----------------------------------------------------
+ * These builtins are the direct C frontend spelling of memory.size and
+ * memory.grow for the module's one default Wasm memory. The host fallback is
+ * deliberately non-functional: this header targets Clang wasm32 programs. */
+static inline unsigned vircon__memory_size_pages(void) {
+#if defined(__wasm__)
+  return (unsigned)__builtin_wasm_memory_size(0);
+#else
+  return 0;
+#endif
+}
+static inline unsigned vircon__memory_grow_pages(unsigned pages) {
+#if defined(__wasm__)
+  return (unsigned)__builtin_wasm_memory_grow(0, pages);
+#else
+  (void)pages;
+  return 0xFFFFFFFFu;
+#endif
+}
+/* Reports the current default-memory length in 64 KiB Wasm pages. */
+static inline unsigned vircon_memory_size_pages(void) { return vircon__memory_size_pages(); }
+/* Grows the default memory by pages and returns its previous page count, or
+ * 0xFFFFFFFF on failure. The new bytes are zero-initialized by Wasm. */
+static inline unsigned vircon_memory_grow_pages(unsigned pages) { return vircon__memory_grow_pages(pages); }
+
+/* A compact page-block allocator for freestanding VirconWasm programs.
+ * Every fresh allocation gets one or more newly grown 64 KiB pages. A block
+ * has a 16-byte header: page count, requested byte count, free-list link, and
+ * reserved space. The payload is therefore 16-byte aligned. Freed blocks are
+ * reused whole (without splitting or coalescing), which keeps this initial
+ * allocator small while making ordinary allocation/free loops practical.
+ *
+ * This internal-linkage head belongs to each compiled source unit. That does
+ * not overlap allocations: fresh pages always come from the one Wasm memory,
+ * and a block freed through any copy of free can be reused by that copy. */
+static volatile unsigned vircon__heap_free_blocks;
+
+/* Returns the 16-byte allocator header preceding an aligned payload. */
+static inline volatile unsigned *vircon__allocation_header(void *memory) {
+  return (volatile unsigned *)((volatile unsigned char *)memory - 16);
+}
+
+/* Allocates a whole-page block, first checking this source unit's free list. */
+static inline void *malloc(unsigned size) {
+  unsigned pages;
+  unsigned previous_pages;
+  unsigned base;
+  unsigned block;
+  volatile unsigned *header;
+  volatile unsigned *previous_header = (volatile unsigned *)0;
+
+  if (size == 0)
+    size = 1;
+  /* Leave room for the 16-byte aligned payload/header prefix and page-round. */
+  if (size > 0xFFFEFFF0u)
+    return (void *)0;
+  pages = (size + 0x0001000Fu) >> 16;
+  block = vircon__heap_free_blocks;
+  while (block != 0) {
+    header = (volatile unsigned *)(unsigned long)block;
+    if (header[0] >= pages) {
+      if (previous_header == (volatile unsigned *)0)
+        vircon__heap_free_blocks = header[2];
+      else
+        previous_header[2] = header[2];
+      header[1] = size;
+      return (void *)(unsigned long)(block + 16u);
+    }
+    previous_header = header;
+    block = header[2];
+  }
+  previous_pages = vircon__memory_grow_pages(pages);
+  if (previous_pages == 0xFFFFFFFFu)
+    return (void *)0;
+  base = previous_pages << 16;
+  header = (volatile unsigned *)(unsigned long)base;
+  header[0] = pages;
+  header[1] = size;
+  header[2] = 0;
+  return (void *)(unsigned long)(base + 16u);
+}
+/* Returns one whole page block to this source unit's free list. */
+static inline void free(void *memory) {
+  volatile unsigned *header;
+  if (memory == (void *)0)
+    return;
+  header = vircon__allocation_header(memory);
+  header[2] = vircon__heap_free_blocks;
+  vircon__heap_free_blocks = (unsigned)(unsigned long)header;
+}
+/* Allocates count * size bytes after checking the unsigned multiplication. */
+static inline void *calloc(unsigned count, unsigned size) {
+  unsigned total;
+  unsigned index;
+  void *memory;
+  volatile unsigned char *bytes;
+
+  if (count != 0 && size > 0xFFFFFFFFu / count)
+    return (void *)0;
+  total = count * size;
+  memory = malloc(total);
+  bytes = (volatile unsigned char *)memory;
+  for (index = 0; bytes != (void *)0 && index < total; ++index)
+    bytes[index] = 0;
+  return memory;
+}
+/* Keeps a page allocation when it is already large enough; otherwise grows a
+ * new block, copies its requested bytes, and releases the old page block. */
+static inline void *realloc(void *memory, unsigned size) {
+  unsigned old_size;
+  unsigned capacity;
+  volatile unsigned *header;
+  void *replacement;
+
+  if (memory == (void *)0)
+    return malloc(size);
+  if (size == 0) {
+    free(memory);
+    return (void *)0;
+  }
+  header = vircon__allocation_header(memory);
+  old_size = header[1];
+  capacity = (header[0] << 16) - 16u;
+  if (size <= capacity) {
+    header[1] = size;
+    return memory;
+  }
+  replacement = malloc(size);
+  if (replacement != (void *)0) {
+    memcpy(replacement, memory, old_size);
+    free(memory);
+  }
+  return replacement;
 }
 /* Compares byte regions as unsigned bytes, like the standard C routine. */
 static inline int memcmp(const void *first, const void *second, unsigned count) {

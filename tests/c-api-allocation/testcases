@@ -1,0 +1,6 @@
+source=allocation.c
+entry=__original_main
+include_dirs=../../include
+normalize=true
+allow_stack_pointer=true
+expectations=expected.asm

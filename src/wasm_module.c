@@ -726,6 +726,21 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
       goto fail;
     return expression;
   }
+  if (id == BinaryenMemorySizeId()) {
+    expression = new_expression(WASM_EXPR_MEMORY_SIZE, "memory.size", path, diagnostics);
+    if (expression == NULL)
+      goto fail;
+    return expression;
+  }
+  if (id == BinaryenMemoryGrowId()) {
+    expression = new_expression(WASM_EXPR_MEMORY_GROW, "memory.grow", path, diagnostics);
+    if (expression == NULL || !allocate_children(expression, 1, diagnostics))
+      goto fail;
+    expression->children[0] = convert_child(BinaryenMemoryGrowGetDelta(source), diagnostics, context, path, 0);
+    if (expression->children[0] == NULL)
+      goto fail;
+    return expression;
+  }
   if (id == BinaryenUnaryId()) {
     BinaryenOp op = BinaryenUnaryGetOp(source);
     if (op == BinaryenWrapInt64()) {
