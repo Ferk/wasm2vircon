@@ -703,115 +703,31 @@ static inline unsigned vircon_memory_size_pages(void) { return vircon__memory_si
  * 0xFFFFFFFF on failure. The new bytes are zero-initialized by Wasm. */
 static inline unsigned vircon_memory_grow_pages(unsigned pages) { return vircon__memory_grow_pages(pages); }
 
-/* A compact page-block allocator for freestanding VirconWasm programs.
- * Every fresh allocation gets one or more newly grown 64 KiB pages. A block
- * has a 16-byte header: page count, requested byte count, free-list link, and
- * reserved space. The payload is therefore 16-byte aligned. Freed blocks are
- * reused whole (without splitting or coalescing), which keeps this initial
- * allocator small while making ordinary allocation/free loops practical.
- *
- * This internal-linkage head belongs to each compiled source unit. That does
- * not overlap allocations: fresh pages always come from the one Wasm memory,
- * and a block freed through any copy of free can be reused by that copy. */
-static volatile unsigned vircon__heap_free_blocks;
+/* Configurable global heap -------------------------------------------------
+ * This reproduces the official allocator's visible shape with normal C/Wasm
+ * byte pointers. Define VIRCON_IMPLEMENTATION before including this header in
+ * exactly one application source file to emit the shared globals and bodies;
+ * every other source includes it normally. This keeps the complete runtime in
+ * this header while still giving the linked program one actual heap. */
+typedef struct malloc_block {
+  struct malloc_block *previous;
+  struct malloc_block *next;
+  unsigned size;
+  int free;
+} malloc_block;
 
-/* Returns the 16-byte allocator header preceding an aligned payload. */
-static inline volatile unsigned *vircon__allocation_header(void *memory) {
-  return (volatile unsigned *)((volatile unsigned char *)memory - 16);
-}
+/* Configure these before the first allocation. They are byte pointers and the
+ * end pointer is inclusive, matching the official configuration convention.
+ * A null start selects the current Wasm-memory end; a null end selects the
+ * compiler's maximum Wasm-memory byte. Changes after first use are ignored. */
+extern void *malloc_start_address;
+extern void *malloc_end_address;
+extern malloc_block *malloc_first_block;
 
-/* Allocates a whole-page block, first checking this source unit's free list. */
-static inline void *malloc(unsigned size) {
-  unsigned pages;
-  unsigned previous_pages;
-  unsigned base;
-  unsigned block;
-  volatile unsigned *header;
-  volatile unsigned *previous_header = (volatile unsigned *)0;
-
-  if (size == 0)
-    size = 1;
-  /* Leave room for the 16-byte aligned payload/header prefix and page-round. */
-  if (size > 0xFFFEFFF0u)
-    return (void *)0;
-  pages = (size + 0x0001000Fu) >> 16;
-  block = vircon__heap_free_blocks;
-  while (block != 0) {
-    header = (volatile unsigned *)(unsigned long)block;
-    if (header[0] >= pages) {
-      if (previous_header == (volatile unsigned *)0)
-        vircon__heap_free_blocks = header[2];
-      else
-        previous_header[2] = header[2];
-      header[1] = size;
-      return (void *)(unsigned long)(block + 16u);
-    }
-    previous_header = header;
-    block = header[2];
-  }
-  previous_pages = vircon__memory_grow_pages(pages);
-  if (previous_pages == 0xFFFFFFFFu)
-    return (void *)0;
-  base = previous_pages << 16;
-  header = (volatile unsigned *)(unsigned long)base;
-  header[0] = pages;
-  header[1] = size;
-  header[2] = 0;
-  return (void *)(unsigned long)(base + 16u);
-}
-/* Returns one whole page block to this source unit's free list. */
-static inline void free(void *memory) {
-  volatile unsigned *header;
-  if (memory == (void *)0)
-    return;
-  header = vircon__allocation_header(memory);
-  header[2] = vircon__heap_free_blocks;
-  vircon__heap_free_blocks = (unsigned)(unsigned long)header;
-}
-/* Allocates count * size bytes after checking the unsigned multiplication. */
-static inline void *calloc(unsigned count, unsigned size) {
-  unsigned total;
-  unsigned index;
-  void *memory;
-  volatile unsigned char *bytes;
-
-  if (count != 0 && size > 0xFFFFFFFFu / count)
-    return (void *)0;
-  total = count * size;
-  memory = malloc(total);
-  bytes = (volatile unsigned char *)memory;
-  for (index = 0; bytes != (void *)0 && index < total; ++index)
-    bytes[index] = 0;
-  return memory;
-}
-/* Keeps a page allocation when it is already large enough; otherwise grows a
- * new block, copies its requested bytes, and releases the old page block. */
-static inline void *realloc(void *memory, unsigned size) {
-  unsigned old_size;
-  unsigned capacity;
-  volatile unsigned *header;
-  void *replacement;
-
-  if (memory == (void *)0)
-    return malloc(size);
-  if (size == 0) {
-    free(memory);
-    return (void *)0;
-  }
-  header = vircon__allocation_header(memory);
-  old_size = header[1];
-  capacity = (header[0] << 16) - 16u;
-  if (size <= capacity) {
-    header[1] = size;
-    return memory;
-  }
-  replacement = malloc(size);
-  if (replacement != (void *)0) {
-    memcpy(replacement, memory, old_size);
-    free(memory);
-  }
-  return replacement;
-}
+void *malloc(int size);
+void free(void *memory);
+void *calloc(int count, int size);
+void *realloc(void *memory, int size);
 /* Compares byte regions as unsigned bytes, like the standard C routine. */
 static inline int memcmp(const void *first, const void *second, unsigned count) {
   const unsigned char *left = (const unsigned char *)first;
@@ -1006,6 +922,225 @@ static inline float acos(float value) { return acosf(value); }
 static inline float exp(float value) { return expf(value); }
 static inline float log(float value) { return logf(value); }
 static inline float pow(float x, float y) { return powf(x, y); }
+
+/* Heap implementation ------------------------------------------------------
+ * Keep this implementation at the end of the public header so declarations
+ * remain easy to read. Define VIRCON_IMPLEMENTATION in exactly one source
+ * file before including vircon.h when the program uses allocation. */
+#ifdef VIRCON_IMPLEMENTATION
+
+#define VIRCON__WASM_MAX_MEMORY_BYTES 0x007A0000u
+#define VIRCON__HEAP_ALIGNMENT 16u
+
+void *malloc_start_address = (void *)0;
+void *malloc_end_address = (void *)0;
+malloc_block *malloc_first_block = (malloc_block *)0;
+
+static volatile malloc_block *vircon__heap_last_block;
+static unsigned vircon__heap_next_address;
+static unsigned vircon__heap_end_address;
+static int vircon__heap_initialized;
+
+/* Aligns a positive allocation request for the normal C pointer alignment. */
+static unsigned vircon__heap_align(unsigned size) {
+  return (size + VIRCON__HEAP_ALIGNMENT - 1u) & ~(VIRCON__HEAP_ALIGNMENT - 1u);
+}
+
+/* Converts a normal Wasm byte pointer to an unsigned byte offset. */
+static unsigned vircon__heap_address(const void *pointer) { return (unsigned)(unsigned long)pointer; }
+
+/* Makes the default memory large enough to contain an exclusive byte end. */
+static int vircon__heap_grow_to(unsigned required_end) {
+  unsigned current_end = vircon__memory_size_pages() << 16;
+  unsigned pages;
+  if (required_end <= current_end)
+    return 1;
+  pages = (required_end - current_end + 65535u) >> 16;
+  if (vircon__memory_grow_pages(pages) == 0xFFFFFFFFu)
+    return 0;
+  return (vircon__memory_size_pages() << 16) >= required_end;
+}
+
+/* Freezes configuration on first use and chooses the default safe heap range. */
+static int vircon__heap_initialize(void) {
+  unsigned memory_end;
+  unsigned start;
+  unsigned end;
+  if (vircon__heap_initialized)
+    return 1;
+  memory_end = vircon__memory_size_pages() << 16;
+  start = malloc_start_address == (void *)0 ? memory_end : vircon__heap_address(malloc_start_address);
+  end = malloc_end_address == (void *)0 ? VIRCON__WASM_MAX_MEMORY_BYTES - 1u :
+                                           vircon__heap_address(malloc_end_address);
+  start = vircon__heap_align(start);
+  if (start < memory_end || end < start || end >= VIRCON__WASM_MAX_MEMORY_BYTES ||
+      end - start + 1u < sizeof(malloc_block))
+    return 0;
+  malloc_start_address = (void *)(unsigned long)start;
+  malloc_end_address = (void *)(unsigned long)end;
+  vircon__heap_next_address = start;
+  vircon__heap_end_address = end;
+  vircon__heap_initialized = 1;
+  return 1;
+}
+
+/* Merges a free block with its adjacent free neighbours and returns survivor. */
+static volatile malloc_block *vircon__heap_merge(volatile malloc_block *block) {
+  volatile malloc_block *previous = block->previous;
+  volatile malloc_block *next = block->next;
+  if (next != (volatile malloc_block *)0 && next->free) {
+    block->size += (unsigned)sizeof(malloc_block) + next->size;
+    block->next = next->next;
+    if (next->next != (malloc_block *)0)
+      next->next->previous = (malloc_block *)block;
+    else
+      vircon__heap_last_block = block;
+  }
+  if (previous != (volatile malloc_block *)0 && previous->free) {
+    previous->size += (unsigned)sizeof(malloc_block) + block->size;
+    previous->next = block->next;
+    if (block->next != (malloc_block *)0)
+      block->next->previous = (malloc_block *)previous;
+    else
+      vircon__heap_last_block = previous;
+    block = previous;
+  }
+  return block;
+}
+
+/* Splits an allocated block when its unused tail can hold a useful free block. */
+static void vircon__heap_reduce(volatile malloc_block *block, unsigned size) {
+  unsigned remaining;
+  volatile malloc_block *freed;
+  if (block->size < size + (unsigned)sizeof(malloc_block) + VIRCON__HEAP_ALIGNMENT)
+    return;
+  remaining = block->size - size - (unsigned)sizeof(malloc_block);
+  freed = (volatile malloc_block *)((volatile unsigned char *)(block + 1) + size);
+  freed->previous = (malloc_block *)block;
+  freed->next = block->next;
+  freed->size = remaining;
+  freed->free = 1;
+  block->size = size;
+  block->next = (malloc_block *)freed;
+  if (freed->next != (malloc_block *)0)
+    freed->next->previous = (malloc_block *)freed;
+  else
+    vircon__heap_last_block = freed;
+  (void)vircon__heap_merge(freed);
+}
+
+/* Reserves a fresh contiguous block, growing Wasm memory only when needed. */
+static volatile malloc_block *vircon__heap_append(unsigned size) {
+  unsigned block_address = vircon__heap_next_address;
+  unsigned required_end = block_address + (unsigned)sizeof(malloc_block) + size;
+  volatile malloc_block *block;
+  if (required_end < block_address || required_end - 1u > vircon__heap_end_address ||
+      !vircon__heap_grow_to(required_end))
+    return (volatile malloc_block *)0;
+  block = (volatile malloc_block *)(unsigned long)block_address;
+  block->previous = (malloc_block *)vircon__heap_last_block;
+  block->next = (malloc_block *)0;
+  block->size = size;
+  block->free = 0;
+  if (vircon__heap_last_block != (volatile malloc_block *)0)
+    vircon__heap_last_block->next = (malloc_block *)block;
+  else
+    malloc_first_block = (malloc_block *)block;
+  vircon__heap_last_block = block;
+  vircon__heap_next_address = required_end;
+  return block;
+}
+
+/* Allocates a positive byte count from the configured global heap. */
+void *malloc(int size) {
+  unsigned requested;
+  volatile malloc_block *block;
+  if (size <= 0 || !vircon__heap_initialize())
+    return (void *)0;
+  requested = vircon__heap_align((unsigned)size);
+  for (block = (volatile malloc_block *)malloc_first_block; block != (volatile malloc_block *)0;
+       block = block->next) {
+    if (!block->free || block->size < requested)
+      continue;
+    block->free = 0;
+    vircon__heap_reduce(block, requested);
+    return (void *)(block + 1);
+  }
+  block = vircon__heap_append(requested);
+  return block == (volatile malloc_block *)0 ? (void *)0 : (void *)(block + 1);
+}
+
+/* Marks a valid allocation free and coalesces its physical neighbours. */
+void free(void *memory) {
+  volatile malloc_block *block;
+  if (memory == (void *)0)
+    return;
+  block = (volatile malloc_block *)memory - 1;
+  block->free = 1;
+  (void)vircon__heap_merge(block);
+}
+
+/* Allocates and explicitly clears count positive elements, checking overflow. */
+void *calloc(int count, int size) {
+  unsigned total;
+  unsigned index;
+  volatile unsigned char *bytes;
+  void *memory;
+  if (count <= 0 || size <= 0 || count > 0x7FFFFFFF / size)
+    return (void *)0;
+  total = (unsigned)(count * size);
+  memory = malloc((int)total);
+  if (memory == (void *)0)
+    return (void *)0;
+  bytes = (volatile unsigned char *)memory;
+  for (index = 0; index < total; ++index)
+    bytes[index] = 0;
+  return memory;
+}
+
+/* Resizes a block in place when possible, otherwise moves its existing data. */
+void *realloc(void *memory, int size) {
+  unsigned requested;
+  unsigned previous_size;
+  volatile malloc_block *block;
+  volatile malloc_block *next;
+  void *replacement;
+  if (memory == (void *)0)
+    return malloc(size);
+  if (size <= 0) {
+    free(memory);
+    return (void *)0;
+  }
+  requested = vircon__heap_align((unsigned)size);
+  block = (volatile malloc_block *)memory - 1;
+  previous_size = block->size;
+  if (requested <= previous_size) {
+    vircon__heap_reduce(block, requested);
+    return memory;
+  }
+  next = block->next;
+  if (next != (volatile malloc_block *)0 && next->free &&
+      previous_size + (unsigned)sizeof(malloc_block) + next->size >= requested) {
+    block->size = previous_size + (unsigned)sizeof(malloc_block) + next->size;
+    block->next = next->next;
+    if (next->next != (malloc_block *)0)
+      next->next->previous = (malloc_block *)block;
+    else
+      vircon__heap_last_block = block;
+    vircon__heap_reduce(block, requested);
+    return memory;
+  }
+  replacement = malloc(size);
+  if (replacement == (void *)0)
+    return (void *)0;
+  memcpy(replacement, memory, previous_size);
+  free(memory);
+  return replacement;
+}
+
+#undef VIRCON__HEAP_ALIGNMENT
+#undef VIRCON__WASM_MAX_MEMORY_BYTES
+#endif
 
 #if defined(__clang__)
 #pragma clang attribute pop
