@@ -1,0 +1,8 @@
+[package]
+name = "rust-boids"
+version = "0.1.0"
+edition = "2024"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
