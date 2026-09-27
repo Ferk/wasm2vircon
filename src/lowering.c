@@ -311,7 +311,10 @@ static bool effective_address(Context *context, Value pointer, uint32_t offset, 
          emit(context, "  jt R1, __wasm_trap") && emit(context, "  mov R1, [%u]", VIRCON_WASM_MEMORY_PAGES_WORD) &&
          emit(context, "  imul R1, 65536") && emit(context, "  mov R3, 0x%08X", (uint32_t)required) &&
          emit(context, "  igt R3, R1") && emit(context, "  jt R3, __wasm_trap") && emit(context, "  isub R1, R3") &&
-         emit(context, "  igt R2, R1") && emit(context, "  jt R2, __wasm_trap") &&
+         /* Comparisons write their result into the first operand on
+          * Vircon32. Keep R2 intact: it is the checked effective address
+          * consumed immediately by the packed-memory load/store helpers. */
+         emit(context, "  mov R3, R2") && emit(context, "  igt R3, R1") && emit(context, "  jt R3, __wasm_trap") &&
          (offset == 0 || emit(context, "  iadd R2, 0x%08X", offset));
 }
 /* Extracts one little-endian Wasm byte at the checked byte address in R2. */
