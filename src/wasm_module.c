@@ -392,6 +392,8 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
     return NULL;
   }
   id = BinaryenExpressionGetId(source);
+  if (id == BinaryenNopId())
+    return new_expression(WASM_EXPR_NOP, "nop", path, diagnostics);
   if (id == BinaryenBlockId()) {
     expression = new_expression(WASM_EXPR_BLOCK, "block", path, diagnostics);
     if (expression == NULL)

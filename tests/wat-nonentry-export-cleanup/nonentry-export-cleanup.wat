@@ -8,6 +8,7 @@
   )
 
   (func $main (export "main")
+    nop
     (loop $forever
       (br $forever)
     )

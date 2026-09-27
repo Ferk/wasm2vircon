@@ -216,6 +216,8 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
   const ImportSpec *spec;
   size_t index;
   switch (expression->kind) {
+  case WASM_EXPR_NOP:
+    return true;
   case WASM_EXPR_BLOCK:
   case WASM_EXPR_LOOP:
     for (index = 0; index < expression->child_count; ++index)

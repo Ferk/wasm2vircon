@@ -19,6 +19,7 @@ typedef enum WasmValueType {
 } WasmValueType;
 /* Expression forms that can cross from Binaryen into compiler-owned code. */
 typedef enum WasmExprKind {
+  WASM_EXPR_NOP,
   WASM_EXPR_BLOCK,
   WASM_EXPR_LOOP,
   WASM_EXPR_BR,

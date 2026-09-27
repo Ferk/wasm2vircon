@@ -1611,6 +1611,9 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     return lower_memory_grow(context, expression, value);
   case WASM_EXPR_CALL:
     return lower_call(context, expression, value);
+  case WASM_EXPR_NOP:
+    value->present = false;
+    return true;
   case WASM_EXPR_BLOCK:
     if (expression->name != NULL) {
       if (!fresh_label(context, "block_end", label, sizeof(label)) || context->target_count == 32)
