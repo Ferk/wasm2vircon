@@ -101,12 +101,16 @@ build/wasm2vircon --help
 ## Testing
 
 ```sh
+cmake -S . -B build -DBUILD_TESTING=ON
+cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-This builds focused compiler tests and project-owned compatibility ports
-through the complete ROM pipeline. Optional v32sim execution tests are
-supplemental to manual desktop-emulator graphics and audio checks.
+Tests are opt-in: a normal CMake configuration builds only `wasm2vircon` and
+does not discover or build the native test helpers. Enabling `BUILD_TESTING`
+builds focused compiler tests and project-owned compatibility ports through the
+complete ROM pipeline. Optional v32sim execution tests are supplemental to
+manual desktop-emulator graphics and audio checks.
 
 ### Binaryen cleanup and linkage
 

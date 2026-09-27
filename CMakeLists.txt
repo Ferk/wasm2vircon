@@ -172,6 +172,10 @@ else()
   message(STATUS "Using dynamic Binaryen linkage with in-process normalization")
 endif()
 
+# Normal builds should produce only the compiler. CTest's module defaults this
+# option to ON, so define the standard switch first and keep the full test
+# suite an explicit developer/CI action.
+option(BUILD_TESTING "Build and register wasm2vircon tests" OFF)
 include(CTest)
 if(BUILD_TESTING)
   add_executable(wasm2vircon-memory-model-test tests/memory-model-test.c)
