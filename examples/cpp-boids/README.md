@@ -14,10 +14,20 @@ Gamepad 0 **up** adds ten boids and **down** removes ten, with a range of
 10–150. The HUD reports active boids, simulation frame slots, and the derived
 `60 / update_frames` estimate.
 
+## Requirements
+
+- a prebuilt `wasm2vircon` executable on `PATH`;
+- CMake;
+- `clang++` and `wasm-ld` with the `wasm32-unknown-unknown` target; and
+- the official Vircon32 `assemble` and `packrom` tools on `PATH`.
+
+It has no external resources, so `png2vircon` and `wav2vircon` are not needed.
+Binaryen development files are needed only when building wasm2vircon itself,
+not when building this C++ ROM.
+
 ## Build
 
-Install `clang++`, `wasm-ld`, `wasm2vircon`, `assemble`, and `packrom` on
-`PATH`, then run:
+From this directory, run:
 
 ```sh
 cmake -S . -B build

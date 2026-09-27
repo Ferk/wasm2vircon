@@ -9,10 +9,20 @@ The program starts with 50 boids. Press **up** to add ten and **down** to
 remove ten; the active range is 10–150. The HUD reports occupied simulation
 frame slots and a `60 / update_frames` update-rate estimate.
 
+## Requirements
+
+- TinyGo and a host Go version supported by that TinyGo release;
+- CMake;
+- a prebuilt `wasm2vircon` executable on `PATH`; and
+- the official Vircon32 `assemble` and `packrom` tools on `PATH`.
+
+The benchmark has no external resources, so it does not need `png2vircon` or
+`wav2vircon`. It uses TinyGo directly rather than Clang/`wasm-ld`; Binaryen
+development files are required only to build wasm2vircon from source.
+
 ## Build
 
-Install a working TinyGo toolchain plus `wasm2vircon`, `assemble`, and
-`packrom` on `PATH`. Then run:
+From this directory, run:
 
 ```sh
 cmake -S . -B build

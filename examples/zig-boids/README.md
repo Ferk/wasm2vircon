@@ -9,10 +9,20 @@ and **down** to remove ten; the range is 10–150. The HUD shows the number of
 Vircon frame slots consumed by the simulation step and the corresponding
 `60 / update_frames` estimate.
 
+## Requirements
+
+- Zig, including its bundled `wasm32-freestanding` target support;
+- a prebuilt `wasm2vircon` executable on `PATH`; and
+- the official Vircon32 `assemble` and `packrom` tools on `PATH`.
+
+This example uses `zig build` directly, so it does not require CMake. It has
+no external resources and does not need `png2vircon` or `wav2vircon`. It also
+does not use Clang/`wasm-ld`; Binaryen development files are needed only when
+building wasm2vircon itself.
+
 ## Build
 
-Install Zig plus `wasm2vircon`, `assemble`, and `packrom`, with the latter
-three tools available on `PATH`. Then run:
+From this directory, run:
 
 ```sh
 zig build
