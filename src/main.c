@@ -15,18 +15,18 @@
 /* Prints the deliberately small public command-line interface. */
 static void print_usage(FILE *stream) {
   fprintf(stream, "Usage: wasm2vircon input.wasm [--entry NAME] "
-                  "[--allow-stack-pointer] [--skip-input-optimization] -o output.asm\n"
+                  "[--skip-input-optimization] -o output.asm\n"
                   "       wasm2vircon --validate-only input.wasm [--entry NAME] "
-                  "[--allow-stack-pointer] [--skip-input-optimization]\n"
+                  "[--skip-input-optimization]\n"
                   "       wasm2vircon --report-profile input.wasm\n"
                   "\n"
                   "Translate the supported VirconWasm v1.14 profile into Vircon32 "
                   "assembly.\n"
                   "The default entry export is main; --entry selects a different "
                   "frontend\n"
-                  "entry export. Entries may return void or i32. "
-                  "--allow-stack-pointer accepts only the\n"
-                  "restricted mutable i32 __stack_pointer ABI global.\n"
+                  "entry export. Entries may return void or i32. The canonical mutable i32\n"
+                  "__stack_pointer linker ABI global is accepted automatically; other Wasm\n"
+                  "globals remain unsupported.\n"
                   "\n"
                   "--validate-only performs decoding and VirconWasm validation without "
                   "writing assembly.\n"
@@ -45,7 +45,6 @@ int main(int argc, char **argv) {
   const char *input_path = NULL;
   const char *output_path = NULL;
   const char *entry_name = "main";
-  bool allow_stack_pointer = false;
   bool skip_input_optimization = false;
   bool validate_only = false;
   bool report_profile = false;
@@ -73,10 +72,6 @@ int main(int argc, char **argv) {
         goto done;
       }
       entry_name = argv[index];
-      continue;
-    }
-    if (strcmp(argv[index], "--allow-stack-pointer") == 0) {
-      allow_stack_pointer = true;
       continue;
     }
     if (strcmp(argv[index], "--skip-input-optimization") == 0) {
@@ -131,7 +126,7 @@ int main(int argc, char **argv) {
   if (!wasm_module_legalize_linker_artifacts(&module, &diagnostics)) {
     goto done;
   }
-  if (!validate_virconwasm_v1(&module, entry_name, allow_stack_pointer, &validated, &diagnostics)) {
+  if (!validate_virconwasm_v1(&module, entry_name, &validated, &diagnostics)) {
     goto done;
   }
   if (validate_only) {

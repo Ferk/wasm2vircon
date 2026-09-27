@@ -52,7 +52,7 @@ function(read_case_metadata metadata_file prefix)
     set(supported_keys
       source wasm_as_options entry expectations error_expectations outcome
       extra_sources include_dirs textures sounds embedded_words tilemaps
-      xml_expectations normalize allow_stack_pointer skip_input_optimization
+      xml_expectations normalize skip_input_optimization
       cli_inspection cli_only sim_commands sim_expectations sim_watch_for sim_stdin)
     list(FIND supported_keys "${key}" supported_key_index)
     if(supported_key_index EQUAL -1)
@@ -146,13 +146,12 @@ foreach(case_directory IN LISTS case_directories)
   foreach(key IN ITEMS
       source wasm_as_options entry expectations error_expectations outcome
       extra_sources include_dirs textures sounds embedded_words tilemaps
-      xml_expectations normalize allow_stack_pointer skip_input_optimization
+      xml_expectations normalize skip_input_optimization
       cli_inspection cli_only sim_commands sim_expectations sim_watch_for sim_stdin)
     set("case_${key}" "")
   endforeach()
   set(case_entry main)
   set(case_normalize false)
-  set(case_allow_stack_pointer false)
   read_case_metadata("${metadata_file}" case)
 
   if(NOT case_source MATCHES "\\.c$")
@@ -174,9 +173,6 @@ foreach(case_directory IN LISTS case_directories)
   endif()
   if(NOT case_normalize STREQUAL "true" AND NOT case_normalize STREQUAL "false")
     message(FATAL_ERROR "${case_name}: normalize must be true or false")
-  endif()
-  if(NOT case_allow_stack_pointer STREQUAL "true" AND NOT case_allow_stack_pointer STREQUAL "false")
-    message(FATAL_ERROR "${case_name}: allow_stack_pointer must be true or false")
   endif()
 
   set(case_output "${work_dir}/${case_name}")
@@ -275,9 +271,6 @@ foreach(case_directory IN LISTS case_directories)
       ${objects} -o "${wasm_file}")
   endif()
   set(compiler_arguments "${wasm_file}" --entry "${case_entry}")
-  if(case_allow_stack_pointer STREQUAL "true")
-    list(APPEND compiler_arguments --allow-stack-pointer)
-  endif()
   list(APPEND compiler_arguments -o "${asm_file}")
   run_required("${case_name}: wasm2vircon" "${TOOL}" ${compiler_arguments})
   run_required("${case_name}: assemble" "${ASSEMBLE}" -o "${vbin_file}" "${asm_file}")

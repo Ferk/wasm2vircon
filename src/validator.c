@@ -453,8 +453,8 @@ static bool validate_function(const WasmModule *module, const WasmFunction *func
 }
 
 /* Validates module-level policy, exports, imports, and reachable functions. */
-bool validate_virconwasm_v1(const WasmModule *module, const char *entry_name, bool allow_stack_pointer,
-                            ValidatedModule *validated, Diagnostics *diagnostics) {
+bool validate_virconwasm_v1(const WasmModule *module, const char *entry_name, ValidatedModule *validated,
+                            Diagnostics *diagnostics) {
   const WasmExport *entry_export = NULL;
   const WasmFunction *entry;
   size_t index;
@@ -484,11 +484,6 @@ bool validate_virconwasm_v1(const WasmModule *module, const char *entry_name, bo
     return false;
   }
   if (module->global_count != 0) {
-    if (!allow_stack_pointer) {
-      diagnostics_error(diagnostics, "Wasm globals require --allow-stack-pointer; arbitrary "
-                                     "globals remain unsupported");
-      return false;
-    }
     if (module->global_count != 1 || !module->has_stack_pointer_global || !module->stack_pointer_global_is_valid) {
       diagnostics_error(diagnostics, "only one defined mutable i32 __stack_pointer global "
                                      "with an i32.const initializer is supported");

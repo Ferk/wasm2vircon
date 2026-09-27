@@ -1,1 +1,1 @@
-globals remain unsupported
+only one defined mutable i32 __stack_pointer global

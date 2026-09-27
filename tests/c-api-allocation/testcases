@@ -3,5 +3,4 @@ entry=__original_main
 include_dirs=../../include
 extra_sources=heap-client.c
 normalize=true
-allow_stack_pointer=true
 expectations=expected.asm

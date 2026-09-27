@@ -1,0 +1,5 @@
+source=stack-pointer.wat
+wasm_as_options=--debuginfo
+entry=entry
+outcome=accept
+expectations=expected.asm
