@@ -29,6 +29,7 @@ typedef struct Value {
 typedef struct Target {
   const char *wasm_name;
   char *label;
+  int result_slot;
 } Target;
 /* One immutable cartridge-ROM table of V32 code addresses for a br_table. */
 typedef struct JumpTable {
@@ -97,12 +98,17 @@ static bool fresh_label(Context *context, const char *kind, char *out, size_t si
 static bool emit_label(Context *context, const char *label) { return emit(context, "%s:", label); }
 
 /* Finds an active structured-control target by its Binaryen-assigned name. */
-static const char *find_target_label(const Context *context, const char *name) {
+static const Target *find_target(const Context *context, const char *name) {
   size_t index;
   for (index = context->target_count; index != 0; --index)
     if (strcmp(context->targets[index - 1].wasm_name, name) == 0)
-      return context->targets[index - 1].label;
+      return &context->targets[index - 1];
   return NULL;
+}
+/* Returns only the target address for value-less structured operations. */
+static const char *find_target_label(const Context *context, const char *name) {
+  const Target *target = find_target(context, name);
+  return target == NULL ? NULL : target->label;
 }
 
 /* Releases the owned target-address tables accumulated for one function. */
@@ -1618,10 +1624,19 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     value->present = false;
     return true;
   case WASM_EXPR_BLOCK:
+    {
+    Value result = {0};
+    if (expression->name != NULL &&
+        (expression->value_type == WASM_VALUE_I32 || expression->value_type == WASM_VALUE_F32)) {
+      result.slot = temp_slot(context);
+      if (result.slot == 0)
+        return false;
+      result.present = true;
+    }
     if (expression->name != NULL) {
       if (!fresh_label(context, "block_end", label, sizeof(label)) || context->target_count == 32)
         return false;
-      context->targets[context->target_count++] = (Target){expression->name, format_text("%s", label)};
+      context->targets[context->target_count++] = (Target){expression->name, format_text("%s", label), result.slot};
     }
     for (index = 0; index < expression->child_count; ++index) {
       if (value->present)
@@ -1638,24 +1653,54 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
       }
       free(target.label);
     }
+    if (result.present) {
+      if (value->present && (!load_slot(context, 1, value->slot) || !store_slot(context, result.slot, 1)))
+        return false;
+      release(context, *value);
+      *value = result;
+    }
     return true;
+    }
   case WASM_EXPR_LOOP:
     if (!fresh_label(context, "loop", label, sizeof(label)) || context->target_count == 32)
       return false;
-    context->targets[context->target_count++] = (Target){expression->name, format_text("%s", label)};
+    context->targets[context->target_count++] = (Target){expression->name, format_text("%s", label), 0};
     if (!emit_label(context, label) || !lower_expression(context, expression->children[0], value))
       return false;
     free(context->targets[--context->target_count].label);
     value->present = false;
     return true;
   case WASM_EXPR_BR: {
-    const char *target = find_target_label(context, expression->name);
+    const Target *branch_target = find_target(context, expression->name);
+    if (expression->child_count == 1) {
+      if (branch_target == NULL || branch_target->result_slot == 0 ||
+          !lower_expression(context, expression->children[0], &left) || !left.present ||
+          !load_slot(context, 1, left.slot) || !store_slot(context, branch_target->result_slot, 1))
+        return false;
+      release(context, left);
+    }
+    const char *target = branch_target == NULL ? NULL : branch_target->label;
     if (target != NULL)
       return emit(context, "  jmp %s", target);
   }
     diagnostics_error(context->diagnostics, "branch targets '%s' outside active structured control", expression->name);
     return false;
   case WASM_EXPR_BR_IF:
+    if (expression->child_count == 2) {
+      const Target *branch_target = find_target(context, expression->name);
+      if (branch_target == NULL || branch_target->result_slot == 0 ||
+          !lower_expression(context, expression->children[0], &left) || !left.present ||
+          !lower_expression(context, expression->children[1], &condition) || !condition.present ||
+          !fresh_label(context, "br_if_fallthrough", end, sizeof(end)) || !load_slot(context, 1, condition.slot) ||
+          !emit(context, "  jf R1, %s", end) || !load_slot(context, 1, left.slot) ||
+          !store_slot(context, branch_target->result_slot, 1) || !emit(context, "  jmp %s", branch_target->label))
+        return false;
+      release(context, condition);
+      if (!emit_label(context, end))
+        return false;
+      *value = left;
+      return true;
+    }
     if (!lower_expression(context, expression->children[0], &condition) || !condition.present ||
         !load_slot(context, 1, condition.slot))
       return false;
@@ -1672,10 +1717,22 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     return lower_br_table(context, expression, value);
   case WASM_EXPR_IF:
     if (!lower_expression(context, expression->children[0], &left) || !left.present ||
-        !fresh_label(context, "if_end", end, sizeof(end)) || !load_slot(context, 1, left.slot) ||
-        !emit(context, "  jf R1, %s", end))
+        !fresh_label(context, "if_end", end, sizeof(end)) || !load_slot(context, 1, left.slot))
       return false;
     release(context, left);
+    if (expression->child_count == 3) {
+      if (!fresh_label(context, "if_else", false_label, sizeof(false_label)) || !emit(context, "  jf R1, %s", false_label) ||
+          !lower_expression(context, expression->children[1], &right))
+        return false;
+      release(context, right);
+      if (!emit(context, "  jmp %s", end) || !emit_label(context, false_label) ||
+          !lower_expression(context, expression->children[2], &right))
+        return false;
+      release(context, right);
+      return emit_label(context, end);
+    }
+    if (!emit(context, "  jf R1, %s", end))
+      return false;
     if (!lower_expression(context, expression->children[1], &right))
       return false;
     release(context, right);

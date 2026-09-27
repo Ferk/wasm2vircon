@@ -230,8 +230,14 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
   case WASM_EXPR_F32_CONST:
     return true;
   case WASM_EXPR_BR_IF:
-    return expression->child_count == 1 &&
-           validate_expression(module, function, expression->children[0], reachable, diagnostics);
+    if (expression->child_count != 1 && expression->child_count != 2) {
+      validation_expression_error(diagnostics, function, expression, "malformed br_if expression");
+      return false;
+    }
+    for (index = 0; index < expression->child_count; ++index)
+      if (!validate_expression(module, function, expression->children[index], reachable, diagnostics))
+        return false;
+    return true;
   case WASM_EXPR_BR_TABLE:
     if (expression->child_count != 1 || expression->name == NULL) {
       validation_expression_error(diagnostics, function, expression, "malformed br_table expression");
@@ -239,12 +245,14 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
     }
     return validate_expression(module, function, expression->children[0], reachable, diagnostics);
   case WASM_EXPR_IF:
-    if (expression->child_count != 2) {
-      validation_expression_error(diagnostics, function, expression, "else is unsupported in this VirconWasm profile");
+    if (expression->child_count != 2 && expression->child_count != 3) {
+      validation_expression_error(diagnostics, function, expression, "malformed if expression");
       return false;
     }
-    return validate_expression(module, function, expression->children[0], reachable, diagnostics) &&
-           validate_expression(module, function, expression->children[1], reachable, diagnostics);
+    for (index = 0; index < expression->child_count; ++index)
+      if (!validate_expression(module, function, expression->children[index], reachable, diagnostics))
+        return false;
+    return true;
   case WASM_EXPR_LOCAL_GET:
     if (expression->index >= function->param_count + function->local_count) {
       validation_expression_error(diagnostics, function, expression, "invalid local index %u", expression->index);

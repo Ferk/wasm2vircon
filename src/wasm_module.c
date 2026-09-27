@@ -399,6 +399,7 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
     if (expression == NULL)
       return NULL;
     expression->name = copy_string(BinaryenBlockGetName(source));
+    expression->value_type = convert_type(BinaryenExpressionGetType(source));
     if (!allocate_children(expression, BinaryenBlockGetNumChildren(source), diagnostics))
       goto fail;
     for (index = 0; index < expression->child_count; ++index) {
@@ -439,17 +440,22 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
       expression_error(diagnostics, context, expression->opcode, path, "branch has no target");
       goto fail;
     }
-    if (BinaryenBreakGetValue(source) != NULL) {
-      expression_error(diagnostics, context, expression->opcode, path, "value-carrying branches are unsupported");
+    if (BinaryenBreakGetValue(source) != NULL && !allocate_children(expression,
+        BinaryenBreakGetCondition(source) == NULL ? 1 : 2, diagnostics))
       goto fail;
+    if (BinaryenBreakGetValue(source) != NULL) {
+      expression->children[0] = convert_child(BinaryenBreakGetValue(source), diagnostics, context, path, 0);
+      if (expression->children[0] == NULL)
+        goto fail;
     }
     if (BinaryenBreakGetCondition(source) != NULL) {
       expression->kind = WASM_EXPR_BR_IF;
       expression->opcode = "br_if";
-      if (!allocate_children(expression, 1, diagnostics))
+      if (expression->child_count == 0 && !allocate_children(expression, 1, diagnostics))
         goto fail;
-      expression->children[0] = convert_child(BinaryenBreakGetCondition(source), diagnostics, context, path, 0);
-      if (expression->children[0] == NULL)
+      index = expression->child_count == 2 ? 1 : 0;
+      expression->children[index] = convert_child(BinaryenBreakGetCondition(source), diagnostics, context, path, index);
+      if (expression->children[index] == NULL)
         goto fail;
     }
     return expression;
