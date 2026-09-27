@@ -102,6 +102,9 @@ static WasmValueType convert_type(BinaryenType type) {
   return WASM_VALUE_OTHER;
 }
 
+/* Defined beside the profile-report formatting helpers below. */
+static const char *binaryen_type_name(BinaryenType type);
+
 /* Expands a Binaryen parameter tuple into module-owned parameter storage. */
 static bool convert_tuple_type(BinaryenType type, WasmValueType **values, size_t *count, Diagnostics *diagnostics,
                                const DecodeContext *context) {
@@ -125,9 +128,9 @@ static bool convert_tuple_type(BinaryenType type, WasmValueType **values, size_t
   for (index = 0; index < arity; ++index) {
     converted[index] = convert_type(expanded[index]);
     if (converted[index] == WASM_VALUE_OTHER) {
+      function_error(diagnostics, context, "has unsupported parameter type %s", binaryen_type_name(expanded[index]));
       free(expanded);
       free(converted);
-      function_error(diagnostics, context, "has an unsupported parameter type");
       return false;
     }
   }
@@ -1230,9 +1233,52 @@ static bool read_data_segments(BinaryenModuleRef source, WasmModule *module, Dia
  * profile. Hand-authored Wasm without it retains the existing direct-input
  * validation behavior; linked frontend modules normally carry a table, global,
  * or element segment that triggers the profile. */
-static bool needs_binaryen_normalization(BinaryenModuleRef source) {
+static bool has_non_entry_function_export(BinaryenModuleRef source, const char *entry_name) {
+  BinaryenIndex index;
+  for (index = 0; index < BinaryenGetNumExports(source); ++index) {
+    BinaryenExportRef export_ref = BinaryenGetExportByIndex(source, index);
+    if (BinaryenExportGetKind(export_ref) == BinaryenExternalFunction() &&
+        strcmp(BinaryenExportGetName(export_ref), entry_name) != 0)
+      return true;
+  }
+  return false;
+}
+
+/* Returns whether a module has linker scaffolding targeted by the cleanup
+ * profile. Extra frontend/runtime function exports are inert to a cartridge:
+ * wasm2vircon exposes exactly its configured entry and removes them before
+ * Binaryen computes the direct-call reachability closure. */
+static bool needs_binaryen_normalization(BinaryenModuleRef source, const char *entry_name) {
   return BinaryenGetNumGlobals(source) != 0 || BinaryenGetNumTables(source) != 0 ||
-         BinaryenGetNumElementSegments(source) != 0;
+         BinaryenGetNumElementSegments(source) != 0 || has_non_entry_function_export(source, entry_name);
+}
+
+/* Keeps the selected cartridge entry while removing inert frontend exports.
+ *
+ * TinyGo's wasm-unknown runtime, for example, exports f32 and f64 min/max
+ * helpers even when the program does not call them. Keeping those exports
+ * prevents remove-unused-module-elements from discarding their unsupported
+ * f64 implementation. This is intentionally export cleanup, not a claim that
+ * VirconWasm supports arbitrary exported functions. */
+static bool remove_non_entry_function_exports(BinaryenModuleRef source, const char *entry_name, Diagnostics *diagnostics) {
+  BinaryenIndex index = BinaryenGetNumExports(source);
+  while (index != 0) {
+    BinaryenExportRef export_ref;
+    const char *name;
+    --index;
+    export_ref = BinaryenGetExportByIndex(source, index);
+    name = BinaryenExportGetName(export_ref);
+    if (BinaryenExportGetKind(export_ref) == BinaryenExternalFunction() && strcmp(name, entry_name) != 0) {
+      char *copy = copy_string(name);
+      if (copy == NULL) {
+        diagnostics_error(diagnostics, "out of memory removing non-entry Wasm export '%s'", name);
+        return false;
+      }
+      BinaryenRemoveExport(source, copy);
+      free(copy);
+    }
+  }
+  return true;
 }
 
 /* Restores the input memory image after a cleanup pass removed part of it.
@@ -1284,7 +1330,8 @@ static bool restore_memory_image(BinaryenModuleRef source, const WasmModule *ori
  * The compiler-owned decoder still receives a fresh Binaryen module from the
  * optimized bytes. This keeps Binaryen objects at the Wasm frontend boundary
  * rather than leaking them into validation or V32 lowering. */
-static BinaryenModuleRef normalize_binaryen_module(BinaryenModuleRef source, Diagnostics *diagnostics) {
+static BinaryenModuleRef normalize_binaryen_module(BinaryenModuleRef source, const char *entry_name,
+                                                   Diagnostics *diagnostics) {
   static const char *passes[] = {"remove-unused-module-elements", "vacuum"};
   BinaryenModuleAllocateAndWriteResult encoded;
   BinaryenModuleRef normalized;
@@ -1312,6 +1359,11 @@ static BinaryenModuleRef normalize_binaryen_module(BinaryenModuleRef source, Dia
    * the caller's state as soon as the normalized bytes are produced. */
   previous_debug_info = BinaryenGetDebugInfo();
   BinaryenSetDebugInfo(true);
+  if (!remove_non_entry_function_exports(source, entry_name, diagnostics)) {
+    BinaryenSetDebugInfo(previous_debug_info);
+    wasm_module_dispose(&original_image);
+    return NULL;
+  }
   BinaryenModuleRunPasses(source, passes, sizeof(passes) / sizeof(*passes));
   if (original_image.has_memory &&
       (!BinaryenHasMemory(source) || BinaryenGetNumDataSegments(source) != original_image.data_segment_count) &&
@@ -1342,7 +1394,8 @@ static BinaryenModuleRef normalize_binaryen_module(BinaryenModuleRef source, Dia
 }
 
 /* Loads, validates, and converts one Wasm module through the Binaryen C API. */
-bool wasm_module_load(const char *path, bool optimize_input, WasmModule *module, Diagnostics *diagnostics) {
+bool wasm_module_load(const char *path, const char *entry_name, bool optimize_input, WasmModule *module,
+                      Diagnostics *diagnostics) {
   char *contents = NULL, *text = NULL;
   size_t size = 0;
   BinaryenModuleRef source = NULL;
@@ -1358,8 +1411,8 @@ bool wasm_module_load(const char *path, bool optimize_input, WasmModule *module,
       BinaryenModuleDispose(source);
     return false;
   }
-  if (optimize_input && needs_binaryen_normalization(source)) {
-    BinaryenModuleRef normalized = normalize_binaryen_module(source, diagnostics);
+  if (optimize_input && needs_binaryen_normalization(source, entry_name)) {
+    BinaryenModuleRef normalized = normalize_binaryen_module(source, entry_name, diagnostics);
     BinaryenModuleDispose(source);
     if (normalized == NULL)
       return false;
@@ -1419,7 +1472,8 @@ bool wasm_module_load(const char *path, bool optimize_input, WasmModule *module,
       goto fail;
     out->result = convert_type(BinaryenFunctionGetResults(function));
     if (out->result == WASM_VALUE_OTHER) {
-      function_error(diagnostics, &context, "has an unsupported result type");
+      function_error(diagnostics, &context, "has unsupported result type %s",
+                     binaryen_type_name(BinaryenFunctionGetResults(function)));
       goto fail;
     }
     import_module = BinaryenFunctionImportGetModule(function);
@@ -1438,7 +1492,8 @@ bool wasm_module_load(const char *path, bool optimize_input, WasmModule *module,
     for (BinaryenIndex local = 0; local < out->local_count; ++local) {
       out->locals[local] = convert_type(BinaryenFunctionGetVar(function, local));
       if (out->locals[local] == WASM_VALUE_OTHER) {
-        function_error(diagnostics, &context, "has an unsupported local type");
+        function_error(diagnostics, &context, "has unsupported local %u type %s", (unsigned)local,
+                       binaryen_type_name(BinaryenFunctionGetVar(function, local)));
         goto fail;
       }
     }

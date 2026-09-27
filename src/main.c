@@ -120,7 +120,7 @@ int main(int argc, char **argv) {
     status = 0;
     goto done;
   }
-  if (!wasm_module_load(input_path, !skip_input_optimization, &module, &diagnostics)) {
+  if (!wasm_module_load(input_path, entry_name, !skip_input_optimization, &module, &diagnostics)) {
     goto done;
   }
   if (!wasm_module_legalize_linker_artifacts(&module, &diagnostics)) {

@@ -182,7 +182,8 @@ typedef struct WasmModule {
 
 /* Decodes a Wasm file into the compiler-owned frontend model, optionally
  * bypassing only the in-process cleanup passes for diagnostics and tests. */
-bool wasm_module_load(const char *path, bool optimize_input, WasmModule *module, Diagnostics *diagnostics);
+bool wasm_module_load(const char *path, const char *entry_name, bool optimize_input, WasmModule *module,
+                      Diagnostics *diagnostics);
 /* Writes a Binaryen-decoded module inventory and complete printed Wasm text. */
 bool wasm_module_report_profile(const char *path, FILE *stream, Diagnostics *diagnostics);
 /* Releases every allocation owned by a decoded module. */

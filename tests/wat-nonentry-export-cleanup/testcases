@@ -1,0 +1,2 @@
+source=nonentry-export-cleanup.wat
+expectations=expected.asm
