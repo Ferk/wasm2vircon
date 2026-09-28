@@ -38,7 +38,11 @@ target.
 filesystem API to create `build/`, so it does not rely on Unix `mkdir` or
 `cp`; only the project toolchain executables themselves must be on `PATH`.
 
-`src/vircon.zig` is a compact Zig-facing layer over the same low-level `env.*`
-platform imports used by the C header. Its text and decimal helpers are normal
-Zig functions, compiled through Wasm and wasm2vircon rather than implemented
-as compiler intrinsics.
+`src/vircon.zig` is a documented Zig-facing counterpart to the public C API.
+It exposes video/region drawing, BIOS-font text, input, timers/RNG, sound,
+memory-card access, and the supported finite-math helpers through idiomatic
+Zig names. Its text and convenience helpers are normal Zig functions compiled
+through Wasm and wasm2vircon rather than compiler intrinsics. The file starts
+with a short Zig/Wasm compatibility checklist covering the explicit entry
+export, linear memory, static state, `std` usage, stack-pointer global, and
+risky unsupported constructs.
