@@ -353,6 +353,22 @@ static const char *binary_opcode(BinaryenOp op) {
     return "i64.eq";
   if (op == BinaryenNeInt64())
     return "i64.ne";
+  if (op == BinaryenLtSInt64())
+    return "i64.lt_s";
+  if (op == BinaryenLtUInt64())
+    return "i64.lt_u";
+  if (op == BinaryenLeSInt64())
+    return "i64.le_s";
+  if (op == BinaryenLeUInt64())
+    return "i64.le_u";
+  if (op == BinaryenGtSInt64())
+    return "i64.gt_s";
+  if (op == BinaryenGtUInt64())
+    return "i64.gt_u";
+  if (op == BinaryenGeSInt64())
+    return "i64.ge_s";
+  if (op == BinaryenGeUInt64())
+    return "i64.ge_u";
   if (op == BinaryenAddFloat32())
     return "f32.add";
   if (op == BinaryenSubFloat32())
@@ -937,6 +953,14 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
                             : op == BinaryenShrSInt64()  ? WASM_BINARY_I64_SHR_S
                             : op == BinaryenEqInt64()    ? WASM_BINARY_I64_EQ
                             : op == BinaryenNeInt64()    ? WASM_BINARY_I64_NE
+                            : op == BinaryenLtSInt64()   ? WASM_BINARY_I64_LT_S
+                            : op == BinaryenLtUInt64()   ? WASM_BINARY_I64_LT_U
+                            : op == BinaryenLeSInt64()   ? WASM_BINARY_I64_LE_S
+                            : op == BinaryenLeUInt64()   ? WASM_BINARY_I64_LE_U
+                            : op == BinaryenGtSInt64()   ? WASM_BINARY_I64_GT_S
+                            : op == BinaryenGtUInt64()   ? WASM_BINARY_I64_GT_U
+                            : op == BinaryenGeSInt64()   ? WASM_BINARY_I64_GE_S
+                            : op == BinaryenGeUInt64()   ? WASM_BINARY_I64_GE_U
                             : op == BinaryenAddFloat32() ? WASM_BINARY_F32_ADD
                             : op == BinaryenSubFloat32() ? WASM_BINARY_F32_SUB
                             : op == BinaryenEqFloat32()  ? WASM_BINARY_F32_EQ

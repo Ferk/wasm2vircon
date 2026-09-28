@@ -287,6 +287,14 @@ values (`1` or `0`).
 | `i64.eqz` | Returns `1` when both i64 words are zero, otherwise `0`. |
 | `i64.eq` | Returns `1` when both corresponding i64 words are equal, otherwise `0`. |
 | `i64.ne` | Returns `1` when either corresponding i64 word differs, otherwise `0`. |
+| `i64.lt_s` | Returns `1` when the first i64 is less than the second as signed two's-complement integers, otherwise `0`. |
+| `i64.le_s` | Returns `1` when the first i64 is less than or equal to the second as signed two's-complement integers, otherwise `0`. |
+| `i64.gt_s` | Returns `1` when the first i64 is greater than the second as signed two's-complement integers, otherwise `0`. |
+| `i64.ge_s` | Returns `1` when the first i64 is greater than or equal to the second as signed two's-complement integers, otherwise `0`. |
+| `i64.lt_u` | Returns `1` when the first i64 is less than the second as unsigned values from `0` through `2^64-1`, otherwise `0`. |
+| `i64.le_u` | Returns `1` when the first i64 is less than or equal to the second as unsigned values, otherwise `0`. |
+| `i64.gt_u` | Returns `1` when the first i64 is greater than the second as unsigned values, otherwise `0`. |
+| `i64.ge_u` | Returns `1` when the first i64 is greater than or equal to the second as unsigned values, otherwise `0`. |
 
 ### Floating-point operations and conversions
 
@@ -410,7 +418,7 @@ The documented i64 local/temporary subset uses adjacent i32 words, but i64
 parameters, function results, and direct-call argument passing are still
 unsupported because the existing call ABI transports one word per parameter
 and returns through one 32-bit register. `i64.mul`, signed/unsigned division
-and remainder, ordering comparisons, rotates, narrow loads/stores, and most
+and remainder, rotates, narrow loads/stores, and most
 conversions are also not implemented yet. Some are plausible pair-lowering
 candidates, but division and a public multiword call ABI need careful trap and
 calling-convention design rather than a superficial instruction mapping.

@@ -607,6 +607,60 @@ static bool lower_i64_binary(Context *context, const WasmExpr *expression, Value
     left.high_slot = 0;
     *value = left;
     return true;
+  case WASM_BINARY_I64_LT_S:
+  case WASM_BINARY_I64_LT_U:
+  case WASM_BINARY_I64_LE_S:
+  case WASM_BINARY_I64_LE_U:
+  case WASM_BINARY_I64_GT_S:
+  case WASM_BINARY_I64_GT_U:
+  case WASM_BINARY_I64_GE_S:
+  case WASM_BINARY_I64_GE_U: {
+    bool unsigned_compare = expression->binary_op == WASM_BINARY_I64_LT_U ||
+                            expression->binary_op == WASM_BINARY_I64_LE_U ||
+                            expression->binary_op == WASM_BINARY_I64_GT_U ||
+                            expression->binary_op == WASM_BINARY_I64_GE_U;
+    bool less_compare = expression->binary_op == WASM_BINARY_I64_LT_S ||
+                        expression->binary_op == WASM_BINARY_I64_LT_U ||
+                        expression->binary_op == WASM_BINARY_I64_LE_S ||
+                        expression->binary_op == WASM_BINARY_I64_LE_U;
+    bool inclusive = expression->binary_op == WASM_BINARY_I64_LE_S ||
+                     expression->binary_op == WASM_BINARY_I64_LE_U ||
+                     expression->binary_op == WASM_BINARY_I64_GE_S ||
+                     expression->binary_op == WASM_BINARY_I64_GE_U;
+    const char *preferred = less_compare ? "ilt" : "igt";
+    const char *opposite = less_compare ? "igt" : "ilt";
+    const char *low_compare = less_compare ? (inclusive ? "ile" : "ilt") : (inclusive ? "ige" : "igt");
+    char true_label[64], false_label[64], done_label[64];
+
+    if (!fresh_label(context, "i64_compare_true", true_label, sizeof(true_label)) ||
+        !fresh_label(context, "i64_compare_false", false_label, sizeof(false_label)) ||
+        !fresh_label(context, "i64_compare_done", done_label, sizeof(done_label)) ||
+        !load_slot(context, 1, left.high_slot) || !load_slot(context, 2, right.high_slot))
+      return false;
+    /* Unsigned 32-bit ordering becomes signed ordering after flipping bit 31. */
+    if (unsigned_compare && (!emit(context, "  xor R1, 0x80000000") || !emit(context, "  xor R2, 0x80000000")))
+      return false;
+    if (!emit(context, "  mov R3, R1") || !emit(context, "  %s R3, R2", preferred) ||
+        !emit(context, "  jt R3, %s", true_label) || !emit(context, "  mov R3, R1") ||
+        !emit(context, "  %s R3, R2", opposite) || !emit(context, "  jt R3, %s", false_label) ||
+        !load_slot(context, 1, left.slot) || !load_slot(context, 2, right.slot) ||
+        !emit(context, "  xor R1, 0x80000000") || !emit(context, "  xor R2, 0x80000000") ||
+        !emit(context, "  %s R1, R2", low_compare) || !emit(context, "  jmp %s", done_label) ||
+        !emit_label(context, true_label) || !emit(context, "  mov R1, 1") || !emit(context, "  jmp %s", done_label) ||
+        !emit_label(context, false_label) || !emit(context, "  mov R1, 0") || !emit_label(context, done_label) ||
+        !store_slot(context, left.slot, 1))
+      return false;
+
+    release(context, right);
+    /* Replace the left pair by its single i32 comparison result. */
+    if (context->temp_depth == 0)
+      return false;
+    --context->temp_depth;
+    left.type = WASM_VALUE_I32;
+    left.high_slot = 0;
+    *value = left;
+    return true;
+  }
   case WASM_BINARY_I64_SHL:
   case WASM_BINARY_I64_SHR_U:
   case WASM_BINARY_I64_SHR_S:
@@ -1580,6 +1634,14 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
   case WASM_BINARY_I64_SHR_S:
   case WASM_BINARY_I64_EQ:
   case WASM_BINARY_I64_NE:
+  case WASM_BINARY_I64_LT_S:
+  case WASM_BINARY_I64_LT_U:
+  case WASM_BINARY_I64_LE_S:
+  case WASM_BINARY_I64_LE_U:
+  case WASM_BINARY_I64_GT_S:
+  case WASM_BINARY_I64_GT_U:
+  case WASM_BINARY_I64_GE_S:
+  case WASM_BINARY_I64_GE_U:
     diagnostics_error(context->diagnostics, "internal error: i64 binary operation bypassed pair lowering");
     return false;
   case WASM_BINARY_OTHER:
@@ -1874,7 +1936,7 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     *value = left;
     return true;
   case WASM_EXPR_BINARY:
-    if (expression->binary_op >= WASM_BINARY_I64_ADD && expression->binary_op <= WASM_BINARY_I64_NE)
+    if (expression->binary_op >= WASM_BINARY_I64_ADD && expression->binary_op <= WASM_BINARY_I64_GE_U)
       return lower_i64_binary(context, expression, value);
     return lower_binary(context, expression, value);
   case WASM_EXPR_SELECT:

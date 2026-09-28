@@ -1,0 +1,3 @@
+source=i64-comparisons.wat
+entry=main
+expectations=expected.asm
