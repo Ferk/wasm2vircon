@@ -337,6 +337,8 @@ static const char *binary_opcode(BinaryenOp op) {
     return "i64.sub";
   if (op == BinaryenMulInt64())
     return "i64.mul";
+  if (op == BinaryenDivSInt64())
+    return "i64.div_s";
   if (op == BinaryenAndInt64())
     return "i64.and";
   if (op == BinaryenOrInt64())
@@ -945,6 +947,7 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
                             : op == BinaryenRotRInt32()  ? WASM_BINARY_ROTR
                             : op == BinaryenAddInt64()   ? WASM_BINARY_I64_ADD
                             : op == BinaryenSubInt64()   ? WASM_BINARY_I64_SUB
+                            : op == BinaryenMulInt64()   ? WASM_BINARY_I64_MUL
                             : op == BinaryenAndInt64()   ? WASM_BINARY_I64_AND
                             : op == BinaryenOrInt64()    ? WASM_BINARY_I64_OR
                             : op == BinaryenXorInt64()   ? WASM_BINARY_I64_XOR

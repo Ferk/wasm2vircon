@@ -278,6 +278,7 @@ values (`1` or `0`).
 | `i32.wrap_i64` | Discards the high 32 bits of an i64 and returns its low word as i32. |
 | `i64.add` | Adds two i64 values, including the carry from the low word into the high word. Overflow past bit 63 is discarded. |
 | `i64.sub` | Subtracts the second i64 from the first, including borrow from the high word. Underflow wraps modulo 2^64. |
+| `i64.mul` | Multiplies two i64 values and returns the low 64 bits of the product. Bits above bit 63 are discarded. |
 | `i64.and` | Computes a bitwise AND independently across the low and high words. |
 | `i64.or` | Computes a bitwise OR independently across the low and high words. |
 | `i64.xor` | Computes a bitwise exclusive OR independently across the low and high words. |
@@ -417,8 +418,8 @@ for the current game-oriented profile.
 The documented i64 local/temporary subset uses adjacent i32 words, but i64
 parameters, function results, and direct-call argument passing are still
 unsupported because the existing call ABI transports one word per parameter
-and returns through one 32-bit register. `i64.mul`, signed/unsigned division
-and remainder, rotates, narrow loads/stores, and most
+and returns through one 32-bit register. Signed/unsigned division and
+remainder, rotates, narrow loads/stores, and most
 conversions are also not implemented yet. Some are plausible pair-lowering
 candidates, but division and a public multiword call ABI need careful trap and
 calling-convention design rather than a superficial instruction mapping.

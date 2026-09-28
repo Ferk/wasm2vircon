@@ -1,4 +1,4 @@
-Wasm i64.mul
+Wasm i64.div_s
 function 0 'world_initialize'
 expression path body/0/0
 unsupported binary operation

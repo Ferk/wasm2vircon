@@ -1,0 +1,3 @@
+source=i64-mul.wat
+entry=main
+expectations=expected.asm

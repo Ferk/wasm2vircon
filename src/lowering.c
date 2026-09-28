@@ -591,6 +591,58 @@ static bool lower_i64_binary(Context *context, const WasmExpr *expression, Value
         !store_slot(context, left.slot, 3) || !store_slot(context, left.high_slot, 1))
       return false;
     break;
+  case WASM_BINARY_I64_MUL: {
+    Value product_low = {0}, middle = {0}, product_middle = {0};
+
+    /*
+     * Split each 32-bit word into two 16-bit limbs. Every limb product fits
+     * in one target word, and the carries accumulated below reconstruct the
+     * low 64 bits of the Wasm product without needing a target i64 register.
+     */
+    product_low.slot = temp_slot(context);
+    middle.slot = temp_slot(context);
+    product_middle.slot = temp_slot(context);
+    product_low.type = middle.type = product_middle.type = WASM_VALUE_I32;
+    product_low.present = middle.present = product_middle.present = true;
+    if (product_low.slot == 0 || middle.slot == 0 || product_middle.slot == 0 ||
+        /* p0 = a0 * b0 */
+        !load_slot(context, 1, left.slot) || !emit(context, "  and R1, 0x0000FFFF") ||
+        !load_slot(context, 2, right.slot) || !emit(context, "  and R2, 0x0000FFFF") || !emit(context, "  imul R1, R2") ||
+        !store_slot(context, product_low.slot, 1) ||
+        /* t = a1 * b0 + (p0 >> 16) */
+        !load_slot(context, 1, left.slot) || !emit(context, "  mov R2, -16") || !emit(context, "  shl R1, R2") ||
+        !emit(context, "  and R1, 0x0000FFFF") || !load_slot(context, 2, right.slot) ||
+        !emit(context, "  and R2, 0x0000FFFF") || !emit(context, "  imul R1, R2") ||
+        !load_slot(context, 2, product_low.slot) || !emit(context, "  mov R3, -16") || !emit(context, "  shl R2, R3") ||
+        !emit(context, "  iadd R1, R2") || !store_slot(context, middle.slot, 1) ||
+        /* u = (t & 0xffff) + a0 * b1 */
+        !load_slot(context, 1, middle.slot) || !emit(context, "  and R1, 0x0000FFFF") ||
+        !load_slot(context, 2, left.slot) || !emit(context, "  and R2, 0x0000FFFF") ||
+        !load_slot(context, 3, right.slot) || !emit(context, "  mov R4, -16") || !emit(context, "  shl R3, R4") ||
+        !emit(context, "  and R3, 0x0000FFFF") || !emit(context, "  imul R2, R3") || !emit(context, "  iadd R1, R2") ||
+        !store_slot(context, product_middle.slot, 1) ||
+        /* high(a0 * b0) = a1 * b1 + (t >> 16) + (u >> 16) */
+        !load_slot(context, 1, left.slot) || !emit(context, "  mov R2, -16") || !emit(context, "  shl R1, R2") ||
+        !emit(context, "  and R1, 0x0000FFFF") || !load_slot(context, 2, right.slot) ||
+        !emit(context, "  mov R3, -16") || !emit(context, "  shl R2, R3") || !emit(context, "  and R2, 0x0000FFFF") ||
+        !emit(context, "  imul R1, R2") || !load_slot(context, 2, middle.slot) || !emit(context, "  mov R3, -16") ||
+        !emit(context, "  shl R2, R3") || !emit(context, "  iadd R1, R2") || !load_slot(context, 2, product_middle.slot) ||
+        !emit(context, "  mov R3, -16") || !emit(context, "  shl R2, R3") || !emit(context, "  iadd R1, R2") ||
+        /* Add low(a0 * b1) and low(a1 * b0); terms at bit 64 and above drop. */
+        !load_slot(context, 2, left.slot) || !load_slot(context, 3, right.high_slot) || !emit(context, "  imul R2, R3") ||
+        !emit(context, "  iadd R1, R2") || !load_slot(context, 2, left.high_slot) || !load_slot(context, 3, right.slot) ||
+        !emit(context, "  imul R2, R3") || !emit(context, "  iadd R1, R2") ||
+        !store_slot(context, left.high_slot, 1) ||
+        /* low = (u << 16) | (p0 & 0xffff) */
+        !load_slot(context, 1, product_middle.slot) || !emit(context, "  and R1, 0x0000FFFF") ||
+        !emit(context, "  shl R1, 16") || !load_slot(context, 2, product_low.slot) ||
+        !emit(context, "  and R2, 0x0000FFFF") || !emit(context, "  or R1, R2") || !store_slot(context, left.slot, 1))
+      return false;
+    release(context, product_middle);
+    release(context, middle);
+    release(context, product_low);
+    break;
+  }
   case WASM_BINARY_I64_EQ:
   case WASM_BINARY_I64_NE:
     if (!load_slot(context, 1, left.slot) || !load_slot(context, 2, right.slot) || !emit(context, "  ieq R1, R2") ||
@@ -1626,6 +1678,7 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     break;
   case WASM_BINARY_I64_ADD:
   case WASM_BINARY_I64_SUB:
+  case WASM_BINARY_I64_MUL:
   case WASM_BINARY_I64_AND:
   case WASM_BINARY_I64_OR:
   case WASM_BINARY_I64_XOR:
