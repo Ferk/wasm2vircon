@@ -20,9 +20,11 @@
 /* Keep common small calls allocation-free; this is not an ABI arity limit. */
 #define INLINE_CALL_ARGUMENTS 4u
 
-/* A temporary stack-frame slot containing one Wasm i32 or f32 value. */
+/* A temporary stack-frame value. i64 values occupy consecutive low/high slots. */
 typedef struct Value {
   int slot;
+  int high_slot;
+  WasmValueType type;
   bool present;
 } Value;
 /* A structured-control target mapped from a Wasm label to an assembly label. */
@@ -192,8 +194,7 @@ static bool emit_jump_tables(Context *context) {
   return true;
 }
 
-/* Counts target words reserved for Wasm locals; restricted i64 locals use two.
- */
+/* Counts target words reserved for Wasm locals; pair-valued i64 locals use two. */
 static size_t local_storage_words(const WasmFunction *function) {
   size_t index, words = 0;
   for (index = 0; index < function->local_count; ++index)
@@ -223,18 +224,23 @@ static size_t outgoing_call_slots(const WasmModule *module, const WasmExpr *expr
 }
 
 /* Reserves one compiler-managed word below the current function's locals. */
-static int temp_slot(Context *context) {
-  if (context->temp_depth == TEMP_SLOTS) {
+static int temp_slots(Context *context, unsigned words) {
+  unsigned first;
+  if (words == 0 || context->temp_depth > TEMP_SLOTS - words) {
     diagnostics_error(context->diagnostics, "expression nesting exceeds VirconWasm v1 temporary-slot limit");
     return 0;
   }
-  ++context->temp_depth;
-  return -(int)(local_storage_words(context->function) + context->temp_depth);
+  first = context->temp_depth + 1;
+  context->temp_depth += words;
+  return -(int)(local_storage_words(context->function) + first);
 }
+/* Reserves one compiler-managed word below the current function's locals. */
+static int temp_slot(Context *context) { return temp_slots(context, 1); }
 /* Releases the most recently reserved temporary when value owns one. */
 static void release(Context *context, Value value) {
-  if (value.present && context->temp_depth != 0)
-    --context->temp_depth;
+  unsigned words = value.type == WASM_VALUE_I64 ? 2u : 1u;
+  if (value.present && context->temp_depth >= words)
+    context->temp_depth -= words;
 }
 /* Loads a frame slot into a target register. */
 static bool load_slot(Context *context, int reg, int slot) { return emit(context, "  mov R%d, [BP%+d]", reg, slot); }
@@ -252,7 +258,15 @@ static int local_slot(const WasmFunction *function, uint32_t index) {
   return slot;
 }
 
-/* Returns the high target word of a validated restricted i64 local. */
+/* Returns the declared Wasm type for a parameter or function-local index. */
+static WasmValueType local_value_type(const WasmFunction *function, uint32_t index) {
+  if (index < function->param_count)
+    return function->params[index];
+  index -= (uint32_t)function->param_count;
+  return index < function->local_count ? function->locals[index] : WASM_VALUE_OTHER;
+}
+
+/* Returns the high target word of a validated two-word i64 local. */
 static int i64_local_high_slot(const WasmFunction *function, uint32_t index) { return local_slot(function, index) - 1; }
 /* Converts a function pointer within module storage to its Wasm index. */
 static size_t function_index(const WasmModule *module, const WasmFunction *function) {
@@ -264,6 +278,7 @@ static void function_label(const WasmModule *module, const WasmFunction *functio
 }
 
 static bool lower_expression(Context *context, const WasmExpr *expression, Value *value);
+static bool emit_i32_shr_s(Context *context);
 
 /* Lowers a resultless Wasm br_table through an immutable V32 ROM address table.
  */
@@ -425,6 +440,244 @@ static bool lower_store(Context *context, const WasmExpr *expression, Value *val
   release(context, input);
   release(context, pointer);
   value->present = false;
+  return true;
+}
+
+/* Creates a two-word temporary result whose low word is followed by its high word. */
+static bool reserve_i64_value(Context *context, Value *value) {
+  int low = temp_slots(context, 2);
+  if (low == 0)
+    return false;
+  value->slot = low;
+  value->high_slot = low - 1;
+  value->type = WASM_VALUE_I64;
+  value->present = true;
+  return true;
+}
+
+/* Loads an i64 as two little-endian i32 words while retaining Wasm bounds checks. */
+static bool lower_i64_load(Context *context, const WasmExpr *expression, Value *value) {
+  Value pointer = {0};
+  int high_slot;
+
+  if (!lower_expression(context, expression->children[0], &pointer) || !pointer.present ||
+      !effective_address(context, pointer, expression->offset, 8))
+    return false;
+  high_slot = temp_slot(context);
+  if (high_slot == 0 || !store_slot(context, high_slot, 2) || !load_i32_at_r2(context, 1) ||
+      !store_slot(context, pointer.slot, 1) || !load_slot(context, 2, high_slot) || !emit(context, "  iadd R2, 4") ||
+      !load_i32_at_r2(context, 1) || !store_slot(context, high_slot, 1))
+    return false;
+  pointer.high_slot = high_slot;
+  pointer.type = WASM_VALUE_I64;
+  *value = pointer;
+  return true;
+}
+
+/* Stores a general two-word i64 value with Wasm's value-before-store semantics. */
+static bool lower_i64_store(Context *context, const WasmExpr *expression, Value *value) {
+  Value pointer = {0}, input = {0};
+  int address_slot;
+
+  if (!lower_expression(context, expression->children[0], &pointer) ||
+      !lower_expression(context, expression->children[1], &input) || !pointer.present || !input.present ||
+      input.type != WASM_VALUE_I64 || !effective_address(context, pointer, expression->offset, 8))
+    return false;
+  address_slot = temp_slot(context);
+  if (address_slot == 0 || !store_slot(context, address_slot, 2) || !load_slot(context, 1, input.slot) ||
+      !store_i32_at_r2(context, 1) || !load_slot(context, 2, address_slot) || !emit(context, "  iadd R2, 4") ||
+      !load_slot(context, 1, input.high_slot) || !store_i32_at_r2(context, 1))
+    return false;
+
+  release(context, (Value){.slot = address_slot, .type = WASM_VALUE_I32, .present = true});
+  release(context, input);
+  release(context, pointer);
+  value->present = false;
+  return true;
+}
+
+/* Lowers i64 construction from an i32, preserving signed or unsigned extension. */
+static bool lower_i64_extend_i32(Context *context, const WasmExpr *expression, Value *value, bool is_signed) {
+  Value input = {0};
+  int high_slot;
+  char nonnegative[64];
+
+  if (!lower_expression(context, expression->children[0], &input) || !input.present || !load_slot(context, 1, input.slot) ||
+      !store_slot(context, input.slot, 1))
+    return false;
+  high_slot = temp_slot(context);
+  if (high_slot == 0)
+    return false;
+  if (!is_signed) {
+    if (!emit(context, "  mov R1, 0") || !store_slot(context, high_slot, 1))
+      return false;
+  } else {
+    if (!fresh_label(context, "i64_extend_nonnegative", nonnegative, sizeof(nonnegative)) || !emit(context, "  mov R1, 0") ||
+        !load_slot(context, 2, input.slot) || !emit(context, "  ilt R2, 0") || !emit(context, "  jf R2, %s", nonnegative) ||
+        !emit(context, "  mov R1, -1") || !emit_label(context, nonnegative) || !store_slot(context, high_slot, 1))
+      return false;
+  }
+  input.high_slot = high_slot;
+  input.type = WASM_VALUE_I64;
+  *value = input;
+  return true;
+}
+
+/* Wraps a pair-valued i64 to its low i32 word. */
+static bool lower_i32_wrap_i64(Context *context, const WasmExpr *expression, Value *value) {
+  Value input = {0};
+  if (!lower_expression(context, expression->children[0], &input) || !input.present || input.type != WASM_VALUE_I64)
+    return false;
+  if (!load_slot(context, 1, input.slot) || !store_slot(context, input.slot, 1))
+    return false;
+  input.type = WASM_VALUE_I32;
+  /* The low word is retained; drop the high reservation beneath it. */
+  if (context->temp_depth == 0)
+    return false;
+  --context->temp_depth;
+  *value = input;
+  return true;
+}
+
+/* Compares the two words of an i64 for Wasm eqz and returns an i32 boolean. */
+static bool lower_i64_eqz(Context *context, const WasmExpr *expression, Value *value) {
+  Value input = {0};
+  if (!lower_expression(context, expression->children[0], &input) || !input.present || input.type != WASM_VALUE_I64 ||
+      !load_slot(context, 1, input.slot) || !emit(context, "  ieq R1, 0") || !load_slot(context, 2, input.high_slot) ||
+      !emit(context, "  ieq R2, 0") || !emit(context, "  and R1, R2") || !store_slot(context, input.slot, 1))
+    return false;
+  input.type = WASM_VALUE_I32;
+  --context->temp_depth;
+  *value = input;
+  return true;
+}
+
+/* Lowers the supported pair-wise i64 arithmetic, bit operations, and equality. */
+static bool lower_i64_binary(Context *context, const WasmExpr *expression, Value *value) {
+  Value left = {0}, right = {0};
+  char zero[64], small[64], nonnegative[64], done[64];
+
+  if (!lower_expression(context, expression->children[0], &left) ||
+      !lower_expression(context, expression->children[1], &right) || !left.present || !right.present ||
+      left.type != WASM_VALUE_I64 || right.type != WASM_VALUE_I64)
+    return false;
+
+  switch (expression->binary_op) {
+  case WASM_BINARY_I64_AND:
+  case WASM_BINARY_I64_OR:
+  case WASM_BINARY_I64_XOR:
+    if (!load_slot(context, 1, left.slot) || !load_slot(context, 2, right.slot) ||
+        !(expression->binary_op == WASM_BINARY_I64_AND ? emit(context, "  and R1, R2")
+          : expression->binary_op == WASM_BINARY_I64_OR ? emit(context, "  or R1, R2")
+                                                       : emit(context, "  xor R1, R2")) ||
+        !store_slot(context, left.slot, 1) || !load_slot(context, 1, left.high_slot) ||
+        !load_slot(context, 2, right.high_slot) ||
+        !(expression->binary_op == WASM_BINARY_I64_AND ? emit(context, "  and R1, R2")
+          : expression->binary_op == WASM_BINARY_I64_OR ? emit(context, "  or R1, R2")
+                                                       : emit(context, "  xor R1, R2")) ||
+        !store_slot(context, left.high_slot, 1))
+      return false;
+    break;
+  case WASM_BINARY_I64_ADD:
+  case WASM_BINARY_I64_SUB:
+    if (!load_slot(context, 1, left.slot) || !load_slot(context, 2, right.slot) || !emit(context, "  mov R3, R1") ||
+        !(expression->binary_op == WASM_BINARY_I64_ADD ? emit(context, "  iadd R3, R2") : emit(context, "  isub R3, R2")) ||
+        !emit(context, "  mov R4, R3") || !emit(context, "  xor R4, 0x80000000") ||
+        !emit(context, "  xor R1, 0x80000000") ||
+        !(expression->binary_op == WASM_BINARY_I64_ADD ? emit(context, "  ilt R4, R1") : emit(context, "  igt R4, R1")) ||
+        !load_slot(context, 1, left.high_slot) || !load_slot(context, 2, right.high_slot) ||
+        !(expression->binary_op == WASM_BINARY_I64_ADD ? emit(context, "  iadd R1, R2") : emit(context, "  isub R1, R2")) ||
+        !(expression->binary_op == WASM_BINARY_I64_ADD ? emit(context, "  iadd R1, R4") : emit(context, "  isub R1, R4")) ||
+        !store_slot(context, left.slot, 3) || !store_slot(context, left.high_slot, 1))
+      return false;
+    break;
+  case WASM_BINARY_I64_EQ:
+  case WASM_BINARY_I64_NE:
+    if (!load_slot(context, 1, left.slot) || !load_slot(context, 2, right.slot) || !emit(context, "  ieq R1, R2") ||
+        !load_slot(context, 2, left.high_slot) || !load_slot(context, 3, right.high_slot) || !emit(context, "  ieq R2, R3") ||
+        !emit(context, "  and R1, R2") ||
+        (expression->binary_op == WASM_BINARY_I64_NE && !emit(context, "  ieq R1, 0")) || !store_slot(context, left.slot, 1))
+      return false;
+    release(context, right);
+    /* The comparison replaces the left pair with one ordinary i32 word. */
+    if (context->temp_depth == 0)
+      return false;
+    --context->temp_depth;
+    left.type = WASM_VALUE_I32;
+    left.high_slot = 0;
+    *value = left;
+    return true;
+  case WASM_BINARY_I64_SHL:
+  case WASM_BINARY_I64_SHR_U:
+  case WASM_BINARY_I64_SHR_S:
+    if (!fresh_label(context, "i64_shift_zero", zero, sizeof(zero)) ||
+        !fresh_label(context, "i64_shift_small", small, sizeof(small)) ||
+        !fresh_label(context, "i64_shift_nonnegative", nonnegative, sizeof(nonnegative)) ||
+        !fresh_label(context, "i64_shift_done", done, sizeof(done)) || !load_slot(context, 2, right.slot) ||
+        !emit(context, "  and R2, 63") || !emit(context, "  jf R2, %s", zero) || !emit(context, "  mov R3, R2") ||
+        !emit(context, "  ilt R3, 32") || !emit(context, "  jt R3, %s", small))
+      return false;
+    if (expression->binary_op == WASM_BINARY_I64_SHL) {
+      if (!emit(context, "  isub R2, 32") || !load_slot(context, 1, left.slot) || !emit(context, "  shl R1, R2") ||
+          !store_slot(context, left.high_slot, 1) || !emit(context, "  mov R1, 0") || !store_slot(context, left.slot, 1))
+        return false;
+    } else {
+      /* For shifts of 32..63, the old high word becomes the low result. */
+      if (!emit(context, "  isub R2, 32") || !emit(context, "  mov R3, 0") || !emit(context, "  isub R3, R2") ||
+          !load_slot(context, 1, left.high_slot))
+        return false;
+      if (expression->binary_op == WASM_BINARY_I64_SHR_S) {
+        if (!emit_i32_shr_s(context))
+          return false;
+      } else if (!emit(context, "  shl R1, R3"))
+        return false;
+      if (!emit(context, "  mov R7, R1"))
+        return false;
+      if (expression->binary_op == WASM_BINARY_I64_SHR_S) {
+        if (!load_slot(context, 1, left.high_slot) || !emit(context, "  ilt R1, 0") ||
+            !emit(context, "  jf R1, %s", nonnegative) || !emit(context, "  mov R1, -1") ||
+            !store_slot(context, left.high_slot, 1) || !store_slot(context, left.slot, 7) ||
+            !emit(context, "  jmp %s", done) || !emit_label(context, nonnegative))
+          return false;
+      }
+      if (!emit(context, "  mov R1, 0") || !store_slot(context, left.high_slot, 1) ||
+          !store_slot(context, left.slot, 7))
+        return false;
+    }
+    if (!emit(context, "  jmp %s", done) || !emit_label(context, small))
+      return false;
+    if (expression->binary_op == WASM_BINARY_I64_SHL) {
+      if (!load_slot(context, 1, left.slot) || !load_slot(context, 3, left.high_slot) || !emit(context, "  mov R4, R1") ||
+          !emit(context, "  shl R4, R2") || !emit(context, "  mov R5, R2") || !emit(context, "  isub R5, 32") ||
+          !emit(context, "  shl R1, R5") || !emit(context, "  shl R3, R2") || !emit(context, "  or R3, R1") ||
+          !store_slot(context, left.slot, 4) || !store_slot(context, left.high_slot, 3))
+        return false;
+    } else {
+      if (!load_slot(context, 1, left.slot) || !load_slot(context, 3, left.high_slot) || !emit(context, "  mov R4, R3") ||
+          !emit(context, "  mov R5, 0") || !emit(context, "  isub R5, R2") || !emit(context, "  shl R1, R5") ||
+          !emit(context, "  mov R5, 32") || !emit(context, "  isub R5, R2") || !emit(context, "  shl R3, R5") ||
+          !emit(context, "  or R1, R3"))
+        return false;
+      if (expression->binary_op == WASM_BINARY_I64_SHR_S) {
+        /* Preserve the reconstructed low word while the signed high shift uses R1. */
+        if (!emit(context, "  mov R7, R1") || !emit(context, "  mov R1, R4") || !emit_i32_shr_s(context) ||
+            !store_slot(context, left.high_slot, 1) || !store_slot(context, left.slot, 7))
+          return false;
+      } else if (!emit(context, "  mov R5, 0") || !emit(context, "  isub R5, R2") || !emit(context, "  shl R4, R5") ||
+                 !store_slot(context, left.high_slot, 4))
+        return false;
+      if (expression->binary_op != WASM_BINARY_I64_SHR_S && !store_slot(context, left.slot, 1))
+        return false;
+    }
+    if (!emit(context, "  jmp %s", done) || !emit_label(context, zero) || !emit_label(context, done))
+      return false;
+    break;
+  default:
+    diagnostics_error(context->diagnostics, "internal error: unsupported i64 binary operation passed validation");
+    return false;
+  }
+  release(context, right);
+  *value = left;
   return true;
 }
 /* Emits the validated constant, aligned i64-store form as two i32 stores. */
@@ -1317,6 +1570,18 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
         !emit_label(context, normal) || !emit(context, "  imod R1, R2") || !emit_label(context, done))
       return false;
     break;
+  case WASM_BINARY_I64_ADD:
+  case WASM_BINARY_I64_SUB:
+  case WASM_BINARY_I64_AND:
+  case WASM_BINARY_I64_OR:
+  case WASM_BINARY_I64_XOR:
+  case WASM_BINARY_I64_SHL:
+  case WASM_BINARY_I64_SHR_U:
+  case WASM_BINARY_I64_SHR_S:
+  case WASM_BINARY_I64_EQ:
+  case WASM_BINARY_I64_NE:
+    diagnostics_error(context->diagnostics, "internal error: i64 binary operation bypassed pair lowering");
+    return false;
   case WASM_BINARY_OTHER:
     diagnostics_error(context->diagnostics, "internal error: unsupported binary operation passed validation");
     return false;
@@ -1474,6 +1739,16 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     value->present = true;
     return true;
   }
+  case WASM_EXPR_I64_CONST: {
+    Value result = {0};
+    if (!reserve_i64_value(context, &result) || !emit(context, "  mov R1, 0x%08X", (uint32_t)expression->i64_value) ||
+        !store_slot(context, result.slot, 1) ||
+        !emit(context, "  mov R1, 0x%08X", (uint32_t)(expression->i64_value >> 32)) ||
+        !store_slot(context, result.high_slot, 1))
+      return false;
+    *value = result;
+    return true;
+  }
   case WASM_EXPR_F32_CONST: {
     union {
       float value;
@@ -1488,6 +1763,15 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     return true;
   }
   case WASM_EXPR_LOCAL_GET: {
+    if (local_value_type(context->function, expression->index) == WASM_VALUE_I64) {
+      Value result = {0};
+      if (!reserve_i64_value(context, &result) || !load_slot(context, 1, local_slot(context->function, expression->index)) ||
+          !store_slot(context, result.slot, 1) || !load_slot(context, 1, i64_local_high_slot(context->function, expression->index)) ||
+          !store_slot(context, result.high_slot, 1))
+        return false;
+      *value = result;
+      return true;
+    }
     int slot = temp_slot(context);
     if (slot == 0 || !load_slot(context, 1, local_slot(context->function, expression->index)) ||
         !store_slot(context, slot, 1))
@@ -1497,8 +1781,14 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     return true;
   }
   case WASM_EXPR_LOCAL_SET:
-    if (!lower_expression(context, expression->children[0], &left) || !left.present ||
-        !load_slot(context, 1, left.slot) || !store_slot(context, local_slot(context->function, expression->index), 1))
+    if (!lower_expression(context, expression->children[0], &left) || !left.present)
+      return false;
+    if (local_value_type(context->function, expression->index) == WASM_VALUE_I64) {
+      if (left.type != WASM_VALUE_I64 || !load_slot(context, 1, left.slot) ||
+          !store_slot(context, local_slot(context->function, expression->index), 1) || !load_slot(context, 1, left.high_slot) ||
+          !store_slot(context, i64_local_high_slot(context->function, expression->index), 1))
+        return false;
+    } else if (!load_slot(context, 1, left.slot) || !store_slot(context, local_slot(context->function, expression->index), 1))
       return false;
     if (expression->is_tee) {
       *value = left;
@@ -1521,6 +1811,13 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     release(context, left);
     return true;
   case WASM_EXPR_UNARY:
+    if (expression->unary_op == WASM_UNARY_I64_EQZ)
+      return lower_i64_eqz(context, expression, value);
+    if (expression->unary_op == WASM_UNARY_I32_WRAP_I64)
+      return lower_i32_wrap_i64(context, expression, value);
+    if (expression->unary_op == WASM_UNARY_I64_EXTEND_I32_S || expression->unary_op == WASM_UNARY_I64_EXTEND_I32_U)
+      return lower_i64_extend_i32(context, expression, value,
+                                  expression->unary_op == WASM_UNARY_I64_EXTEND_I32_S);
     if (!lower_expression(context, expression->children[0], &left) || !left.present ||
         !load_slot(context, 1, left.slot))
       return false;
@@ -1577,6 +1874,8 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     *value = left;
     return true;
   case WASM_EXPR_BINARY:
+    if (expression->binary_op >= WASM_BINARY_I64_ADD && expression->binary_op <= WASM_BINARY_I64_NE)
+      return lower_i64_binary(context, expression, value);
     return lower_binary(context, expression, value);
   case WASM_EXPR_SELECT:
     /* Children retain Wasm's evaluation order: first, second, condition. */
@@ -1584,18 +1883,30 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
         !lower_expression(context, expression->children[1], &right) ||
         !lower_expression(context, expression->children[2], &condition) || !left.present || !right.present ||
         !condition.present || !fresh_label(context, "select_false", false_label, sizeof(false_label)) ||
-        !fresh_label(context, "select_done", end, sizeof(end)) || !load_slot(context, 1, condition.slot) ||
-        !emit(context, "  jf R1, %s", false_label) || !load_slot(context, 1, left.slot) ||
-        !emit(context, "  jmp %s", end) || !emit_label(context, false_label) || !load_slot(context, 1, right.slot) ||
-        !emit_label(context, end) || !store_slot(context, left.slot, 1))
+        !fresh_label(context, "select_done", end, sizeof(end)) || !load_slot(context, 1, condition.slot))
+      return false;
+    if (expression->value_type == WASM_VALUE_I64) {
+      /* Reuse the true pair and copy both false words only on the false path. */
+      if (left.type != WASM_VALUE_I64 || right.type != WASM_VALUE_I64 || !emit(context, "  jf R1, %s", false_label) ||
+          !emit(context, "  jmp %s", end) || !emit_label(context, false_label) || !load_slot(context, 1, right.slot) ||
+          !store_slot(context, left.slot, 1) || !load_slot(context, 1, right.high_slot) ||
+          !store_slot(context, left.high_slot, 1) || !emit_label(context, end))
+        return false;
+    } else if (!emit(context, "  jf R1, %s", false_label) || !load_slot(context, 1, left.slot) ||
+               !emit(context, "  jmp %s", end) || !emit_label(context, false_label) || !load_slot(context, 1, right.slot) ||
+               !emit_label(context, end) || !store_slot(context, left.slot, 1))
       return false;
     release(context, condition);
     release(context, right);
     *value = left;
     return true;
   case WASM_EXPR_LOAD:
+    if (expression->bytes == 8 && expression->value_type == WASM_VALUE_I64)
+      return lower_i64_load(context, expression, value);
     return lower_load(context, expression, value);
   case WASM_EXPR_STORE:
+    if (expression->bytes == 8 && expression->value_type == WASM_VALUE_I64)
+      return lower_i64_store(context, expression, value);
     return lower_store(context, expression, value);
   case WASM_EXPR_I64_CONST_STORE:
     return lower_i64_const_store(context, expression, value);

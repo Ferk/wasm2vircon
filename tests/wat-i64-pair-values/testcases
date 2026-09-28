@@ -1,0 +1,3 @@
+source=i64-pair-values.wat
+entry=main
+expectations=expected.asm

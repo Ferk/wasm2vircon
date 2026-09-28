@@ -1,15 +1,16 @@
 # wasm2vircon
 
-`wasm2vircon` is a restricted WebAssembly-to-Vircon32 compiler path for
-freestanding C programs:
+`wasm2vircon` is a restricted WebAssembly-to-[Vircon32](https://www.vircon32.com/)
+compiler path for freestanding C programs:
 
 ```text
 C source → clang wasm32 → wasm2vircon → Vircon32 assembly → .v32 ROM
 ```
 
-It is designed to reuse Clang, Binaryen, and the official Vircon32 resource,
-assembler, and ROM-packaging tools. It is not a general WebAssembly runtime,
-a C standard library, or a replacement for the official assembler.
+It is designed to reuse Clang, [Binaryen](https://github.com/WebAssembly/binaryen),
+and the official [Vircon32 resource, assembler, and ROM-packaging tools](https://github.com/vircon32/ComputerSoftware).
+It is not a general WebAssembly runtime, a C standard library, or a replacement
+for the official assembler.
 
 `include/vircon.h` is the complete, documented public C API and is header-only:
 applications need only include it. See [the C API reference document](docs/v32-c-api.md) for more details.

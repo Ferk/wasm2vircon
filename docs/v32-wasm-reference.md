@@ -116,7 +116,9 @@ slots.
 
 `i32` is a 32-bit integer bit pattern. The same bits may be used as signed or
 unsigned according to the instruction: `i32.div_s` is signed division, while
-`i32.div_u` is unsigned division.
+`i32.div_u` is unsigned division. The supported `i64` subset is represented
+inside the compiler as a little-endian pair of i32 words; it is not passed in
+Vircon32 registers or exposed as a native target pointer.
 
 `f32` is an IEEE-754 binary32 floating-point value. The current profile is
 practical and finite-input oriented. It does not promise complete portable
@@ -135,7 +137,8 @@ export:
 - entry export `main` by default, or the name given to `--entry` (with entry
   signature `() -> ()` or `() -> i32`)
 - defined functions with any practical number of `i32`/`f32` parameters and
-  an `i32`, `f32`, or void result;
+  an `i32`, `f32`, or void result. `i64` is currently supported for locals and
+  intermediate expressions only, not parameters or function results;
 - active data segments with a constant `i32` offset in the default memory.
 
 The only global exception is automatic linker stack support. The compiler
@@ -196,13 +199,16 @@ false.
 | Instruction | Meaning in this profile |
 | --- | --- |
 | `i32.const` | Produces the written 32-bit integer bit pattern, such as `i32.const 42`. |
+| `i64.const` | Produces the written 64-bit integer bit pattern. The compiler holds it as adjacent low and high i32 words. |
 | `f32.const` | Produces the written IEEE-754 single-precision value, such as `f32.const 1.5`. |
-| `local.get` | Reads one function parameter or local variable. Its result is that local's declared `i32` or `f32` type. |
+| `local.get` | Reads one function parameter or local variable. Its result has that local's declared supported type: `i32`, `f32`, or local-only `i64`. |
 | `local.set` | Evaluates one value and writes it into a function parameter/local slot. It has no result. |
 | `local.tee` | Evaluates one value, writes it into a local slot, and returns that same value. A compiler uses it to save a calculation while continuing to use it. |
 | `drop` | Evaluates one supported value and discards its result. Side effects of the evaluated expression still occur. |
 | `select` returning `i32` | Evaluates two `i32` alternatives and an `i32` condition. It returns the first when the condition is nonzero, otherwise the second. Both alternatives are evaluated first. |
 | `select` returning `f32` | The same conditional-value operation for two `f32` alternatives. The condition is still an `i32`, and both float alternatives are evaluated first. |
+| `select` returning `i64` | The same operation for pair-valued i64 alternatives. Both 64-bit alternatives are evaluated before the condition chooses one. |
+| `nop` | Does nothing: it consumes no values, produces no values, and has no observable Wasm state change. It is accepted and emits no target instruction. |
 
 Parameters, locals, and temporary values are stored in compiler-managed target
 stack slots. The generated calling convention uses `R0` for an `i32` or `f32`
@@ -253,6 +259,35 @@ The backend emits extra checked/helper code where Vircon32's division behavior
 does not directly match these Wasm rules. Source authors should still avoid
 division by zero rather than relying on a particular trap presentation.
 
+### Supported 64-bit integer subset
+
+Vircon32 registers and the public defined-function ABI are 32-bit. For the
+supported i64 subset, wasm2vircon therefore represents every temporary or
+local i64 as two compiler-managed i32 stack words: the low 32 bits first, then
+the high 32 bits. This preserves Wasm's little-endian memory layout without
+pretending that a Wasm i64 is one native Vircon32 register.
+
+An i64 shift count uses its low six bits, as WebAssembly specifies: a count of
+64 is equivalent to zero. Equality instructions return ordinary `i32` boolean
+values (`1` or `0`).
+
+| Instruction | Meaning in this profile |
+| --- | --- |
+| `i64.extend_i32_s` | Converts an i32 to i64 by copying its low word and filling the high word with zeros for a non-negative input or ones for a negative input. |
+| `i64.extend_i32_u` | Converts an i32 to i64 by copying its low word and setting the high word to zero. |
+| `i32.wrap_i64` | Discards the high 32 bits of an i64 and returns its low word as i32. |
+| `i64.add` | Adds two i64 values, including the carry from the low word into the high word. Overflow past bit 63 is discarded. |
+| `i64.sub` | Subtracts the second i64 from the first, including borrow from the high word. Underflow wraps modulo 2^64. |
+| `i64.and` | Computes a bitwise AND independently across the low and high words. |
+| `i64.or` | Computes a bitwise OR independently across the low and high words. |
+| `i64.xor` | Computes a bitwise exclusive OR independently across the low and high words. |
+| `i64.shl` | Shifts the full 64-bit bit pattern left by the low six bits of the count, inserting zero bits on the right. |
+| `i64.shr_u` | Shifts the full 64-bit bit pattern right by the low six bits of the count, inserting zero bits on the left. |
+| `i64.shr_s` | Shifts the full 64-bit value right as a signed two's-complement number, copying its original bit 63 into newly opened high bits. |
+| `i64.eqz` | Returns `1` when both i64 words are zero, otherwise `0`. |
+| `i64.eq` | Returns `1` when both corresponding i64 words are equal, otherwise `0`. |
+| `i64.ne` | Returns `1` when either corresponding i64 word differs, otherwise `0`. |
+
 ### Floating-point operations and conversions
 
 `f32` operations use Vircon32 single-precision hardware instructions. This
@@ -285,11 +320,11 @@ portable behavior for NaN, infinity, or signed zero.
 
 | Instruction | Meaning in this profile |
 | --- | --- |
-| `block` | Groups a sequence of expressions and creates a named structured branch target. It has no result value in this profile. Branching to a block exits after its final expression. |
+| `block` | Groups a sequence of expressions and creates a named structured branch target. Resultless blocks are supported, as are named `i32` and `f32` result blocks whose branches carry one value to the block result. Branching to a block exits after its final expression. |
 | `loop` | Groups a sequence of expressions and creates a structured branch target at its beginning. It has no result value here. Branching to a loop starts its next iteration. |
-| `if` | Evaluates an `i32` condition and evaluates its then-body only when the condition is nonzero. This profile accepts no `else` body and no value result from the `if`. |
-| `br` | Unconditionally transfers to one active enclosing `block` or `loop`, selected by Wasm's nesting depth. It cannot carry a value in this profile. |
-| `br_if` | Evaluates an `i32` condition and performs the same structured branch as `br` only when that condition is nonzero. It cannot carry a value in this profile. |
+| `if` | Evaluates an `i32` condition and executes its then-body when the condition is nonzero. A resultless `else` body is supported and executes when the condition is zero. Value-producing `if` remains unsupported. |
+| `br` | Unconditionally transfers to one active enclosing `block` or `loop`, selected by Wasm's nesting depth. It may carry one `i32` or `f32` value when targeting a compatible named result block. |
+| `br_if` | Evaluates an `i32` condition and performs the same structured branch as `br` only when that condition is nonzero. A value-carrying form preserves its value on the non-branching path. |
 | `br_table` | Selects one active enclosing resultless `block` or `loop` target from an `i32` selector. See the explanation below. |
 | `return` | Leaves the current defined function. A void function returns no value; an `i32` or `f32` function returns one value. |
 | `call` | Calls a directly named defined function or one allowlisted `env` platform import. Function pointers and indirect calls are not supported. |
@@ -305,7 +340,7 @@ takes its required default target. Branch values are not supported. The
 compiler resolves all targets through that same control-target stack, then
 emits an immutable cartridge-ROM table of target code addresses. It bounds
 checks the selector, loads the selected address, and transfers with Vircon32
-`JMP Rn`.
+`JMP Rn`. `br_table` branch values remain unsupported.
 
 ### Linear-memory operations
 
@@ -317,6 +352,8 @@ checks the selector, loads the selected address, and transfers with Vircon32
 | `i32.store` | Splits an `i32` into four little-endian bytes and stores them at consecutive byte addresses. The address may be aligned or unaligned. |
 | `f32.load` | Reads four consecutive bytes at the calculated byte address and uses their unchanged 32-bit pattern as an `f32`. The address may be aligned or unaligned. |
 | `f32.store` | Writes the unchanged 32-bit pattern of an `f32` to four consecutive bytes. The address may be aligned or unaligned. |
+| `i64.load` | Reads eight consecutive little-endian bytes into a pair-valued i64. The address may be aligned or unaligned. |
+| `i64.store` | Writes a pair-valued i64 as eight consecutive little-endian bytes. The address may be aligned or unaligned. A statically aligned constant store may use a smaller direct two-word lowering. |
 | `memory.copy` | Copies `length` bytes from source byte address to destination byte address in the default linear memory. It is overlap-safe, like C `memmove`. |
 | `memory.fill` | Writes `length` bytes at destination byte address. Each byte is the low eight bits of the supplied fill value. |
 | `memory.size` | Returns the current default-memory length in 64 KiB Wasm pages. It reads compiler-owned page-count state, so its result changes after successful growth. |
@@ -328,58 +365,14 @@ address used by the operation. The Wasm `align` immediate is only an
 optimization hint; correctness never depends on the runtime address actually
 having that alignment.
 
-### Restricted `i64` aggregate forms
+### i64 storage optimization
 
-VirconWasm does **not** have a general 64-bit value implementation. The rows
-below are narrow recognizable aggregate patterns, not permission to freely use
-the named instructions in arbitrary expressions.
-
-**`i64.const` used by `i64.store`**
-
-An eight-byte constant may be stored only when it immediately supplies an
-aligned `i64.store` at a constant in-bounds address. The compiler splits the
-constant into low and high little-endian `i32` words.
-
-**`i64.load` used directly by `i64.store`**
-
-Copies one eight-byte aggregate from one linear-memory address to another. The
-load must feed the store immediately, so it does not create an ordinary i64
-value, parameter, result, or register.
-
-**`i32.wrap_i64(i64.load(...))`**
-
-Reads an eight-byte aggregate and returns its low 32 bits as an ordinary
-`i32`. “Wrap” means discard every bit above bit 31.
-
-**`i64.shr_u` inside the preceding word-extraction form**
-
-Logically shifts the loaded 64-bit aggregate right by a **constant** count
-before `i32.wrap_i64` takes the low word. It inserts zero bits at the high end.
-This is accepted only as part of the immediate extraction pattern, not as
-standalone i64 arithmetic.
-
-**`local.tee` and `local.get` for a recognized i64 aggregate**
-
-Keep exactly two memory words in compiler-managed local slots so an immediately
-following `i32.wrap_i64`, optionally with the constant right shift above, can
-read one field. Ordinary i64 local use remains rejected.
-
-**Exact two-`i32` packing used immediately by `i64.store`**
-
-The compiler recognizes only this complete Wasm shape:
-
-```wasm
-(i64.or
-  (i64.shl (i64.extend_i32_u high) (i64.const 32))
-  (i64.extend_i32_u low))
-```
-
-When it immediately feeds an `i64.store`, it stores the supplied `low` and
-`high` i32 values as adjacent words. This does not enable general i64 OR,
-shift, or extension instructions.
-
-Standalone i64 locals, arithmetic, comparisons, calls, returns, and arbitrary
-i64 expressions are unsupported.
+The i64 instructions listed above are general supported expressions within a
+function's local/temporary pair-value model. Separately, when a constant
+`i64.store` has a constant, four-byte-aligned, in-bounds address, the compiler
+may emit two direct Vircon RAM word stores instead of the normal byte-addressed
+memory lowering. This is only a code-size optimization; it does not change
+Wasm byte layout or make constant stores semantically special.
 
 ## What standard WebAssembly is not supported
 
@@ -411,14 +404,16 @@ Vircon32 has single-precision floating-point instructions only. Supporting
 NaN, rounding, conversion, and ABI behavior. It is deliberately out of scope
 for the current game-oriented profile.
 
-**General `i64` values and operations**
+**Remaining i64 operations and ABI forms**
 
-Vircon32 has 32-bit registers and the normal call ABI has one 32-bit result
-register, so general i64 support needs a two-word value representation,
-register/temporary policy, arithmetic helpers, and a multiword ABI.
-
-For now only some restricted aggregated were added that avoid all that much 
-commitment, but it can be a **candidate**.
+The documented i64 local/temporary subset uses adjacent i32 words, but i64
+parameters, function results, and direct-call argument passing are still
+unsupported because the existing call ABI transports one word per parameter
+and returns through one 32-bit register. `i64.mul`, signed/unsigned division
+and remainder, ordering comparisons, rotates, narrow loads/stores, and most
+conversions are also not implemented yet. Some are plausible pair-lowering
+candidates, but division and a public multiword call ABI need careful trap and
+calling-convention design rather than a superficial instruction mapping.
 
 **`i32.clz`, `i32.ctz`, and `i32.popcnt`**
 
@@ -429,13 +424,11 @@ have not yet been justified by a supported application.
 
 **Other missing i32 conversions**
 
-`i32.wrap_i64` is only accepted in the documented i64 aggregate-extraction
-patterns because general i64 values do not exist in the backend. Non-saturating
-`i32.trunc_f32_s` and `i32.trunc_f32_u` must trap for NaN and out-of-range
-input, unlike the supported saturating conversion. `i32.trunc_sat_f32_u` also
-needs correct unsigned handling between `2^31` and `2^32-1`. These are not
-direct target conversions and remain unimplemented until their full Wasm
-semantics are tested.
+Non-saturating `i32.trunc_f32_s` and `i32.trunc_f32_u` must trap for NaN and
+out-of-range input, unlike the supported saturating conversion.
+`i32.trunc_sat_f32_u` also needs correct unsigned handling between `2^31` and
+`2^32-1`. These are not direct target conversions and remain unimplemented
+until their full Wasm semantics are tested.
 
 **`f32.sqrt`**
 
@@ -457,30 +450,13 @@ support.
 
 ### Control flow and calls
 
-**`nop`**
+**Value-producing `if` and loop results**
 
-`nop` is supported. It has no observable Wasm behavior: it consumes no values,
-produces no values, and changes no program state. wasm2vircon therefore accepts
-it and emits no Vircon32 instruction. WebAssembly does not specify a
-source-instruction timing model, so adding an arbitrary target instruction just
-to consume a CPU cycle would not preserve a defined Wasm property and could
-unnecessarily change cartridge timing. TinyGo may emit `nop` in generated
-constructor scaffolding such as `__wasm_call_ctors`.
-
-**`else` on a resultless `if`**
-
-The current lowering handles only a then-body. A resultless `else` needs a
-second generated label and is a relatively small **candidate** extension.
-It has not been added because the normalized applications accepted so far did
-not require it.
-
-**Value-producing `if`, `block`, and `loop`, plus value-carrying `br`/`br_if`**
-
-These constructs require the control-flow lowering to carry values across
-structured control edges, similar to a small phi/merge operation. The current
-temporary-slot model intentionally represents only resultless structured
-control. This is feasible but larger than adding an ordinary arithmetic opcode,
-so it waits for a demonstrated module.
+Resultless `if` supports both then and else bodies. Named `i32`/`f32` result
+blocks and their value-carrying `br`/`br_if` forms are also supported. A
+value-producing `if`, value-producing loops, i64 branch values, and
+value-carrying `br_table` remain unsupported because each needs additional
+merge/result-slot rules beyond the currently implemented structured targets.
 
 **Tables, element segments, `call_indirect`, function pointers, and reference calls**
 

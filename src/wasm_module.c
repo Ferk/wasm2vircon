@@ -217,12 +217,36 @@ static bool packed_i64_words(BinaryenExpressionRef source, BinaryenExpressionRef
   return true;
 }
 
+/* Keeps the old compact two-word initializer only when it is statically safe.
+ * All other i64 stores use the general pair-value path, including unaligned
+ * and dynamically addressed stores whose validity must be checked at runtime. */
+static bool compact_i64_const_store(const DecodeContext *context, BinaryenExpressionRef store,
+                                    BinaryenExpressionRef value) {
+  BinaryenExpressionRef pointer = BinaryenStoreGetPtr(store);
+  uint64_t address, memory_bytes;
+  if (BinaryenExpressionGetId(value) != BinaryenConstId() || BinaryenExpressionGetType(value) != BinaryenTypeInt64() ||
+      BinaryenExpressionGetId(pointer) != BinaryenConstId() || BinaryenExpressionGetType(pointer) != BinaryenTypeInt32() ||
+      BinaryenStoreGetAlign(store) < 4)
+    return false;
+  address = (uint64_t)(uint32_t)BinaryenConstGetValueI32(pointer) + BinaryenStoreGetOffset(store);
+  memory_bytes = (uint64_t)context->module->memory_initial_pages * 65536u;
+  return (address & 3u) == 0 && address + 8 <= memory_bytes;
+}
+
 /* Names the Binaryen unary operations that can reach the restricted frontend.
  */
 /* Returns a diagnostic opcode name for one Binaryen unary operation. */
 static const char *unary_opcode(BinaryenOp op) {
   if (op == BinaryenEqZInt32())
     return "i32.eqz";
+  if (op == BinaryenEqZInt64())
+    return "i64.eqz";
+  if (op == BinaryenWrapInt64())
+    return "i32.wrap_i64";
+  if (op == BinaryenExtendSInt32())
+    return "i64.extend_i32_s";
+  if (op == BinaryenExtendUInt32())
+    return "i64.extend_i32_u";
   if (op == BinaryenExtendS8Int32())
     return "i32.extend8_s";
   if (op == BinaryenExtendS16Int32())
@@ -307,6 +331,28 @@ static const char *binary_opcode(BinaryenOp op) {
     return "i32.ge_s";
   if (op == BinaryenGeUInt32())
     return "i32.ge_u";
+  if (op == BinaryenAddInt64())
+    return "i64.add";
+  if (op == BinaryenSubInt64())
+    return "i64.sub";
+  if (op == BinaryenMulInt64())
+    return "i64.mul";
+  if (op == BinaryenAndInt64())
+    return "i64.and";
+  if (op == BinaryenOrInt64())
+    return "i64.or";
+  if (op == BinaryenXorInt64())
+    return "i64.xor";
+  if (op == BinaryenShlInt64())
+    return "i64.shl";
+  if (op == BinaryenShrUInt64())
+    return "i64.shr_u";
+  if (op == BinaryenShrSInt64())
+    return "i64.shr_s";
+  if (op == BinaryenEqInt64())
+    return "i64.eq";
+  if (op == BinaryenNeInt64())
+    return "i64.ne";
   if (op == BinaryenAddFloat32())
     return "f32.add";
   if (op == BinaryenSubFloat32())
@@ -530,6 +576,14 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
         expression->f32_value = BinaryenConstGetValueF32(source);
       return expression;
     }
+    if (BinaryenExpressionGetType(source) == BinaryenTypeInt64()) {
+      expression = new_expression(WASM_EXPR_I64_CONST, "i64.const", path, diagnostics);
+      if (expression != NULL) {
+        expression->i64_value = (uint64_t)BinaryenConstGetValueI64(source);
+        expression->value_type = WASM_VALUE_I64;
+      }
+      return expression;
+    }
     expression_error(diagnostics, context,
                      BinaryenExpressionGetType(source) == BinaryenTypeInt64() ? "i64.const" : "const", path,
                      "unsupported constant type");
@@ -688,24 +742,24 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
           goto fail;
         return expression;
       }
-      /* This is intentionally not general i64 support. Clang can fold
-       * neighbouring i32 initializers into this exact store shape. */
-      if (BinaryenStoreGetValueType(source) != BinaryenTypeInt64() ||
-          BinaryenExpressionGetId(stored_value) != BinaryenConstId() ||
-          BinaryenExpressionGetType(stored_value) != BinaryenTypeInt64()) {
-        expression_error(diagnostics, context, expression->opcode, path,
-                         "only a literal i64.const initializer, direct i64.load aggregate "
-                         "transfer, or exact two-i32 aggregate packing form is accepted");
+      /* Preserve the established direct constant form because its compact
+       * target lowering is useful, but let all other i64 stores enter the
+       * general two-word value path below. */
+      if (BinaryenStoreGetValueType(source) == BinaryenTypeInt64() &&
+          compact_i64_const_store(context, source, stored_value)) {
+        expression->kind = WASM_EXPR_I64_CONST_STORE;
+        expression->i64_value = (uint64_t)BinaryenConstGetValueI64(stored_value);
+        if (!allocate_children(expression, 1, diagnostics))
+          goto fail;
+        expression->children[0] = convert_child(BinaryenStoreGetPtr(source), diagnostics, context, path, 0);
+        if (expression->children[0] == NULL)
+          goto fail;
+        return expression;
+      }
+      if (BinaryenStoreGetValueType(source) != BinaryenTypeInt64()) {
+        expression_error(diagnostics, context, expression->opcode, path, "i64.store requires an i64 value");
         goto fail;
       }
-      expression->kind = WASM_EXPR_I64_CONST_STORE;
-      expression->i64_value = (uint64_t)BinaryenConstGetValueI64(stored_value);
-      if (!allocate_children(expression, 1, diagnostics))
-        goto fail;
-      expression->children[0] = convert_child(BinaryenStoreGetPtr(source), diagnostics, context, path, 0);
-      if (expression->children[0] == NULL)
-        goto fail;
-      return expression;
     }
     if (!allocate_children(expression, 2, diagnostics))
       goto fail;
@@ -817,7 +871,12 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
     expression = new_expression(WASM_EXPR_UNARY, unary_opcode(op), path, diagnostics);
     if (expression == NULL)
       return NULL;
+    expression->value_type = convert_type(BinaryenExpressionGetType(source));
     expression->unary_op = op == BinaryenEqZInt32()                  ? WASM_UNARY_EQZ
+                           : op == BinaryenEqZInt64()                ? WASM_UNARY_I64_EQZ
+                           : op == BinaryenWrapInt64()               ? WASM_UNARY_I32_WRAP_I64
+                           : op == BinaryenExtendSInt32()            ? WASM_UNARY_I64_EXTEND_I32_S
+                           : op == BinaryenExtendUInt32()            ? WASM_UNARY_I64_EXTEND_I32_U
                            : op == BinaryenExtendS8Int32()           ? WASM_UNARY_EXTEND8_S
                            : op == BinaryenExtendS16Int32()          ? WASM_UNARY_EXTEND16_S
                            : op == BinaryenConvertSInt32ToFloat32()  ? WASM_UNARY_CONVERT_I32_S_TO_F32
@@ -842,6 +901,7 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
     expression = new_expression(WASM_EXPR_BINARY, binary_opcode(op), path, diagnostics);
     if (expression == NULL)
       return NULL;
+    expression->value_type = convert_type(BinaryenExpressionGetType(source));
     expression->binary_op = op == BinaryenAddInt32()     ? WASM_BINARY_ADD
                             : op == BinaryenSubInt32()   ? WASM_BINARY_SUB
                             : op == BinaryenMulInt32()   ? WASM_BINARY_MUL
@@ -867,6 +927,16 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
                             : op == BinaryenShrUInt32()  ? WASM_BINARY_SHR_U
                             : op == BinaryenRotLInt32()  ? WASM_BINARY_ROTL
                             : op == BinaryenRotRInt32()  ? WASM_BINARY_ROTR
+                            : op == BinaryenAddInt64()   ? WASM_BINARY_I64_ADD
+                            : op == BinaryenSubInt64()   ? WASM_BINARY_I64_SUB
+                            : op == BinaryenAndInt64()   ? WASM_BINARY_I64_AND
+                            : op == BinaryenOrInt64()    ? WASM_BINARY_I64_OR
+                            : op == BinaryenXorInt64()   ? WASM_BINARY_I64_XOR
+                            : op == BinaryenShlInt64()   ? WASM_BINARY_I64_SHL
+                            : op == BinaryenShrUInt64()  ? WASM_BINARY_I64_SHR_U
+                            : op == BinaryenShrSInt64()  ? WASM_BINARY_I64_SHR_S
+                            : op == BinaryenEqInt64()    ? WASM_BINARY_I64_EQ
+                            : op == BinaryenNeInt64()    ? WASM_BINARY_I64_NE
                             : op == BinaryenAddFloat32() ? WASM_BINARY_F32_ADD
                             : op == BinaryenSubFloat32() ? WASM_BINARY_F32_SUB
                             : op == BinaryenEqFloat32()  ? WASM_BINARY_F32_EQ
@@ -891,7 +961,8 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
     if (expression == NULL)
       return NULL;
     expression->value_type = convert_type(BinaryenExpressionGetType(source));
-    if (expression->value_type != WASM_VALUE_I32 && expression->value_type != WASM_VALUE_F32) {
+    if (expression->value_type != WASM_VALUE_I32 && expression->value_type != WASM_VALUE_F32 &&
+        expression->value_type != WASM_VALUE_I64) {
       expression_error(diagnostics, context, expression->opcode, path, "unsupported select result type");
       goto fail;
     }

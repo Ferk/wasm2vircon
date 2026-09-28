@@ -227,6 +227,7 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
   case WASM_EXPR_BR:
   case WASM_EXPR_UNREACHABLE:
   case WASM_EXPR_I32_CONST:
+  case WASM_EXPR_I64_CONST:
   case WASM_EXPR_F32_CONST:
     return true;
   case WASM_EXPR_BR_IF:
@@ -258,20 +259,10 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
       validation_expression_error(diagnostics, function, expression, "invalid local index %u", expression->index);
       return false;
     }
-    if (local_type(function, expression->index) == WASM_VALUE_I64) {
-      validation_expression_error(diagnostics, function, expression,
-                                  "i64 locals are only accepted by restricted aggregate expressions");
-      return false;
-    }
     return true;
   case WASM_EXPR_LOCAL_SET:
     if (expression->index >= function->param_count + function->local_count) {
       validation_expression_error(diagnostics, function, expression, "invalid local index %u", expression->index);
-      return false;
-    }
-    if (local_type(function, expression->index) == WASM_VALUE_I64) {
-      validation_expression_error(diagnostics, function, expression,
-                                  "i64 locals are only accepted by restricted aggregate expressions");
       return false;
     }
     return validate_expression(module, function, expression->children[0], reachable, diagnostics);
@@ -291,7 +282,8 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
   case WASM_EXPR_LOAD:
     if (!((expression->bytes == 1 && !expression->is_signed && expression->value_type == WASM_VALUE_I32) ||
           (expression->bytes == 4 &&
-           (expression->value_type == WASM_VALUE_I32 || expression->value_type == WASM_VALUE_F32)))) {
+           (expression->value_type == WASM_VALUE_I32 || expression->value_type == WASM_VALUE_F32)) ||
+          (expression->bytes == 8 && expression->value_type == WASM_VALUE_I64))) {
       validation_expression_error(diagnostics, function, expression,
                                   "unsupported load width, sign, or result "
                                   "type");
@@ -301,7 +293,8 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
   case WASM_EXPR_STORE:
     if (!((expression->bytes == 1 && expression->value_type == WASM_VALUE_I32) ||
           (expression->bytes == 4 &&
-           (expression->value_type == WASM_VALUE_I32 || expression->value_type == WASM_VALUE_F32)))) {
+           (expression->value_type == WASM_VALUE_I32 || expression->value_type == WASM_VALUE_F32)) ||
+          (expression->bytes == 8 && expression->value_type == WASM_VALUE_I64))) {
       validation_expression_error(diagnostics, function, expression, "unsupported store width or value type");
       return false;
     }

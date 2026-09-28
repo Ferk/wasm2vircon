@@ -1,4 +1,4 @@
-Wasm i64.const
+Wasm i64.mul
 function 0 'world_initialize'
 expression path body/0/0
-unsupported constant type
+unsupported binary operation
