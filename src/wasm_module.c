@@ -10,6 +10,116 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Enables every Binaryen proposal while decoding so unsupported constructs can
+ * reach the compiler-owned validator. Bulk memory is named explicitly because
+ * memory.copy and memory.fill are supported VirconWasm instructions, not
+ * optional Binaryen cleanup artifacts. */
+static BinaryenFeatures binaryen_decode_features(void) {
+  return BinaryenFeatureAll() | BinaryenFeatureBulkMemory() | BinaryenFeatureBulkMemoryOpt();
+}
+
+/* Reads one bounded unsigned LEB32 field for the narrow section-metadata scan
+ * below. Binaryen remains responsible for all Wasm instruction decoding. */
+static bool read_uleb32(const unsigned char *bytes, size_t size, size_t *offset, uint32_t *value) {
+  uint32_t result = 0;
+  unsigned shift = 0;
+  while (*offset < size && shift < 35) {
+    unsigned char byte = bytes[(*offset)++];
+    result |= (uint32_t)(byte & 0x7Fu) << shift;
+    if ((byte & 0x80u) == 0) {
+      *value = result;
+      return true;
+    }
+    shift += 7;
+  }
+  return false;
+}
+
+/* Binary metadata which Binaryen's current C API does not expose directly.
+ * This is deliberately not a second expression decoder: it only preserves the
+ * one-memory and constant-active-data policy while Binaryen decodes all Wasm
+ * instructions and expressions. */
+typedef struct WasmBinaryMetadata {
+  uint32_t memory_count;
+  bool active_data_offsets_are_i32_const;
+} WasmBinaryMetadata;
+
+/* Reads the small amount of binary module metadata needed before the
+ * compiler-owned validator runs. Binaryen 130 exposes memory properties by
+ * name but has no memory enumerator. Avoiding its text writer matters here:
+ * custom name-section bytes need not be valid UTF-8. */
+static bool read_binary_module_metadata(const char *contents, size_t size, WasmBinaryMetadata *metadata,
+                                        Diagnostics *diagnostics) {
+  const unsigned char *bytes = (const unsigned char *)contents;
+  size_t offset = 8;
+
+  metadata->memory_count = 0;
+  metadata->active_data_offsets_are_i32_const = true;
+  if (size < 8 || memcmp(bytes, "\0asm\1\0\0\0", 8) != 0) {
+    diagnostics_error(diagnostics, "input has no valid Wasm header while reading memory metadata");
+    return false;
+  }
+  while (offset < size) {
+    unsigned char section_id = bytes[offset++];
+    uint32_t section_size;
+    size_t section_end;
+    if (!read_uleb32(bytes, size, &offset, &section_size) || section_size > size - offset) {
+      diagnostics_error(diagnostics, "malformed Wasm section while reading memory metadata");
+      return false;
+    }
+    section_end = offset + section_size;
+    if (section_id == 5) {
+      if (!read_uleb32(bytes, section_end, &offset, &metadata->memory_count) || offset > section_end) {
+        diagnostics_error(diagnostics, "malformed Wasm memory section");
+        return false;
+      }
+    }
+    if (section_id == 11) {
+      uint32_t count;
+      uint32_t index;
+      if (!read_uleb32(bytes, section_end, &offset, &count)) {
+        diagnostics_error(diagnostics, "malformed Wasm data section");
+        return false;
+      }
+      for (index = 0; index < count; ++index) {
+        uint32_t flags;
+        uint32_t byte_count;
+        if (!read_uleb32(bytes, section_end, &offset, &flags)) {
+          diagnostics_error(diagnostics, "malformed Wasm data segment");
+          return false;
+        }
+        /* Passive data and extended active-data forms are rejected later by
+         * the normal validator. Stop here: their binary layout is irrelevant
+         * once this profile property is known to be false. */
+        if (flags == 1 || (flags != 0 && flags != 2)) {
+          metadata->active_data_offsets_are_i32_const = false;
+          return true;
+        }
+        if (flags == 2 && !read_uleb32(bytes, section_end, &offset, &byte_count)) {
+          diagnostics_error(diagnostics, "malformed Wasm data memory index");
+          return false;
+        }
+        /* MVP active segment offsets must be exactly `i32.const <s32>; end`.
+         * A non-constant opcode is a policy failure, not a binary-parser
+         * failure, so later validation produces the usual VirconWasm error. */
+        if (offset >= section_end || bytes[offset++] != 0x41 ||
+            !read_uleb32(bytes, section_end, &offset, &byte_count) || offset >= section_end ||
+            bytes[offset++] != 0x0b) {
+          metadata->active_data_offsets_are_i32_const = false;
+          return true;
+        }
+        if (!read_uleb32(bytes, section_end, &offset, &byte_count) || byte_count > section_end - offset) {
+          diagnostics_error(diagnostics, "malformed Wasm data bytes");
+          return false;
+        }
+        offset += byte_count;
+      }
+    }
+    offset = section_end;
+  }
+  return true;
+}
+
 /* Duplicates a nullable C string for module-owned storage. */
 static char *copy_string(const char *source) {
   size_t length;
@@ -224,8 +334,10 @@ static bool compact_i64_const_store(const DecodeContext *context, BinaryenExpres
                                     BinaryenExpressionRef value) {
   BinaryenExpressionRef pointer = BinaryenStoreGetPtr(store);
   uint64_t address, memory_bytes;
-  if (BinaryenExpressionGetId(value) != BinaryenConstId() || BinaryenExpressionGetType(value) != BinaryenTypeInt64() ||
-      BinaryenExpressionGetId(pointer) != BinaryenConstId() || BinaryenExpressionGetType(pointer) != BinaryenTypeInt32() ||
+  if (BinaryenExpressionGetId(value) != BinaryenConstId() ||
+      BinaryenExpressionGetType(value) != BinaryenTypeInt64() ||
+      BinaryenExpressionGetId(pointer) != BinaryenConstId() ||
+      BinaryenExpressionGetType(pointer) != BinaryenTypeInt32() ||
       BinaryenStoreGetAlign(store) < 4)
     return false;
   address = (uint64_t)(uint32_t)BinaryenConstGetValueI32(pointer) + BinaryenStoreGetOffset(store);
@@ -1122,14 +1234,17 @@ bool wasm_module_report_profile(const char *path, FILE *stream, Diagnostics *dia
 
   if (!read_file(path, &contents, &size, diagnostics))
     goto done;
-  source = BinaryenModuleReadWithFeatures(contents, size, BinaryenFeatureAll());
+  source = BinaryenModuleReadWithFeatures(contents, size, binaryen_decode_features());
   if (source == NULL || !BinaryenModuleValidate(source)) {
     diagnostics_error(diagnostics, "Binaryen could not load '%s' as a valid Wasm module", path);
     goto done;
   }
   text = BinaryenModuleAllocateAndWriteText(source);
   if (text == NULL) {
-    diagnostics_error(diagnostics, "Binaryen could not print '%s' as Wasm text", path);
+    diagnostics_error(diagnostics,
+                      "Binaryen could not print '%s' as Wasm text (for example, a debug/name string may not be "
+                      "valid UTF-8); this affects --report-profile only, not normal translation",
+                      path);
     goto done;
   }
   for (index = 0; index < BinaryenGetNumFunctions(source); ++index) {
@@ -1184,83 +1299,50 @@ done:
   return success;
 }
 
-/* Binaryen 130 has no memory enumerator. Its own text form supplies the sole
- * core-memory name and limits; Binaryen still owns all binary decoding. */
-/* Extracts memory declarations from Binaryen's printed module representation.
+/* Reads single-memory metadata through Binaryen's C API. The current Binaryen
+ * C API models the core memory as name "0"; VirconWasm validates it as the
+ * one default memory. Do not print the module as WAT here: arbitrary Wasm name
+ * custom-section bytes need not be UTF-8, while translation never needs them.
  */
-static bool read_memory_text(const char *text, WasmModule *module, Diagnostics *diagnostics) {
-  const char *cursor = text;
-  while ((cursor = strstr(cursor, "(memory")) != NULL) {
-    const char *p = cursor + 7, *end = strchr(cursor, ')');
-    if (end == NULL) {
-      diagnostics_error(diagnostics, "Binaryen produced malformed memory text");
+static bool read_memory_metadata(BinaryenModuleRef source, uint32_t memory_count, WasmModule *module,
+                                 Diagnostics *diagnostics) {
+  const char *memory_name = "0";
+  BinaryenIndex initial, maximum;
+  const char *import_module;
+
+  if (!BinaryenHasMemory(source)) {
+    module->has_memory = false;
+    module->memory_count = memory_count;
+    return true;
+  }
+
+  /* Imported memory lives in section 2 rather than section 5. It is still a
+   * single memory for the purposes of the normal validator, which will reject
+   * it through has_imported_memory below. */
+  if (memory_count == 0)
+    memory_count = 1;
+  initial = BinaryenMemoryGetInitial(source, memory_name);
+  if (initial > UINT32_MAX) {
+    diagnostics_error(diagnostics, "Wasm memory initial size exceeds VirconWasm's 32-bit page limit");
+    return false;
+  }
+  module->has_memory = true;
+  module->memory_count = memory_count;
+  module->memory_initial_pages = (uint32_t)initial;
+  module->memory_has_max = BinaryenMemoryHasMax(source, memory_name);
+  if (module->memory_has_max) {
+    maximum = BinaryenMemoryGetMax(source, memory_name);
+    if (maximum > UINT32_MAX) {
+      diagnostics_error(diagnostics, "Wasm memory maximum exceeds VirconWasm's 32-bit page limit");
       return false;
     }
-    while (p < end && isspace((unsigned char)*p))
-      ++p;
-    if (p < end && *p == '$')
-      while (p < end && !isspace((unsigned char)*p))
-        ++p;
-    while (p < end && isspace((unsigned char)*p))
-      ++p;
-    /* An export contains `(memory $name)` too; only a declaration has a
-     * page count after its optional name. */
-    if (p >= end || !isdigit((unsigned char)*p)) {
-      cursor = end + 1;
-      continue;
-    }
-    ++module->memory_count;
-    if (module->memory_count == 1) {
-      char *after;
-      unsigned long initial = strtoul(p, &after, 10);
-      if (after == p || initial > UINT32_MAX) {
-        diagnostics_error(diagnostics, "could not read Wasm memory initial size");
-        return false;
-      }
-      module->memory_initial_pages = (uint32_t)initial;
-      p = after;
-      while (p < end && isspace((unsigned char)*p))
-        ++p;
-      if (p < end && isdigit((unsigned char)*p)) {
-        unsigned long maximum = strtoul(p, &after, 10);
-        if (maximum > UINT32_MAX)
-          return false;
-        module->memory_has_max = true;
-        module->memory_max_pages = (uint32_t)maximum;
-      }
-      module->memory_is_shared = strstr(cursor, "shared") != NULL && strstr(cursor, "shared") < end;
-      module->memory_is_64 = strstr(cursor, "i64") != NULL && strstr(cursor, "i64") < end;
-    }
-    cursor = end + 1;
+    module->memory_max_pages = (uint32_t)maximum;
   }
-  module->has_memory = module->memory_count != 0;
+  import_module = BinaryenMemoryImportGetModule(source, memory_name);
+  module->has_imported_memory = import_module != NULL && import_module[0] != '\0';
+  module->memory_is_shared = BinaryenMemoryIsShared(source, memory_name);
+  module->memory_is_64 = BinaryenMemoryIs64(source, memory_name);
   return true;
-}
-
-/* Detects an imported memory in Binaryen's printed module representation. */
-static bool text_has_memory_import(const char *text) {
-  const char *cursor = text;
-  while ((cursor = strstr(cursor, "(import")) != NULL) {
-    const char *end = strchr(cursor, ')'), *memory = strstr(cursor, "(memory");
-    if (end != NULL && memory != NULL && memory < end)
-      return true;
-    cursor += 7;
-  }
-  return false;
-}
-
-/* Checks that printed active-data offsets use the supported constant form. */
-static bool text_data_offsets_are_const(const char *text, size_t count) {
-  const char *cursor = text;
-  size_t seen = 0;
-  while ((cursor = strstr(cursor, "(data")) != NULL) {
-    const char *next = strstr(cursor + 5, "(data"), *constant = strstr(cursor, "(i32.const");
-    if (constant == NULL || (next != NULL && constant > next))
-      return false;
-    ++seen;
-    cursor += 5;
-  }
-  return seen == count;
 }
 
 /* Finds the public export name when Binaryen has no retained name-section name.
@@ -1310,7 +1392,8 @@ static bool read_stack_pointer_global(BinaryenModuleRef source, WasmModule *modu
 
 /* Copies Binaryen data segments into the compiler-owned module representation.
  */
-static bool read_data_segments(BinaryenModuleRef source, WasmModule *module, Diagnostics *diagnostics) {
+static bool read_data_segments(BinaryenModuleRef source, WasmModule *module, bool offsets_are_i32_const,
+                               Diagnostics *diagnostics) {
   BinaryenIndex index;
   module->data_segment_count = BinaryenGetNumDataSegments(source);
   module->data_segments = calloc(module->data_segment_count, sizeof(*module->data_segments));
@@ -1324,7 +1407,10 @@ static bool read_data_segments(BinaryenModuleRef source, WasmModule *module, Dia
     out->offset = BinaryenGetDataSegmentByteOffset(source, segment);
     out->size = BinaryenGetDataSegmentByteLength(segment);
     out->is_passive = BinaryenGetDataSegmentPassive(segment);
-    out->offset_is_i32_const = true;
+    /* Binaryen exposes an active segment's evaluated byte offset, while the
+     * narrow metadata scan preserves the profile's stricter source-form rule:
+     * every active segment must originate from i32.const. */
+    out->offset_is_i32_const = !out->is_passive && offsets_are_i32_const;
     out->bytes = malloc(out->size == 0 ? 1 : out->size);
     if (out->bytes == NULL) {
       diagnostics_error(diagnostics, "out of memory copying Wasm data segment");
@@ -1366,7 +1452,8 @@ static bool needs_binaryen_normalization(BinaryenModuleRef source, const char *e
  * prevents remove-unused-module-elements from discarding their unsupported
  * f64 implementation. This is intentionally export cleanup, not a claim that
  * VirconWasm supports arbitrary exported functions. */
-static bool remove_non_entry_function_exports(BinaryenModuleRef source, const char *entry_name, Diagnostics *diagnostics) {
+static bool remove_non_entry_function_exports(BinaryenModuleRef source, const char *entry_name,
+                                              Diagnostics *diagnostics) {
   BinaryenIndex index = BinaryenGetNumExports(source);
   while (index != 0) {
     BinaryenExportRef export_ref;
@@ -1437,24 +1524,21 @@ static bool restore_memory_image(BinaryenModuleRef source, const WasmModule *ori
  * optimized bytes. This keeps Binaryen objects at the Wasm frontend boundary
  * rather than leaking them into validation or V32 lowering. */
 static BinaryenModuleRef normalize_binaryen_module(BinaryenModuleRef source, const char *entry_name,
+                                                   const WasmBinaryMetadata *input_metadata,
+                                                   WasmBinaryMetadata *output_metadata,
                                                    Diagnostics *diagnostics) {
   static const char *passes[] = {"remove-unused-module-elements", "vacuum"};
   BinaryenModuleAllocateAndWriteResult encoded;
   BinaryenModuleRef normalized;
   WasmModule original_image = {0};
   bool previous_debug_info;
-  char *text = BinaryenModuleAllocateAndWriteText(source);
-
   /* The cleanup pass may remove an unused memory. VirconWasm requires the
    * frontend-visible memory declaration even for a control-only module, so
    * retain its original empty declaration without retaining removed code/data.
    */
-  if (text == NULL || !read_memory_text(text, &original_image, diagnostics)) {
-    free(text);
+  if (!read_memory_metadata(source, input_metadata->memory_count, &original_image, diagnostics))
     return NULL;
-  }
-  free(text);
-  if (!read_data_segments(source, &original_image, diagnostics)) {
+  if (!read_data_segments(source, &original_image, input_metadata->active_data_offsets_are_i32_const, diagnostics)) {
     wasm_module_dispose(&original_image);
     return NULL;
   }
@@ -1487,7 +1571,13 @@ static BinaryenModuleRef normalize_binaryen_module(BinaryenModuleRef source, con
     free(encoded.sourceMap);
     return NULL;
   }
-  normalized = BinaryenModuleReadWithFeatures((char *)encoded.binary, encoded.binaryBytes, BinaryenFeatureAll());
+  if (!read_binary_module_metadata((const char *)encoded.binary, encoded.binaryBytes, output_metadata, diagnostics)) {
+    free(encoded.binary);
+    free(encoded.sourceMap);
+    return NULL;
+  }
+  normalized = BinaryenModuleReadWithFeatures((char *)encoded.binary, encoded.binaryBytes,
+                                               binaryen_decode_features());
   free(encoded.binary);
   free(encoded.sourceMap);
   if (normalized == NULL || !BinaryenModuleValidate(normalized)) {
@@ -1502,44 +1592,49 @@ static BinaryenModuleRef normalize_binaryen_module(BinaryenModuleRef source, con
 /* Loads, validates, and converts one Wasm module through the Binaryen C API. */
 bool wasm_module_load(const char *path, const char *entry_name, bool optimize_input, WasmModule *module,
                       Diagnostics *diagnostics) {
-  char *contents = NULL, *text = NULL;
+  char *contents = NULL;
   size_t size = 0;
   BinaryenModuleRef source = NULL;
   BinaryenIndex index;
+  WasmBinaryMetadata metadata;
   memset(module, 0, sizeof(*module));
   if (!read_file(path, &contents, &size, diagnostics))
     return false;
-  source = BinaryenModuleReadWithFeatures(contents, size, BinaryenFeatureAll());
+  source = BinaryenModuleReadWithFeatures(contents, size, binaryen_decode_features());
+  if (source != NULL && !read_binary_module_metadata(contents, size, &metadata, diagnostics)) {
+    free(contents);
+    BinaryenModuleDispose(source);
+    return false;
+  }
   free(contents);
   if (source == NULL || !BinaryenModuleValidate(source)) {
-    diagnostics_error(diagnostics, "Binaryen could not load '%s' as a valid Wasm module", path);
+    diagnostics_error(diagnostics,
+                      "Binaryen could not load '%s' as valid Wasm before VirconWasm validation; bulk memory "
+                      "(memory.copy and memory.fill) is enabled, so this indicates malformed input, a newer "
+                      "unsupported proposal, or an incompatible Binaryen version",
+                      path);
     if (source)
       BinaryenModuleDispose(source);
     return false;
   }
   if (optimize_input && needs_binaryen_normalization(source, entry_name)) {
-    BinaryenModuleRef normalized = normalize_binaryen_module(source, entry_name, diagnostics);
+    WasmBinaryMetadata normalized_metadata;
+    BinaryenModuleRef normalized =
+        normalize_binaryen_module(source, entry_name, &metadata, &normalized_metadata, diagnostics);
     BinaryenModuleDispose(source);
     if (normalized == NULL)
       return false;
     source = normalized;
+    metadata = normalized_metadata;
   }
-  text = BinaryenModuleAllocateAndWriteText(source);
-  if (text == NULL || !read_memory_text(text, module, diagnostics))
+  if (!read_memory_metadata(source, metadata.memory_count, module, diagnostics))
     goto fail;
-  module->has_imported_memory = text_has_memory_import(text);
   module->table_count = BinaryenGetNumTables(source);
   module->global_count = BinaryenGetNumGlobals(source);
   module->element_segment_count = BinaryenGetNumElementSegments(source);
   module->data_segment_count = BinaryenGetNumDataSegments(source);
   if (!read_stack_pointer_global(source, module, diagnostics))
     goto fail;
-  if (module->data_segment_count != 0 && !text_data_offsets_are_const(text, module->data_segment_count)) {
-    diagnostics_error(diagnostics, "active data segments must use constant i32 offsets");
-    goto fail;
-  }
-  free(text);
-  text = NULL;
   module->export_count = BinaryenGetNumExports(source);
   module->exports = calloc(module->export_count, sizeof(*module->exports));
   if (module->export_count != 0 && module->exports == NULL)
@@ -1607,12 +1702,11 @@ bool wasm_module_load(const char *path, const char *entry_name, bool optimize_in
     if (out->body == NULL)
       goto fail;
   }
-  if (!read_data_segments(source, module, diagnostics))
+  if (!read_data_segments(source, module, metadata.active_data_offsets_are_i32_const, diagnostics))
     goto fail;
   BinaryenModuleDispose(source);
   return true;
 fail:
-  free(text);
   if (source)
     BinaryenModuleDispose(source);
   wasm_module_dispose(module);

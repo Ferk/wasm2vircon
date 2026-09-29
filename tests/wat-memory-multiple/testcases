@@ -1,0 +1,5 @@
+source=multiple-memory.wat
+wasm_as_options=--enable-multimemory
+entry=entry
+outcome=reject
+error_expectations=expected.error
