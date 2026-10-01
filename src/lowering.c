@@ -45,13 +45,14 @@ typedef struct Context {
   const WasmFunction *function;
   VirconIrProgram *program;
   Diagnostics *diagnostics;
-  Target targets[32];
-  size_t target_count;
+  Target *targets;
+  size_t target_count, target_capacity;
   JumpTable *jump_tables;
   size_t jump_table_count, jump_table_capacity;
   unsigned next_label, temp_depth;
   char return_label[64];
   uint32_t memory_bytes;
+  const WasmExpr *current_expression;
 } Context;
 
 /* Allocates an exact-size formatted V32 IR line. */
@@ -111,6 +112,50 @@ static const Target *find_target(const Context *context, const char *name) {
 static const char *find_target_label(const Context *context, const char *name) {
   const Target *target = find_target(context, name);
   return target == NULL ? NULL : target->label;
+}
+
+/* Pushes one structured-control target onto a growable compiler-owned stack. */
+static bool push_target(Context *context, const char *wasm_name, const char *label, int result_slot) {
+  Target *targets;
+  char *label_copy;
+  size_t capacity;
+
+  if (context->target_count == context->target_capacity) {
+    capacity = context->target_capacity == 0 ? 16 : context->target_capacity * 2;
+    if (capacity < context->target_capacity || capacity > SIZE_MAX / sizeof(*targets)) {
+      diagnostics_error(context->diagnostics, "structured-control nesting is too large to represent");
+      return false;
+    }
+    targets = realloc(context->targets, capacity * sizeof(*targets));
+    if (targets == NULL) {
+      diagnostics_error(context->diagnostics, "out of memory growing the structured-control stack");
+      return false;
+    }
+    context->targets = targets;
+    context->target_capacity = capacity;
+  }
+
+  label_copy = format_text("%s", label);
+  if (label_copy == NULL) {
+    diagnostics_error(context->diagnostics, "out of memory recording a structured-control target");
+    return false;
+  }
+  context->targets[context->target_count++] = (Target){wasm_name, label_copy, result_slot};
+  return true;
+}
+
+/* Pops one structured-control target and transfers its label ownership. */
+static Target pop_target(Context *context) { return context->targets[--context->target_count]; }
+
+/* Releases labels left active when lowering aborts inside nested control. */
+static void dispose_targets(Context *context) {
+  size_t index;
+  for (index = 0; index < context->target_count; ++index)
+    free(context->targets[index].label);
+  free(context->targets);
+  context->targets = NULL;
+  context->target_count = 0;
+  context->target_capacity = 0;
 }
 
 /* Releases the owned target-address tables accumulated for one function. */
@@ -278,6 +323,7 @@ static void function_label(const WasmModule *module, const WasmFunction *functio
 }
 
 static bool lower_expression(Context *context, const WasmExpr *expression, Value *value);
+static bool lower_expression_impl(Context *context, const WasmExpr *expression, Value *value);
 static bool emit_i32_shr_s(Context *context);
 
 /* Lowers a resultless Wasm br_table through an immutable V32 ROM address table.
@@ -1838,8 +1884,8 @@ static bool emit_memory_fill_helper(Context *context) {
          emit(context, "  ret");
 }
 
-/* Dispatches one validated expression to its V32 IR lowering. */
-static bool lower_expression(Context *context, const WasmExpr *expression, Value *value) {
+/* Implements one validated expression after diagnostic-path tracking begins. */
+static bool lower_expression_impl(Context *context, const WasmExpr *expression, Value *value) {
   Value left = {0}, right = {0}, condition = {0};
   char label[64], end[64], false_label[64];
   size_t index;
@@ -2060,9 +2106,9 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
       result.present = true;
     }
     if (expression->name != NULL) {
-      if (!fresh_label(context, "block_end", label, sizeof(label)) || context->target_count == 32)
+      if (!fresh_label(context, "block_end", label, sizeof(label)) ||
+          !push_target(context, expression->name, label, result.slot))
         return false;
-      context->targets[context->target_count++] = (Target){expression->name, format_text("%s", label), result.slot};
     }
     for (index = 0; index < expression->child_count; ++index) {
       if (value->present)
@@ -2072,7 +2118,7 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
         return false;
     }
     if (expression->name != NULL) {
-      Target target = context->targets[--context->target_count];
+      Target target = pop_target(context);
       if (!emit_label(context, target.label)) {
         free(target.label);
         return false;
@@ -2088,24 +2134,25 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
     return true;
     }
   case WASM_EXPR_LOOP:
-    if (!fresh_label(context, "loop", label, sizeof(label)) || context->target_count == 32)
+    if (!fresh_label(context, "loop", label, sizeof(label)) ||
+        !push_target(context, expression->name, label, 0))
       return false;
-    context->targets[context->target_count++] = (Target){expression->name, format_text("%s", label), 0};
     if (!emit_label(context, label) || !lower_expression(context, expression->children[0], value))
       return false;
-    free(context->targets[--context->target_count].label);
+    free(pop_target(context).label);
     value->present = false;
     return true;
   case WASM_EXPR_BR: {
     const Target *branch_target = find_target(context, expression->name);
+    const char *target = branch_target == NULL ? NULL : branch_target->label;
+    int result_slot = branch_target == NULL ? 0 : branch_target->result_slot;
     if (expression->child_count == 1) {
-      if (branch_target == NULL || branch_target->result_slot == 0 ||
+      if (result_slot == 0 ||
           !lower_expression(context, expression->children[0], &left) || !left.present ||
-          !load_slot(context, 1, left.slot) || !store_slot(context, branch_target->result_slot, 1))
+          !load_slot(context, 1, left.slot) || !store_slot(context, result_slot, 1))
         return false;
       release(context, left);
     }
-    const char *target = branch_target == NULL ? NULL : branch_target->label;
     if (target != NULL)
       return emit(context, "  jmp %s", target);
   }
@@ -2114,12 +2161,14 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
   case WASM_EXPR_BR_IF:
     if (expression->child_count == 2) {
       const Target *branch_target = find_target(context, expression->name);
-      if (branch_target == NULL || branch_target->result_slot == 0 ||
+      const char *target = branch_target == NULL ? NULL : branch_target->label;
+      int result_slot = branch_target == NULL ? 0 : branch_target->result_slot;
+      if (target == NULL || result_slot == 0 ||
           !lower_expression(context, expression->children[0], &left) || !left.present ||
           !lower_expression(context, expression->children[1], &condition) || !condition.present ||
           !fresh_label(context, "br_if_fallthrough", end, sizeof(end)) || !load_slot(context, 1, condition.slot) ||
           !emit(context, "  jf R1, %s", end) || !load_slot(context, 1, left.slot) ||
-          !store_slot(context, branch_target->result_slot, 1) || !emit(context, "  jmp %s", branch_target->label))
+          !store_slot(context, result_slot, 1) || !emit(context, "  jmp %s", target))
         return false;
       release(context, condition);
       if (!emit_label(context, end))
@@ -2188,6 +2237,16 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
   return false;
 }
 
+/* Tracks the deepest expression responsible for a lowering failure. */
+static bool lower_expression(Context *context, const WasmExpr *expression, Value *value) {
+  const WasmExpr *previous = context->current_expression;
+  context->current_expression = expression;
+  if (!lower_expression_impl(context, expression, value))
+    return false;
+  context->current_expression = previous;
+  return true;
+}
+
 /* Packs active Wasm data segments into writable target RAM at startup. */
 static bool initialize_data(const ValidatedModule *validated, Context *context) {
   size_t bytes = (size_t)context->memory_bytes, words = (bytes + 3) / 4, index, segment_index;
@@ -2228,6 +2287,7 @@ static bool lower_function(const ValidatedModule *validated, const WasmFunction 
   char label[64];
   bool success = false;
   size_t outgoing_slots, frame_slots;
+  unsigned errors_before = diagnostics->errors;
   context.validated = validated;
   context.function = function;
   context.program = program;
@@ -2265,6 +2325,23 @@ static bool lower_function(const ValidatedModule *validated, const WasmFunction 
     goto done;
   success = true;
 done:
+  if (!success && diagnostics->errors == errors_before) {
+    size_t index = function_index(validated->module, function);
+    const WasmExpr *expression = context.current_expression;
+    if (expression != NULL && function->diagnostic_name != NULL && function->diagnostic_name[0] != '\0')
+      diagnostics_error(diagnostics,
+                        "internal compiler error lowering Wasm %s in function %zu '%s' at expression path %s",
+                        expression->opcode, index, function->diagnostic_name, expression->path);
+    else if (expression != NULL)
+      diagnostics_error(diagnostics, "internal compiler error lowering Wasm %s in function %zu at expression path %s",
+                        expression->opcode, index, expression->path);
+    else if (function->diagnostic_name != NULL && function->diagnostic_name[0] != '\0')
+      diagnostics_error(diagnostics, "internal compiler error lowering function %zu '%s'", index,
+                        function->diagnostic_name);
+    else
+      diagnostics_error(diagnostics, "internal compiler error lowering function %zu", index);
+  }
+  dispose_targets(&context);
   dispose_jump_tables(&context);
   return success;
 }

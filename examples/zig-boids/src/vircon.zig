@@ -1,9 +1,8 @@
 //! Public Vircon32 API for Zig programs compiled through wasm2vircon.
 //!
-//! This is the Zig counterpart of the project's public `vircon.h`. Public
-//! functions below are normal Zig wrappers and helpers. The private `platform`
-//! declarations at the bottom are the only Wasm imports. In particular,
-//! `printAt` is a BIOS-font renderer written in Zig, not a compiler intrinsic.
+//! This is the Zig counterpart of the project's public `vircon.h`.
+//! Public functions below are normal Zig wrappers and helpers.
+//! The private `platform` declarations at the bottom are the only Wasm imports.
 //!
 //! ## Zig → VirconWasm checklist
 //!
@@ -35,11 +34,16 @@
 //!   functions, i64 division/remainder, and 8/16-bit i64 loads or stores do
 //!   not yet have general support.
 //!
-//! Public names use Zig `lowerCamelCase`. Coordinates, resource IDs, and
-//! channel IDs are i32. Colours are packed Vircon ABGR words held as i32 bit
-//! patterns. This module deliberately does not reproduce C's `malloc` or
-//! string/libc spellings: use explicit fixed storage and Zig's own byte-slice
-//! operations that fit the supported Wasm profile.
+//! Public names use Zig `lowerCamelCase`.
+//! Coordinates, resource IDs, and channel IDs are i32.
+//! Colours are packed Vircon ABGR words held as i32 bit patterns.
+//!
+//! This module deliberately does not reproduce C's `malloc` or string/libc
+//! spellings: use explicit fixed storage and Zig's own byte-slice operations
+//! that fit the supported Wasm profile.
+
+// ----
+// Constants
 
 /// Visible Vircon32 video width in pixels.
 pub const screen_width: i32 = 640;
@@ -88,6 +92,9 @@ pub const sound_channels: i32 = 16;
 /// Standard Vircon memory-card signature length, in 32-bit words.
 pub const game_signature_words: usize = 20;
 
+// ----
+// Types
+
 /// Two signed pixel coordinates.
 pub const Point = struct { x: i32, y: i32 };
 /// Two typed f32 values such as a drawing scale.
@@ -111,6 +118,9 @@ pub const RegionMatrix = struct {
 };
 /// The normal twenty-word memory-card signature type.
 pub const GameSignature = [game_signature_words]i32;
+
+// ----
+// Public functions: Color
 
 /// Packs an opaque grayscale colour; the low byte is used for every RGB lane.
 pub fn makeGray(brightness: i32) i32 {
@@ -145,6 +155,9 @@ pub fn colorAlpha(color: i32) i32 {
     return @intCast((@as(u32, @bitCast(color)) >> 24) & 255);
 }
 
+// ----
+// Public functions: Screen management
+
 /// Clears the next displayed frame to a packed Vircon ABGR colour.
 pub fn clearScreen(color: i32) void {
     platform.vircon_set_background_color(color);
@@ -153,6 +166,9 @@ pub fn clearScreen(color: i32) void {
 pub fn endFrame() void {
     platform.vircon_end_frame();
 }
+
+// ----
+// Public functions: Texture management
 
 /// Selects an application texture, or -1 for the BIOS texture.
 pub fn selectTexture(texture: i32) void {
@@ -342,6 +358,9 @@ pub fn printAt(initial_x: i32, initial_y: i32, text: [*:0]const u8) void {
     selectTexture(previous_texture);
 }
 
+// ----
+// Public functions: Printing
+
 var digit_text: [1:0]u8 = .{'0'};
 /// Recursively draws unsigned decimal digits and returns the next x coordinate.
 fn printDigits(x: i32, y: i32, value: u32) i32 {
@@ -380,6 +399,9 @@ pub fn printFixed2At(initial_x: i32, y: i32, value: f32) void {
     fraction_text[1] = @intCast('0' + magnitude % 10);
     printAt(x + 30, y, &fraction_text);
 }
+
+// ----
+// Public methods: Input
 
 /// Selects gamepad 0 through 3 for subsequent gamepad reads.
 pub fn selectGamepad(gamepad: i32) void {
@@ -456,6 +478,9 @@ pub fn gamepadDirectionNormalized() Scale {
     return .{ .x = @as(f32, @floatFromInt(direction.x)) * factor, .y = @as(f32, @floatFromInt(direction.y)) * factor };
 }
 
+// ----
+// Public functions: Time and CPU
+
 /// Returns CPU cycles elapsed in the current display frame.
 pub fn cycleCounter() i32 {
     return platform.vircon_timer_get_cycle_counter();
@@ -514,6 +539,13 @@ pub fn sleep(frames: i32) void {
     const final_frame = frameCounter() + frames;
     while (frameCounter() < final_frame) endFrame();
 }
+/// Halts the Vircon32 CPU; there is no hosted process exit status.
+pub fn halt() void {
+    platform.vircon_cpu_halt();
+}
+
+// ----
+// Public functions: Sound
 
 /// Selects a sound resource by cartridge resource ID.
 pub fn selectSound(sound: i32) void {
@@ -633,6 +665,9 @@ pub fn playSound(sound: i32) i32 {
     return -1;
 }
 
+// ----
+// Public functions: Memory Card
+
 /// Returns whether a Vircon memory card is connected.
 pub fn cardIsConnected() bool {
     return platform.vircon_memcard_is_connected() > 0;
@@ -705,10 +740,9 @@ pub fn cardWriteData(source: [*]const u8, card_word_offset: i32, word_count: i32
     }
 }
 
-/// Halts the Vircon32 CPU; there is no hosted process exit status.
-pub fn halt() void {
-    platform.vircon_cpu_halt();
-}
+// ----
+// Public functions: Math
+
 /// Returns the Vircon CPU's finite-domain sine result.
 pub fn sin(value: f32) f32 {
     return platform.vircon_cpu_sin(value);
@@ -790,7 +824,9 @@ pub fn sqrt(value: f32) f32 {
     return pow(value, 0.5);
 }
 
-// Private hardware-like imports. Public callers should use the wrappers above.
+//
+// ----
+// Private hardware-like imports. Don't use these, but the wrappers above.
 const platform = struct {
     extern "env" fn vircon_set_background_color(i32) void;
     extern "env" fn vircon_end_frame() void;

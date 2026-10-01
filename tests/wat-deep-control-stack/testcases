@@ -1,0 +1,4 @@
+source=deep-control-stack.wat
+entry=main
+skip_input_optimization=true
+outcome=accept
