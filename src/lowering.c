@@ -2,8 +2,11 @@
  * VirconWasm-to-V32-IR lowering.
  *
  * This file is the frontend boundary: it converts validated compiler-owned
- * Wasm expressions into assembler-oriented V32 IR lines. Binaryen objects do
- * not reach this stage, and Wasm byte-memory semantics are legalized here.
+ * Wasm expressions into compiler-owned V32 IR. Binaryen objects do not reach
+ * this stage, and Wasm byte-memory semantics are legalized here. The current
+ * instruction-selection helpers use a strict internal decoder while they are
+ * incrementally migrated to direct structured constructors; no assembler text
+ * is retained in the IR.
  */
 
 #include "lowering.h"
@@ -74,7 +77,7 @@ static char *format_text(const char *format, ...) {
   va_end(args);
   return text;
 }
-/* Formats and appends one Vircon32 assembly line to the current V32 program. */
+/* Formats one selected target operation and decodes it into structured V32 IR. */
 static bool emit(Context *context, const char *format, ...) {
   va_list args;
   char buffer[256];
@@ -90,15 +93,17 @@ static bool emit(Context *context, const char *format, ...) {
     diagnostics_error(context->diagnostics, "out of memory building V32 IR");
     return false;
   }
-  return vircon_ir_append_text(context->program, text, context->diagnostics);
+  return vircon_ir_append_generated_instruction(context->program, text, context->diagnostics);
 }
 /* Allocates a function-unique internal label for generated control flow. */
 static bool fresh_label(Context *context, const char *kind, char *out, size_t size) {
   return snprintf(out, size, "__wasm_%s_%zu_%u", kind,
                   (size_t)(context->function - context->validated->module->functions), context->next_label++) > 0;
 }
-/* Appends one assembly label definition. */
-static bool emit_label(Context *context, const char *label) { return emit(context, "%s:", label); }
+/* Appends one structured assembly target label. */
+static bool emit_label(Context *context, const char *label) {
+  return vircon_ir_append_label(context->program, label, context->diagnostics);
+}
 
 /* Finds an active structured-control target by its Binaryen-assigned name. */
 static const Target *find_target(const Context *context, const char *name) {
@@ -233,7 +238,7 @@ static bool emit_jump_tables(Context *context) {
     if (!emit_label(context, table->label))
       return false;
     for (target_index = 0; target_index < table->target_count; ++target_index)
-      if (!emit(context, "  pointer %s", table->target_labels[target_index]))
+      if (!vircon_ir_append_pointer(context->program, table->target_labels[target_index], context->diagnostics))
         return false;
   }
   return true;

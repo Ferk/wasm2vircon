@@ -188,6 +188,16 @@ if(BUILD_TESTING)
   wasm2vircon_enable_warnings(wasm2vircon-u32-to-f32-test)
   add_test(NAME wasm2vircon-u32-to-f32 COMMAND wasm2vircon-u32-to-f32-test)
 
+  add_executable(wasm2vircon-vircon-ir-test
+    tests/vircon-ir-test.c
+    src/vircon_ir.c
+    src/diagnostics.c
+  )
+  target_compile_features(wasm2vircon-vircon-ir-test PRIVATE c_std_11)
+  target_include_directories(wasm2vircon-vircon-ir-test PRIVATE src)
+  wasm2vircon_enable_warnings(wasm2vircon-vircon-ir-test)
+  add_test(NAME wasm2vircon-vircon-ir COMMAND wasm2vircon-vircon-ir-test)
+
   find_program(WASM_AS_EXECUTABLE wasm-as REQUIRED)
   find_program(VIRCON_ASSEMBLE_EXECUTABLE assemble REQUIRED)
 
