@@ -250,6 +250,15 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
       validation_expression_error(diagnostics, function, expression, "malformed if expression");
       return false;
     }
+    if (expression->value_type != WASM_VALUE_NONE && expression->value_type != WASM_VALUE_I32 &&
+        expression->value_type != WASM_VALUE_F32) {
+      validation_expression_error(diagnostics, function, expression, "unsupported if result type");
+      return false;
+    }
+    if (expression->value_type != WASM_VALUE_NONE && expression->child_count != 3) {
+      validation_expression_error(diagnostics, function, expression, "value-producing if requires an else arm");
+      return false;
+    }
     for (index = 0; index < expression->child_count; ++index)
       if (!validate_expression(module, function, expression->children[index], reachable, diagnostics))
         return false;

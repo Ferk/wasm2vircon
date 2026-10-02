@@ -331,7 +331,7 @@ portable behavior for NaN, infinity, or signed zero.
 | --- | --- |
 | `block` | Groups a sequence of expressions and creates a named structured branch target. Resultless blocks are supported, as are named `i32` and `f32` result blocks whose branches carry one value to the block result. Branching to a block exits after its final expression. |
 | `loop` | Groups a sequence of expressions and creates a structured branch target at its beginning. It has no result value here. Branching to a loop starts its next iteration. |
-| `if` | Evaluates an `i32` condition and executes its then-body when the condition is nonzero. A resultless `else` body is supported and executes when the condition is zero. Value-producing `if` remains unsupported. |
+| `if` | Evaluates an `i32` condition and executes its then-body when the condition is nonzero. Resultless conditionals support an optional `else`. An `if` may also produce one `i32` or `f32` value when both arms merge at the end. |
 | `br` | Unconditionally transfers to one active enclosing `block` or `loop`, selected by Wasm's nesting depth. It may carry one `i32` or `f32` value when targeting a compatible named result block. |
 | `br_if` | Evaluates an `i32` condition and performs the same structured branch as `br` only when that condition is nonzero. A value-carrying form preserves its value on the non-branching path. |
 | `br_table` | Selects one active enclosing resultless `block` or `loop` target from an `i32` selector. See the explanation below. |
@@ -459,13 +459,11 @@ support.
 
 ### Control flow and calls
 
-**Value-producing `if` and loop results**
+**Structured result values and loop results**
 
-Resultless `if` supports both then and else bodies. Named `i32`/`f32` result
-blocks and their value-carrying `br`/`br_if` forms are also supported. A
-value-producing `if`, value-producing loops, i64 branch values, and
-value-carrying `br_table` remain unsupported because each needs additional
-merge/result-slot rules beyond the currently implemented structured targets.
+An `if` can produce one `i32` or `f32` result; but value-producing loops,
+i64 structured results, and value-carrying `br_table` remain unsupported,
+they need additional loop-carried or multiword value-flow rules.
 
 **Tables, element segments, `call_indirect`, function pointers, and reference calls**
 

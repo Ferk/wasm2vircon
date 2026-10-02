@@ -326,6 +326,57 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
 static bool lower_expression_impl(Context *context, const WasmExpr *expression, Value *value);
 static bool emit_i32_shr_s(Context *context);
 
+/* Lowers a structured if and merges an optional one-word result from its two arms. */
+static bool lower_if(Context *context, const WasmExpr *expression, Value *value) {
+  Value condition = {0}, arm = {0}, result = {0};
+  char else_label[64], end_label[64];
+  bool has_result = expression->value_type == WASM_VALUE_I32 || expression->value_type == WASM_VALUE_F32;
+
+  if (!lower_expression(context, expression->children[0], &condition) || !condition.present ||
+      !fresh_label(context, "if_end", end_label, sizeof(end_label)) || !load_slot(context, 1, condition.slot))
+    return false;
+  release(context, condition);
+
+  if (has_result) {
+    result.slot = temp_slot(context);
+    result.type = expression->value_type;
+    result.present = result.slot != 0;
+    if (!result.present)
+      return false;
+  }
+
+  if (expression->child_count == 3) {
+    if (!fresh_label(context, "if_else", else_label, sizeof(else_label)) ||
+        !emit(context, "  jf R1, %s", else_label) ||
+        !lower_expression(context, expression->children[1], &arm))
+      return false;
+    if (has_result && arm.present &&
+        (!load_slot(context, 1, arm.slot) || !store_slot(context, result.slot, 1)))
+      return false;
+    release(context, arm);
+    arm.present = false;
+    if (!emit(context, "  jmp %s", end_label) || !emit_label(context, else_label) ||
+        !lower_expression(context, expression->children[2], &arm))
+      return false;
+    if (has_result && arm.present &&
+        (!load_slot(context, 1, arm.slot) || !store_slot(context, result.slot, 1)))
+      return false;
+    release(context, arm);
+    if (!emit_label(context, end_label))
+      return false;
+  } else {
+    if (!emit(context, "  jf R1, %s", end_label) ||
+        !lower_expression(context, expression->children[1], &arm))
+      return false;
+    release(context, arm);
+    if (!emit_label(context, end_label))
+      return false;
+  }
+
+  *value = result;
+  return true;
+}
+
 /* Lowers a resultless Wasm br_table through an immutable V32 ROM address table.
  */
 static bool lower_br_table(Context *context, const WasmExpr *expression, Value *value) {
@@ -2191,27 +2242,7 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
   case WASM_EXPR_BR_TABLE:
     return lower_br_table(context, expression, value);
   case WASM_EXPR_IF:
-    if (!lower_expression(context, expression->children[0], &left) || !left.present ||
-        !fresh_label(context, "if_end", end, sizeof(end)) || !load_slot(context, 1, left.slot))
-      return false;
-    release(context, left);
-    if (expression->child_count == 3) {
-      if (!fresh_label(context, "if_else", false_label, sizeof(false_label)) || !emit(context, "  jf R1, %s", false_label) ||
-          !lower_expression(context, expression->children[1], &right))
-        return false;
-      release(context, right);
-      if (!emit(context, "  jmp %s", end) || !emit_label(context, false_label) ||
-          !lower_expression(context, expression->children[2], &right))
-        return false;
-      release(context, right);
-      return emit_label(context, end);
-    }
-    if (!emit(context, "  jf R1, %s", end))
-      return false;
-    if (!lower_expression(context, expression->children[1], &right))
-      return false;
-    release(context, right);
-    return emit_label(context, end);
+    return lower_if(context, expression, value);
   case WASM_EXPR_RETURN:
     if (expression->child_count != 0) {
       if (!lower_expression(context, expression->children[0], &left) || !left.present ||

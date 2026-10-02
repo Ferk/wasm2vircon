@@ -722,11 +722,21 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
   if (id == BinaryenUnreachableId())
     return new_expression(WASM_EXPR_UNREACHABLE, "unreachable", path, diagnostics);
   if (id == BinaryenIfId()) {
+    BinaryenType result_type = BinaryenExpressionGetType(source);
     expression = new_expression(WASM_EXPR_IF, "if", path, diagnostics);
     if (expression == NULL)
       return NULL;
-    if (BinaryenExpressionGetType(source) != BinaryenTypeNone()) {
-      expression_error(diagnostics, context, expression->opcode, path, "value-producing if is unsupported");
+    expression->value_type = result_type == BinaryenTypeNone() || result_type == BinaryenTypeUnreachable()
+                                 ? WASM_VALUE_NONE
+                                 : convert_type(result_type);
+    if (expression->value_type != WASM_VALUE_NONE && expression->value_type != WASM_VALUE_I32 &&
+        expression->value_type != WASM_VALUE_F32) {
+      expression_error(diagnostics, context, expression->opcode, path,
+                       "value-producing if supports only i32 and f32 results");
+      goto fail;
+    }
+    if (expression->value_type != WASM_VALUE_NONE && BinaryenIfGetIfFalse(source) == NULL) {
+      expression_error(diagnostics, context, expression->opcode, path, "value-producing if requires an else arm");
       goto fail;
     }
     if (!allocate_children(expression, BinaryenIfGetIfFalse(source) == NULL ? 2 : 3, diagnostics))
