@@ -4,4 +4,4 @@ push BP
 mov BP, SP
 mov R0, [BP-1]
 mov R1, [BP+2]
-iadd R1, R2
+iadd R1, 0x00000001

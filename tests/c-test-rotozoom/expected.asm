@@ -2,4 +2,4 @@
 out GPU_DrawingAngle, R1
 out GPU_Command, GPUCommand_DrawRegionRotozoomed
 flt R1, R2
-or R1, R2
+or R1, 0x00000030

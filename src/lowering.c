@@ -23,12 +23,15 @@
 /* Keep common small calls allocation-free; this is not an ABI arity limit. */
 #define INLINE_CALL_ARGUMENTS 4u
 
-/* A temporary stack-frame value. i64 values occupy consecutive low/high slots. */
+/* One compiler value. Scalars may remain immediate; stored i64 values occupy
+ * consecutive low/high frame slots. */
 typedef struct Value {
   int slot;
   int high_slot;
+  uint32_t immediate;
   WasmValueType type;
   bool present;
+  bool is_immediate;
 } Value;
 /* A structured-control target mapped from a Wasm label to an assembly label. */
 typedef struct Target {
@@ -289,13 +292,37 @@ static int temp_slot(Context *context) { return temp_slots(context, 1); }
 /* Releases the most recently reserved temporary when value owns one. */
 static void release(Context *context, Value value) {
   unsigned words = value.type == WASM_VALUE_I64 ? 2u : 1u;
-  if (value.present && context->temp_depth >= words)
+  if (value.present && !value.is_immediate && context->temp_depth >= words)
     context->temp_depth -= words;
 }
 /* Loads a frame slot into a target register. */
 static bool load_slot(Context *context, int reg, int slot) { return emit(context, "  mov R%d, [BP%+d]", reg, slot); }
 /* Stores a target register into a frame slot. */
 static bool store_slot(Context *context, int slot, int reg) { return emit(context, "  mov [BP%+d], R%d", slot, reg); }
+/* Loads a one-word value regardless of whether it is still an immediate or
+ * has already been assigned compiler-owned frame storage. */
+static bool load_value(Context *context, int reg, Value value) {
+  return value.is_immediate ? emit(context, "  mov R%d, 0x%08X", reg, value.immediate)
+                            : load_slot(context, reg, value.slot);
+}
+/* Reserves uninitialized writable storage for an immediate result. */
+static bool reserve_value_slot(Context *context, Value *value) {
+  int slot;
+  if (!value->is_immediate)
+    return true;
+  slot = temp_slot(context);
+  if (slot == 0)
+    return false;
+  value->slot = slot;
+  value->is_immediate = false;
+  return true;
+}
+/* Materializes an immediate when its original value must survive in storage. */
+static bool materialize_value(Context *context, Value *value) {
+  Value source = *value;
+  return reserve_value_slot(context, value) &&
+         (!source.is_immediate || (load_value(context, 1, source) && store_slot(context, value->slot, 1)));
+}
 /* Maps a Wasm parameter/local index to its compiler-defined frame slot. */
 static int local_slot(const WasmFunction *function, uint32_t index) {
   uint32_t local;
@@ -338,7 +365,7 @@ static bool lower_if(Context *context, const WasmExpr *expression, Value *value)
   bool has_result = expression->value_type == WASM_VALUE_I32 || expression->value_type == WASM_VALUE_F32;
 
   if (!lower_expression(context, expression->children[0], &condition) || !condition.present ||
-      !fresh_label(context, "if_end", end_label, sizeof(end_label)) || !load_slot(context, 1, condition.slot))
+      !fresh_label(context, "if_end", end_label, sizeof(end_label)) || !load_value(context, 1, condition))
     return false;
   release(context, condition);
 
@@ -355,16 +382,14 @@ static bool lower_if(Context *context, const WasmExpr *expression, Value *value)
         !emit(context, "  jf R1, %s", else_label) ||
         !lower_expression(context, expression->children[1], &arm))
       return false;
-    if (has_result && arm.present &&
-        (!load_slot(context, 1, arm.slot) || !store_slot(context, result.slot, 1)))
+    if (has_result && arm.present && (!load_value(context, 1, arm) || !store_slot(context, result.slot, 1)))
       return false;
     release(context, arm);
     arm.present = false;
     if (!emit(context, "  jmp %s", end_label) || !emit_label(context, else_label) ||
         !lower_expression(context, expression->children[2], &arm))
       return false;
-    if (has_result && arm.present &&
-        (!load_slot(context, 1, arm.slot) || !store_slot(context, result.slot, 1)))
+    if (has_result && arm.present && (!load_value(context, 1, arm) || !store_slot(context, result.slot, 1)))
       return false;
     release(context, arm);
     if (!emit_label(context, end_label))
@@ -407,7 +432,7 @@ static bool lower_br_table(Context *context, const WasmExpr *expression, Value *
   }
   if (expression->branch_target_count > UINT32_MAX ||
       !fresh_label(context, "br_table", table_label, sizeof(table_label)) ||
-      !record_jump_table(context, table_label, expression) || !load_slot(context, 2, selector.slot))
+      !record_jump_table(context, table_label, expression) || !load_value(context, 2, selector))
     return false;
   table_count = (uint32_t)expression->branch_target_count;
   release(context, selector);
@@ -430,7 +455,7 @@ static bool effective_address(Context *context, Value pointer, uint32_t offset, 
   uint64_t required = (uint64_t)offset + width;
   if (required > VIRCON_LINEAR_MEMORY_BYTES)
     return emit(context, "  jmp __wasm_trap");
-  return load_slot(context, 2, pointer.slot) && emit(context, "  mov R1, R2") && emit(context, "  ilt R1, 0") &&
+  return load_value(context, 2, pointer) && emit(context, "  mov R1, R2") && emit(context, "  ilt R1, 0") &&
          emit(context, "  jt R1, __wasm_trap") && emit(context, "  mov R1, [%u]", VIRCON_WASM_MEMORY_PAGES_WORD) &&
          emit(context, "  imul R1, 65536") && emit(context, "  mov R3, 0x%08X", (uint32_t)required) &&
          emit(context, "  igt R3, R1") && emit(context, "  jt R3, __wasm_trap") && emit(context, "  isub R1, R3") &&
@@ -503,23 +528,25 @@ static bool store_i32_at_r2(Context *context, int value_register) {
 
 /* Lowers a validated byte or i32 Wasm load into packed-memory operations. */
 static bool lower_load(Context *context, const WasmExpr *expression, Value *value) {
-  Value pointer = {0};
+  Value pointer = {0}, result = {0};
   int slot;
-  if (!lower_expression(context, expression->children[0], &pointer) || !pointer.present ||
-      !effective_address(context, pointer, expression->offset, expression->bytes))
+  if (!lower_expression(context, expression->children[0], &pointer) || !pointer.present)
+    return false;
+  result = pointer;
+  if (!reserve_value_slot(context, &result) || !effective_address(context, pointer, expression->offset, expression->bytes))
     return false;
   if (expression->bytes == 1) {
-    if (!load_byte_at_r2(context, 1) || !store_slot(context, pointer.slot, 1))
+    if (!load_byte_at_r2(context, 1) || !store_slot(context, result.slot, 1))
       return false;
-    *value = pointer;
+    *value = result;
     return true;
   }
   if (!load_i32_at_r2(context, 1))
     return false;
-  slot = pointer.slot;
+  slot = result.slot;
   if (!store_slot(context, slot, 1))
     return false;
-  *value = pointer;
+  *value = result;
   return true;
 }
 /* Lowers a validated byte or i32 Wasm store into packed-memory operations. */
@@ -527,7 +554,7 @@ static bool lower_store(Context *context, const WasmExpr *expression, Value *val
   Value pointer = {0}, input = {0};
   if (!lower_expression(context, expression->children[0], &pointer) ||
       !lower_expression(context, expression->children[1], &input) || !pointer.present || !input.present ||
-      !effective_address(context, pointer, expression->offset, expression->bytes) || !load_slot(context, 1, input.slot))
+      !effective_address(context, pointer, expression->offset, expression->bytes) || !load_value(context, 1, input))
     return false;
   if (expression->bytes == 1) {
     if (!store_byte_at_r2(context, 1))
@@ -559,20 +586,22 @@ static bool reserve_i64_value(Context *context, Value *value) {
 
 /* Loads an i64 as two little-endian i32 words while retaining Wasm bounds checks. */
 static bool lower_i64_load(Context *context, const WasmExpr *expression, Value *value) {
-  Value pointer = {0};
+  Value pointer = {0}, result = {0};
   int high_slot;
 
-  if (!lower_expression(context, expression->children[0], &pointer) || !pointer.present ||
-      !effective_address(context, pointer, expression->offset, 8))
+  if (!lower_expression(context, expression->children[0], &pointer) || !pointer.present)
+    return false;
+  result = pointer;
+  if (!reserve_value_slot(context, &result) || !effective_address(context, pointer, expression->offset, 8))
     return false;
   high_slot = temp_slot(context);
   if (high_slot == 0 || !store_slot(context, high_slot, 2) || !load_i32_at_r2(context, 1) ||
-      !store_slot(context, pointer.slot, 1) || !load_slot(context, 2, high_slot) || !emit(context, "  iadd R2, 4") ||
+      !store_slot(context, result.slot, 1) || !load_slot(context, 2, high_slot) || !emit(context, "  iadd R2, 4") ||
       !load_i32_at_r2(context, 1) || !store_slot(context, high_slot, 1))
     return false;
-  pointer.high_slot = high_slot;
-  pointer.type = WASM_VALUE_I64;
-  *value = pointer;
+  result.high_slot = high_slot;
+  result.type = WASM_VALUE_I64;
+  *value = result;
   return true;
 }
 
@@ -604,8 +633,8 @@ static bool lower_i64_extend_i32(Context *context, const WasmExpr *expression, V
   int high_slot;
   char nonnegative[64];
 
-  if (!lower_expression(context, expression->children[0], &input) || !input.present || !load_slot(context, 1, input.slot) ||
-      !store_slot(context, input.slot, 1))
+  if (!lower_expression(context, expression->children[0], &input) || !input.present ||
+      !materialize_value(context, &input) || !load_value(context, 1, input) || !store_slot(context, input.slot, 1))
     return false;
   high_slot = temp_slot(context);
   if (high_slot == 0)
@@ -933,6 +962,7 @@ static bool lower_i64_load_store(Context *context, const WasmExpr *expression, V
   /* A Wasm store evaluates its destination address before its value. */
   if (!lower_expression(context, expression->children[0], &destination) ||
       !lower_expression(context, expression->children[1], &source) || !destination.present || !source.present ||
+      !materialize_value(context, &destination) || !materialize_value(context, &source) ||
       !effective_address(context, source, expression->source_offset, 8))
     return false;
 
@@ -969,6 +999,7 @@ static bool lower_i64_load_store_local_tee(Context *context, const WasmExpr *exp
 
   if (!lower_expression(context, expression->children[0], &destination) ||
       !lower_expression(context, expression->children[1], &source) || !destination.present || !source.present ||
+      !materialize_value(context, &destination) || !materialize_value(context, &source) ||
       !effective_address(context, source, expression->source_offset, 8))
     return false;
   high_word.slot = temp_slot(context);
@@ -1008,9 +1039,9 @@ static bool lower_i64_packed_i32_store(Context *context, const WasmExpr *express
       !lower_expression(context, expression->children[1], &high_word) ||
       !lower_expression(context, expression->children[2], &low_word) || !destination.present || !high_word.present ||
       !low_word.present || !effective_address(context, destination, expression->offset, 8) ||
-      !load_slot(context, 1, low_word.slot) || !store_i32_at_r2(context, 1) ||
-      !load_slot(context, 2, destination.slot) || !emit(context, "  iadd R2, 4") ||
-      !load_slot(context, 1, high_word.slot) || !store_i32_at_r2(context, 1))
+      !load_value(context, 1, low_word) || !store_i32_at_r2(context, 1) ||
+      !load_value(context, 2, destination) || !emit(context, "  iadd R2, 4") ||
+      !load_value(context, 1, high_word) || !store_i32_at_r2(context, 1))
     return false;
 
   release(context, low_word);
@@ -1026,11 +1057,13 @@ static bool lower_i64_packed_i32_store(Context *context, const WasmExpr *express
  * ordinary i32 value and no general i64 register or ABI value exists.
  */
 static bool lower_i64_word_extract(Context *context, const WasmExpr *expression, Value *value) {
-  Value low_word = {0}, high_word = {0};
+  Value pointer = {0}, low_word = {0}, high_word = {0};
   uint64_t shift = expression->i64_value;
 
-  if (!lower_expression(context, expression->children[0], &low_word) || !low_word.present ||
-      !effective_address(context, low_word, expression->source_offset, 8))
+  if (!lower_expression(context, expression->children[0], &pointer) || !pointer.present)
+    return false;
+  low_word = pointer;
+  if (!reserve_value_slot(context, &low_word) || !effective_address(context, pointer, expression->source_offset, 8))
     return false;
   high_word.slot = temp_slot(context);
   if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) || !load_i32_at_r2(context, 1) ||
@@ -1099,7 +1132,7 @@ static bool lower_bulk_memory(Context *context, const WasmExpr *expression, Valu
     if (!lower_expression(context, expression->children[index], &arguments[index]) || !arguments[index].present)
       return false;
   for (index = 0; index < 3; ++index)
-    if (!load_slot(context, 1, arguments[index].slot) || !emit(context, "  mov [SP+%zu], R1", index))
+    if (!load_value(context, 1, arguments[index]) || !emit(context, "  mov [SP+%zu], R1", index))
       return false;
   for (index = 3; index != 0; --index)
     release(context, arguments[index - 1]);
@@ -1133,15 +1166,18 @@ static bool lower_memory_size(Context *context, Value *value) {
  * result. The generated loop writes target words, while Wasm remains in byte
  * units everywhere outside this target-specific legalization. */
 static bool lower_memory_grow(Context *context, const WasmExpr *expression, Value *value) {
-  Value delta = {0};
+  Value delta = {0}, delta_source = {0};
   char clear[64], failed[64], succeeded[64], done[64];
   uint32_t maximum = memory_growth_limit_pages(context);
 
-  if (!lower_expression(context, expression->children[0], &delta) || !delta.present ||
+  if (!lower_expression(context, expression->children[0], &delta) || !delta.present)
+    return false;
+  delta_source = delta;
+  if (!reserve_value_slot(context, &delta) ||
       !fresh_label(context, "memory_grow_clear", clear, sizeof(clear)) ||
       !fresh_label(context, "memory_grow_failed", failed, sizeof(failed)) ||
       !fresh_label(context, "memory_grow_succeeded", succeeded, sizeof(succeeded)) ||
-      !fresh_label(context, "memory_grow_done", done, sizeof(done)) || !load_slot(context, 2, delta.slot))
+      !fresh_label(context, "memory_grow_done", done, sizeof(done)) || !load_value(context, 2, delta_source))
     return false;
   /* R6 preserves the old page count for the successful Wasm result. */
   if (!emit(context, "  mov R6, [%u]", VIRCON_WASM_MEMORY_PAGES_WORD) || !emit(context, "  mov R1, R2") ||
@@ -1246,10 +1282,13 @@ static bool lower_port_read(Context *context, Value *value, const char *port) {
 /* Lowers a unary CPU instruction in place so its argument slot becomes the
  * returned value and remains owned by the enclosing expression. */
 static bool lower_cpu_unary(Context *context, const Value *argument, Value *value, const char *instruction) {
-  if (!load_slot(context, 0, argument->slot) || !emit(context, "  %s R0", instruction) ||
-      !store_slot(context, argument->slot, 0))
+  Value result = *argument;
+  if (!reserve_value_slot(context, &result))
     return false;
-  *value = *argument;
+  if (!load_value(context, 0, *argument) || !emit(context, "  %s R0", instruction) ||
+      !store_slot(context, result.slot, 0))
+    return false;
+  *value = result;
   return true;
 }
 
@@ -1258,11 +1297,22 @@ static bool lower_cpu_unary(Context *context, const Value *argument, Value *valu
  * expressions. */
 static bool lower_cpu_binary(Context *context, const Value *left, const Value *right, Value *value,
                              const char *instruction) {
-  if (!load_slot(context, 0, left->slot) || !load_slot(context, 1, right->slot) ||
-      !emit(context, "  %s R0, R1", instruction) || !store_slot(context, left->slot, 0))
+  Value result;
+  if (!left->is_immediate)
+    result = *left;
+  else if (!right->is_immediate)
+    result = *right;
+  else {
+    result = *left;
+    if (!reserve_value_slot(context, &result))
+      return false;
+  }
+  if (!load_value(context, 0, *left) || !load_value(context, 1, *right) ||
+      !emit(context, "  %s R0, R1", instruction) || !store_slot(context, result.slot, 0))
     return false;
-  release(context, *right);
-  *value = *left;
+  if (result.slot != right->slot || right->is_immediate)
+    release(context, *right);
+  *value = result;
   return true;
 }
 
@@ -1291,7 +1341,7 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
     }
   if (callee->is_import) {
     if (strcmp(callee->import_name, "vircon_set_background_color") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_ClearColor, R1") ||
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out GPU_ClearColor, R1") ||
           !emit(context, "  out GPU_Command, GPUCommand_ClearScreen"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_end_frame") == 0) {
@@ -1305,7 +1355,7 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
       value->present = true;
       return true;
     } else if (strcmp(callee->import_name, "vircon_gpu_select_texture") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_SelectedTexture, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out GPU_SelectedTexture, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_get_selected_region") == 0) {
       int slot = temp_slot(context);
@@ -1315,48 +1365,48 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
       value->present = true;
       return true;
     } else if (strcmp(callee->import_name, "vircon_gpu_select_region") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_SelectedRegion, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out GPU_SelectedRegion, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_point") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) ||
+      if (!load_value(context, 1, arguments[0]) || !load_value(context, 2, arguments[1]) ||
           !emit(context, "  out GPU_DrawingPointX, R1") || !emit(context, "  out GPU_DrawingPointY, R2"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_draw_region") == 0) {
       if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegion"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_set_region_minimum") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) ||
+      if (!load_value(context, 1, arguments[0]) || !load_value(context, 2, arguments[1]) ||
           !emit(context, "  out GPU_RegionMinX, R1") || !emit(context, "  out GPU_RegionMinY, R2"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_set_region_maximum") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) ||
+      if (!load_value(context, 1, arguments[0]) || !load_value(context, 2, arguments[1]) ||
           !emit(context, "  out GPU_RegionMaxX, R1") || !emit(context, "  out GPU_RegionMaxY, R2"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_set_region_hotspot") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) ||
+      if (!load_value(context, 1, arguments[0]) || !load_value(context, 2, arguments[1]) ||
           !emit(context, "  out GPU_RegionHotSpotX, R1") || !emit(context, "  out GPU_RegionHotSpotY, R2"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_spu_select_channel") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SelectedChannel, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out SPU_SelectedChannel, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_spu_select_sound") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SelectedSound, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out SPU_SelectedSound, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_spu_get_selected_sound") == 0) {
       return lower_port_read(context, value, "SPU_SelectedSound");
     } else if (strcmp(callee->import_name, "vircon_spu_get_selected_channel") == 0) {
       return lower_port_read(context, value, "SPU_SelectedChannel");
     } else if (strcmp(callee->import_name, "vircon_spu_set_sound_play_with_loop") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SoundPlayWithLoop, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out SPU_SoundPlayWithLoop, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_spu_set_sound_loop_start") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SoundLoopStart, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out SPU_SoundLoopStart, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_spu_set_sound_loop_end") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_SoundLoopEnd, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out SPU_SoundLoopEnd, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_spu_set_channel_assigned_sound") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelAssignedSound, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out SPU_ChannelAssignedSound, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_spu_play_selected_channel") == 0) {
       if (!emit(context, "  out SPU_Command, SPUCommand_PlaySelectedChannel"))
@@ -1368,19 +1418,19 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
       if (!emit(context, "  out SPU_Command, SPUCommand_StopSelectedChannel"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_spu_set_channel_volume") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelVolume, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out SPU_ChannelVolume, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_spu_set_channel_speed") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelSpeed, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out SPU_ChannelSpeed, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_spu_set_channel_position") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelPosition, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out SPU_ChannelPosition, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_spu_set_channel_loop_enabled") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_ChannelLoopEnabled, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out SPU_ChannelLoopEnabled, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_spu_set_global_volume") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out SPU_GlobalVolume, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out SPU_GlobalVolume, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_spu_get_channel_speed") == 0) {
       return lower_port_read(context, value, "SPU_ChannelSpeed");
@@ -1398,25 +1448,27 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
       if (!emit(context, "  out SPU_Command, SPUCommand_ResumeAllChannels"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_rng_set_current_value") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out RNG_CurrentValue, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out RNG_CurrentValue, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_memcard_read_word") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  iadd R1, 0x30000000") ||
-          !emit(context, "  mov R0, [R1]") || !store_slot(context, arguments[0].slot, 0))
+      Value result = arguments[0];
+      if (!reserve_value_slot(context, &result) || !load_value(context, 1, arguments[0]) ||
+          !emit(context, "  iadd R1, 0x30000000") || !emit(context, "  mov R0, [R1]") ||
+          !store_slot(context, result.slot, 0))
         return false;
-      *value = arguments[0];
+      *value = result;
       return true;
     } else if (strcmp(callee->import_name, "vircon_memcard_write_word") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) ||
+      if (!load_value(context, 1, arguments[0]) || !load_value(context, 2, arguments[1]) ||
           !emit(context, "  iadd R1, 0x30000000") || !emit(context, "  mov [R1], R2"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_set_multiply_color") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_MultiplyColor, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out GPU_MultiplyColor, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_get_multiply_color") == 0) {
       return lower_port_read(context, value, "GPU_MultiplyColor");
     } else if (strcmp(callee->import_name, "vircon_gpu_set_active_blending") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_ActiveBlending, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out GPU_ActiveBlending, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_get_active_blending") == 0) {
       return lower_port_read(context, value, "GPU_ActiveBlending");
@@ -1425,11 +1477,11 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
     } else if (strcmp(callee->import_name, "vircon_gpu_get_drawing_point_y") == 0) {
       return lower_port_read(context, value, "GPU_DrawingPointY");
     } else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale_bits") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) ||
+      if (!load_value(context, 1, arguments[0]) || !load_value(context, 2, arguments[1]) ||
           !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) ||
+      if (!load_value(context, 1, arguments[0]) || !load_value(context, 2, arguments[1]) ||
           !emit(context, "  out GPU_DrawingScaleX, R1") || !emit(context, "  out GPU_DrawingScaleY, R2"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_get_drawing_scale_x") == 0) {
@@ -1440,7 +1492,7 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
       if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionZoomed"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_angle") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out GPU_DrawingAngle, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out GPU_DrawingAngle, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_get_drawing_angle") == 0) {
       return lower_port_read(context, value, "GPU_DrawingAngle");
@@ -1484,7 +1536,7 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
       if (!emit(context, "  hlt"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_input_select_gamepad") == 0) {
-      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out INP_SelectedGamepad, R1"))
+      if (!load_value(context, 1, arguments[0]) || !emit(context, "  out INP_SelectedGamepad, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_input_get_selected_gamepad") == 0) {
       return lower_port_read(context, value, "INP_SelectedGamepad");
@@ -1543,7 +1595,7 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
     return true;
   }
   for (index = 0; index < expression->child_count; ++index)
-    if (!load_slot(context, 1, arguments[index].slot) || !emit(context, "  mov [SP+%zu], R1", index)) {
+    if (!load_value(context, 1, arguments[index]) || !emit(context, "  mov [SP+%zu], R1", index)) {
       if (heap_arguments)
         free(arguments);
       return false;
@@ -1572,13 +1624,59 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
   return true;
 }
 
-/* Lowers one supported typed binary operation through the value-slot model. */
+/* Returns the target opcode for integer operations that accept a literal
+ * right operand without first consuming another target register. */
+static const char *binary_immediate_opcode(WasmBinaryOp operation) {
+  switch (operation) {
+  case WASM_BINARY_ADD:
+    return "iadd";
+  case WASM_BINARY_SUB:
+    return "isub";
+  case WASM_BINARY_MUL:
+    return "imul";
+  case WASM_BINARY_AND:
+    return "and";
+  case WASM_BINARY_OR:
+    return "or";
+  case WASM_BINARY_XOR:
+    return "xor";
+  case WASM_BINARY_EQ:
+    return "ieq";
+  case WASM_BINARY_NE:
+    return "ine";
+  case WASM_BINARY_LT_S:
+    return "ilt";
+  case WASM_BINARY_GT_S:
+    return "igt";
+  case WASM_BINARY_GE_S:
+    return "ige";
+  case WASM_BINARY_LE_S:
+    return "ile";
+  default:
+    return NULL;
+  }
+}
+
+/* Lowers one supported typed binary operation through the compiler value model,
+ * retaining a right-hand integer constant as a target immediate when legal. */
 static bool lower_binary(Context *context, const WasmExpr *expression, Value *value) {
-  Value left = {0}, right = {0};
+  Value left = {0}, left_source = {0}, right = {0};
   char normal[64], done[64];
-  if (!lower_expression(context, expression->children[0], &left) ||
-      !lower_expression(context, expression->children[1], &right) || !left.present || !right.present ||
-      !load_slot(context, 1, left.slot) || !load_slot(context, 2, right.slot))
+  const char *immediate_opcode;
+  if (!lower_expression(context, expression->children[0], &left) || !left.present)
+    return false;
+  left_source = left;
+  if (!reserve_value_slot(context, &left) || !lower_expression(context, expression->children[1], &right) ||
+      !right.present || !load_value(context, 1, left_source))
+    return false;
+  immediate_opcode = right.is_immediate ? binary_immediate_opcode(expression->binary_op) : NULL;
+  if (immediate_opcode != NULL) {
+    if (!emit(context, "  %s R1, 0x%08X", immediate_opcode, right.immediate) || !store_slot(context, left.slot, 1))
+      return false;
+    *value = left;
+    return true;
+  }
+  if (!load_value(context, 2, right))
     return false;
 
   switch (expression->binary_op) {
@@ -1905,20 +2003,17 @@ static bool emit_memory_fill_helper(Context *context) {
 
 /* Implements one validated expression after diagnostic-path tracking begins. */
 static bool lower_expression_impl(Context *context, const WasmExpr *expression, Value *value) {
-  Value left = {0}, right = {0}, condition = {0};
+  Value left = {0}, right = {0}, condition = {0}, input = {0};
   char label[64], end[64], false_label[64];
   size_t index;
-  value->present = false;
+  *value = (Value){0};
   switch (expression->kind) {
-  case WASM_EXPR_I32_CONST: {
-    int slot = temp_slot(context);
-    if (slot == 0 || !emit(context, "  mov R1, 0x%08X", (uint32_t)expression->i32_value) ||
-        !store_slot(context, slot, 1))
-      return false;
-    value->slot = slot;
+  case WASM_EXPR_I32_CONST:
+    value->immediate = (uint32_t)expression->i32_value;
+    value->type = WASM_VALUE_I32;
     value->present = true;
+    value->is_immediate = true;
     return true;
-  }
   case WASM_EXPR_I64_CONST: {
     Value result = {0};
     if (!reserve_i64_value(context, &result) || !emit(context, "  mov R1, 0x%08X", (uint32_t)expression->i64_value) ||
@@ -1934,12 +2029,11 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
       float value;
       uint32_t bits;
     } constant;
-    int slot = temp_slot(context);
     constant.value = expression->f32_value;
-    if (slot == 0 || !emit(context, "  mov R1, 0x%08X", constant.bits) || !store_slot(context, slot, 1))
-      return false;
-    value->slot = slot;
+    value->immediate = constant.bits;
+    value->type = WASM_VALUE_F32;
     value->present = true;
+    value->is_immediate = true;
     return true;
   }
   case WASM_EXPR_LOCAL_GET: {
@@ -1968,7 +2062,7 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
           !store_slot(context, local_slot(context->function, expression->index), 1) || !load_slot(context, 1, left.high_slot) ||
           !store_slot(context, i64_local_high_slot(context->function, expression->index), 1))
         return false;
-    } else if (!load_slot(context, 1, left.slot) || !store_slot(context, local_slot(context->function, expression->index), 1))
+    } else if (!load_value(context, 1, left) || !store_slot(context, local_slot(context->function, expression->index), 1))
       return false;
     if (expression->is_tee) {
       *value = left;
@@ -1986,7 +2080,7 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
   }
   case WASM_EXPR_STACK_POINTER_SET:
     if (!lower_expression(context, expression->children[0], &left) || !left.present ||
-        !load_slot(context, 1, left.slot) || !emit(context, "  mov [%u], R1", VIRCON_WASM_STACK_POINTER_WORD))
+        !load_value(context, 1, left) || !emit(context, "  mov [%u], R1", VIRCON_WASM_STACK_POINTER_WORD))
       return false;
     release(context, left);
     return true;
@@ -1998,8 +2092,16 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
     if (expression->unary_op == WASM_UNARY_I64_EXTEND_I32_S || expression->unary_op == WASM_UNARY_I64_EXTEND_I32_U)
       return lower_i64_extend_i32(context, expression, value,
                                   expression->unary_op == WASM_UNARY_I64_EXTEND_I32_S);
-    if (!lower_expression(context, expression->children[0], &left) || !left.present ||
-        !load_slot(context, 1, left.slot))
+    if (!lower_expression(context, expression->children[0], &left) || !left.present)
+      return false;
+    if (expression->unary_op == WASM_UNARY_REINTERPRET_F32_TO_I32 ||
+        expression->unary_op == WASM_UNARY_REINTERPRET_I32_TO_F32) {
+      left.type = expression->value_type;
+      *value = left;
+      return true;
+    }
+    input = left;
+    if (!reserve_value_slot(context, &left) || !load_value(context, 1, input))
       return false;
     if (expression->unary_op == WASM_UNARY_EQZ) {
       if (!emit(context, "  ieq R1, 0"))
@@ -2043,10 +2145,6 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
     } else if (expression->unary_op == WASM_UNARY_F32_CEIL) {
       if (!emit(context, "  ceil R1"))
         return false;
-    } else if (expression->unary_op == WASM_UNARY_REINTERPRET_F32_TO_I32 ||
-               expression->unary_op == WASM_UNARY_REINTERPRET_I32_TO_F32) {
-      /* Both values already occupy one raw target word, so no instruction is
-       * needed. The frontend records the Wasm type transition. */
     } else
       return false;
     if (!store_slot(context, left.slot, 1))
@@ -2059,11 +2157,11 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
     return lower_binary(context, expression, value);
   case WASM_EXPR_SELECT:
     /* Children retain Wasm's evaluation order: first, second, condition. */
-    if (!lower_expression(context, expression->children[0], &left) ||
+    if (!lower_expression(context, expression->children[0], &left) || !materialize_value(context, &left) ||
         !lower_expression(context, expression->children[1], &right) ||
         !lower_expression(context, expression->children[2], &condition) || !left.present || !right.present ||
         !condition.present || !fresh_label(context, "select_false", false_label, sizeof(false_label)) ||
-        !fresh_label(context, "select_done", end, sizeof(end)) || !load_slot(context, 1, condition.slot))
+        !fresh_label(context, "select_done", end, sizeof(end)) || !load_value(context, 1, condition))
       return false;
     if (expression->value_type == WASM_VALUE_I64) {
       /* Reuse the true pair and copy both false words only on the false path. */
@@ -2072,8 +2170,8 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
           !store_slot(context, left.slot, 1) || !load_slot(context, 1, right.high_slot) ||
           !store_slot(context, left.high_slot, 1) || !emit_label(context, end))
         return false;
-    } else if (!emit(context, "  jf R1, %s", false_label) || !load_slot(context, 1, left.slot) ||
-               !emit(context, "  jmp %s", end) || !emit_label(context, false_label) || !load_slot(context, 1, right.slot) ||
+    } else if (!emit(context, "  jf R1, %s", false_label) || !load_value(context, 1, left) ||
+               !emit(context, "  jmp %s", end) || !emit_label(context, false_label) || !load_value(context, 1, right) ||
                !emit_label(context, end) || !store_slot(context, left.slot, 1))
       return false;
     release(context, condition);
@@ -2145,7 +2243,7 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
       free(target.label);
     }
     if (result.present) {
-      if (value->present && (!load_slot(context, 1, value->slot) || !store_slot(context, result.slot, 1)))
+      if (value->present && (!load_value(context, 1, *value) || !store_slot(context, result.slot, 1)))
         return false;
       release(context, *value);
       *value = result;
@@ -2168,7 +2266,7 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
     if (expression->child_count == 1) {
       if (result_slot == 0 ||
           !lower_expression(context, expression->children[0], &left) || !left.present ||
-          !load_slot(context, 1, left.slot) || !store_slot(context, result_slot, 1))
+          !load_value(context, 1, left) || !store_slot(context, result_slot, 1))
         return false;
       release(context, left);
     }
@@ -2185,8 +2283,8 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
       if (target == NULL || result_slot == 0 ||
           !lower_expression(context, expression->children[0], &left) || !left.present ||
           !lower_expression(context, expression->children[1], &condition) || !condition.present ||
-          !fresh_label(context, "br_if_fallthrough", end, sizeof(end)) || !load_slot(context, 1, condition.slot) ||
-          !emit(context, "  jf R1, %s", end) || !load_slot(context, 1, left.slot) ||
+          !fresh_label(context, "br_if_fallthrough", end, sizeof(end)) || !load_value(context, 1, condition) ||
+          !emit(context, "  jf R1, %s", end) || !load_value(context, 1, left) ||
           !store_slot(context, result_slot, 1) || !emit(context, "  jmp %s", target))
         return false;
       release(context, condition);
@@ -2196,7 +2294,7 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
       return true;
     }
     if (!lower_expression(context, expression->children[0], &condition) || !condition.present ||
-        !load_slot(context, 1, condition.slot))
+        !load_value(context, 1, condition))
       return false;
     release(context, condition);
     {
@@ -2214,7 +2312,7 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
   case WASM_EXPR_RETURN:
     if (expression->child_count != 0) {
       if (!lower_expression(context, expression->children[0], &left) || !left.present ||
-          !load_slot(context, 0, left.slot))
+          !load_value(context, 0, left))
         return false;
       release(context, left);
     }
@@ -2313,7 +2411,7 @@ static bool lower_function(const ValidatedModule *validated, const WasmFunction 
     goto done;
   if (function->result == WASM_VALUE_I32 || function->result == WASM_VALUE_F32) {
     if (result.present) {
-      if (!load_slot(&context, 0, result.slot))
+      if (!load_value(&context, 0, result))
         goto done;
     } else if (!emit(&context, "  mov R0, 0"))
       goto done;

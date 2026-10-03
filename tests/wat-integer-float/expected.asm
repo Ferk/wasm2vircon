@@ -1,6 +1,6 @@
 # Direct operations.
-xor R1, R2
-ile R1, R2
+xor R1, 0xFF00FF00
+ile R1, 0xFFFFFFF4
 
 # Signed-shift count masking, sign test, and sign-bit fill.
 and R2, 31
