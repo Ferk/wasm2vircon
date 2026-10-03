@@ -1243,26 +1243,26 @@ static bool lower_port_read(Context *context, Value *value, const char *port) {
   return true;
 }
 
-/* Lowers a unary CPU math instruction through the generic value-slot model. */
+/* Lowers a unary CPU instruction in place so its argument slot becomes the
+ * returned value and remains owned by the enclosing expression. */
 static bool lower_cpu_unary(Context *context, const Value *argument, Value *value, const char *instruction) {
-  int slot = temp_slot(context);
-  if (slot == 0 || !load_slot(context, 0, argument->slot) || !emit(context, "  %s R0", instruction) ||
-      !store_slot(context, slot, 0))
+  if (!load_slot(context, 0, argument->slot) || !emit(context, "  %s R0", instruction) ||
+      !store_slot(context, argument->slot, 0))
     return false;
-  value->slot = slot;
-  value->present = true;
+  *value = *argument;
   return true;
 }
 
-/* Lowers a binary CPU math instruction through the generic value-slot model. */
+/* Lowers a binary CPU instruction into its left slot and releases the right
+ * operand, matching the ownership convention used by ordinary Wasm binary
+ * expressions. */
 static bool lower_cpu_binary(Context *context, const Value *left, const Value *right, Value *value,
                              const char *instruction) {
-  int slot = temp_slot(context);
-  if (slot == 0 || !load_slot(context, 0, left->slot) || !load_slot(context, 1, right->slot) ||
-      !emit(context, "  %s R0, R1", instruction) || !store_slot(context, slot, 0))
+  if (!load_slot(context, 0, left->slot) || !load_slot(context, 1, right->slot) ||
+      !emit(context, "  %s R0, R1", instruction) || !store_slot(context, left->slot, 0))
     return false;
-  value->slot = slot;
-  value->present = true;
+  release(context, *right);
+  *value = *left;
   return true;
 }
 
@@ -1401,12 +1401,10 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
       if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  out RNG_CurrentValue, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_memcard_read_word") == 0) {
-      int slot = temp_slot(context);
-      if (slot == 0 || !load_slot(context, 1, arguments[0].slot) || !emit(context, "  iadd R1, 0x30000000") ||
-          !emit(context, "  mov R0, [R1]") || !store_slot(context, slot, 0))
+      if (!load_slot(context, 1, arguments[0].slot) || !emit(context, "  iadd R1, 0x30000000") ||
+          !emit(context, "  mov R0, [R1]") || !store_slot(context, arguments[0].slot, 0))
         return false;
-      value->slot = slot;
-      value->present = true;
+      *value = arguments[0];
       return true;
     } else if (strcmp(callee->import_name, "vircon_memcard_write_word") == 0) {
       if (!load_slot(context, 1, arguments[0].slot) || !load_slot(context, 2, arguments[1].slot) ||
@@ -1453,70 +1451,35 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
       if (!emit(context, "  out GPU_Command, GPUCommand_DrawRegionRotozoomed"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_cpu_sin") == 0) {
-      int slot = temp_slot(context);
-      if (slot == 0 || !load_slot(context, 0, arguments[0].slot) || !emit(context, "  sin R0") ||
-          !store_slot(context, slot, 0))
-        return false;
-      value->slot = slot;
-      value->present = true;
-      return true;
+      return lower_cpu_unary(context, &arguments[0], value, "sin");
     } else if (strcmp(callee->import_name, "vircon_cpu_acos") == 0) {
-      int slot = temp_slot(context);
-      if (slot == 0 || !load_slot(context, 0, arguments[0].slot) || !emit(context, "  acos R0") ||
-          !store_slot(context, slot, 0))
-        return false;
-      value->slot = slot;
-      value->present = true;
-      return true;
+      return lower_cpu_unary(context, &arguments[0], value, "acos");
     } else if (strcmp(callee->import_name, "vircon_cpu_log") == 0) {
-      int slot = temp_slot(context);
-      if (slot == 0 || !load_slot(context, 0, arguments[0].slot) || !emit(context, "  log R0") ||
-          !store_slot(context, slot, 0))
-        return false;
-      value->slot = slot;
-      value->present = true;
-      return true;
+      return lower_cpu_unary(context, &arguments[0], value, "log");
     } else if (strcmp(callee->import_name, "vircon_cpu_pow") == 0) {
-      int slot = temp_slot(context);
-      if (slot == 0 || !load_slot(context, 0, arguments[0].slot) || !load_slot(context, 1, arguments[1].slot) ||
-          !emit(context, "  pow R0, R1") || !store_slot(context, slot, 0))
-        return false;
-      value->slot = slot;
-      value->present = true;
-      return true;
+      return lower_cpu_binary(context, &arguments[0], &arguments[1], value, "pow");
     } else if (strcmp(callee->import_name, "vircon_cpu_fmod") == 0) {
-      if (!lower_cpu_binary(context, &arguments[0], &arguments[1], value, "fmod"))
-        return false;
+      return lower_cpu_binary(context, &arguments[0], &arguments[1], value, "fmod");
     } else if (strcmp(callee->import_name, "vircon_cpu_imin") == 0) {
-      if (!lower_cpu_binary(context, &arguments[0], &arguments[1], value, "imin"))
-        return false;
+      return lower_cpu_binary(context, &arguments[0], &arguments[1], value, "imin");
     } else if (strcmp(callee->import_name, "vircon_cpu_imax") == 0) {
-      if (!lower_cpu_binary(context, &arguments[0], &arguments[1], value, "imax"))
-        return false;
+      return lower_cpu_binary(context, &arguments[0], &arguments[1], value, "imax");
     } else if (strcmp(callee->import_name, "vircon_cpu_iabs") == 0) {
-      if (!lower_cpu_unary(context, &arguments[0], value, "iabs"))
-        return false;
+      return lower_cpu_unary(context, &arguments[0], value, "iabs");
     } else if (strcmp(callee->import_name, "vircon_cpu_fmin") == 0) {
-      if (!lower_cpu_binary(context, &arguments[0], &arguments[1], value, "fmin"))
-        return false;
+      return lower_cpu_binary(context, &arguments[0], &arguments[1], value, "fmin");
     } else if (strcmp(callee->import_name, "vircon_cpu_fmax") == 0) {
-      if (!lower_cpu_binary(context, &arguments[0], &arguments[1], value, "fmax"))
-        return false;
+      return lower_cpu_binary(context, &arguments[0], &arguments[1], value, "fmax");
     } else if (strcmp(callee->import_name, "vircon_cpu_fabs") == 0) {
-      if (!lower_cpu_unary(context, &arguments[0], value, "fabs"))
-        return false;
+      return lower_cpu_unary(context, &arguments[0], value, "fabs");
     } else if (strcmp(callee->import_name, "vircon_cpu_floor") == 0) {
-      if (!lower_cpu_unary(context, &arguments[0], value, "flr"))
-        return false;
+      return lower_cpu_unary(context, &arguments[0], value, "flr");
     } else if (strcmp(callee->import_name, "vircon_cpu_ceil") == 0) {
-      if (!lower_cpu_unary(context, &arguments[0], value, "ceil"))
-        return false;
+      return lower_cpu_unary(context, &arguments[0], value, "ceil");
     } else if (strcmp(callee->import_name, "vircon_cpu_round") == 0) {
-      if (!lower_cpu_unary(context, &arguments[0], value, "round"))
-        return false;
+      return lower_cpu_unary(context, &arguments[0], value, "round");
     } else if (strcmp(callee->import_name, "vircon_cpu_atan2") == 0) {
-      if (!lower_cpu_binary(context, &arguments[0], &arguments[1], value, "atan2"))
-        return false;
+      return lower_cpu_binary(context, &arguments[0], &arguments[1], value, "atan2");
     } else if (strcmp(callee->import_name, "vircon_cpu_halt") == 0) {
       if (!emit(context, "  hlt"))
         return false;
