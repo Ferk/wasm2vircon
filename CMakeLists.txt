@@ -129,6 +129,7 @@ add_executable(wasm2vircon
   src/main.c
   src/diagnostics.c
   src/wasm_module.c
+  src/wasm_dwarf.c
   src/legalize.c
   src/validator.c
   src/vircon_ir.c
@@ -198,8 +199,23 @@ if(BUILD_TESTING)
   wasm2vircon_enable_warnings(wasm2vircon-vircon-ir-test)
   add_test(NAME wasm2vircon-vircon-ir COMMAND wasm2vircon-vircon-ir-test)
 
+  add_executable(wasm2vircon-dwarf-fixture tests/dwarf-fixture.c)
+  target_compile_features(wasm2vircon-dwarf-fixture PRIVATE c_std_11)
+  wasm2vircon_enable_warnings(wasm2vircon-dwarf-fixture)
+
   find_program(WASM_AS_EXECUTABLE wasm-as REQUIRED)
   find_program(VIRCON_ASSEMBLE_EXECUTABLE assemble REQUIRED)
+
+  add_test(
+    NAME wasm2vircon-dwarf-input
+    COMMAND ${CMAKE_COMMAND}
+      -DTOOL=$<TARGET_FILE:wasm2vircon>
+      -DWASM_AS=${WASM_AS_EXECUTABLE}
+      -DASSEMBLE=${VIRCON_ASSEMBLE_EXECUTABLE}
+      -DFIXTURE_GENERATOR=$<TARGET_FILE:wasm2vircon-dwarf-fixture>
+      -DTESTS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/dwarf-input-test.cmake
+  )
 
   add_test(
     NAME wasm2vircon-cli-inspection

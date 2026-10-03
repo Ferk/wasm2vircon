@@ -36,7 +36,9 @@ static void print_usage(FILE *stream) {
                   "--report-profile writes a Binaryen-decoded module inventory and "
                   "complete Wasm text; it\n"
                   "does not claim that the module is accepted by the restricted "
-                  "VirconWasm profile.\n");
+                  "VirconWasm profile. It also inventories input DWARF and reports\n"
+                  "best-available function source locations. DWARF custom sections are\n"
+                  "handled before Binaryen, so unstripped frontend modules are accepted.\n");
   fputs("In-process Binaryen normalization is always enabled.\n", stream);
 }
 

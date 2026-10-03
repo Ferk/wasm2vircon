@@ -41,9 +41,19 @@ static void validation_expression_error(Diagnostics *diagnostics, const WasmFunc
   va_start(arguments, format);
   vsnprintf(reason, sizeof(reason), format, arguments);
   va_end(arguments);
-  if (has_descriptive_function_name(name))
-    diagnostics_error(diagnostics, "Wasm %s in function %zu '%s' at expression path %s: %s", expression->opcode,
-                      function->index, name, expression->path, reason);
+  if (has_descriptive_function_name(name)) {
+    if (function->source_file != NULL)
+      diagnostics_error(diagnostics,
+                        "Wasm %s in function %zu '%s' at %s:%u:%u, expression path %s: %s", expression->opcode,
+                        function->index, name, function->source_file, function->source_line, function->source_column,
+                        expression->path, reason);
+    else
+      diagnostics_error(diagnostics, "Wasm %s in function %zu '%s' at expression path %s: %s", expression->opcode,
+                        function->index, name, expression->path, reason);
+  } else if (function->source_file != NULL)
+    diagnostics_error(diagnostics, "Wasm %s in function %zu at %s:%u:%u, expression path %s: %s",
+                      expression->opcode, function->index, function->source_file, function->source_line,
+                      function->source_column, expression->path, reason);
   else
     diagnostics_error(diagnostics, "Wasm %s in function %zu at expression path %s: %s", expression->opcode,
                       function->index, expression->path, reason);
@@ -58,8 +68,15 @@ static void validation_function_error(Diagnostics *diagnostics, const WasmFuncti
   va_start(arguments, format);
   vsnprintf(reason, sizeof(reason), format, arguments);
   va_end(arguments);
-  if (has_descriptive_function_name(name))
-    diagnostics_error(diagnostics, "function %zu '%s': %s", function->index, name, reason);
+  if (has_descriptive_function_name(name)) {
+    if (function->source_file != NULL)
+      diagnostics_error(diagnostics, "function %zu '%s' at %s:%u:%u: %s", function->index, name,
+                        function->source_file, function->source_line, function->source_column, reason);
+    else
+      diagnostics_error(diagnostics, "function %zu '%s': %s", function->index, name, reason);
+  } else if (function->source_file != NULL)
+    diagnostics_error(diagnostics, "function %zu at %s:%u:%u: %s", function->index, function->source_file,
+                      function->source_line, function->source_column, reason);
   else
     diagnostics_error(diagnostics, "function %zu: %s", function->index, reason);
 }

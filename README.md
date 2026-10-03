@@ -59,9 +59,12 @@ build/wasm2vircon --report-profile build/game.wasm > build/game.profile.txt
 ```
 
 The report lists module counts, imports, defined-function signatures and local
-counts, followed by Binaryen's complete Wasm text. It deliberately does not
-claim that the module is VirconWasm-compatible; use `--validate-only` for that
-answer.
+counts, input DWARF sections and best-available function source locations,
+followed by Binaryen's complete Wasm text. It deliberately does not claim that
+the module is VirconWasm-compatible; use `--validate-only` for that answer.
+Unstripped frontend Wasm is accepted even when the installed Binaryen cannot
+decode its DWARF directly. See [WebAssembly DWARF input](docs/dwarf.md) for the
+supported line-table forms and current debugger-mapping limitations.
 
 ## Build wasm2vircon from source
 

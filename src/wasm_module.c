@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "wasm_dwarf.h"
+
 /* Enables every Binaryen proposal while decoding so unsupported constructs can
  * reach the compiler-owned validator. Bulk memory is named explicitly because
  * memory.copy and memory.fill are supported VirconWasm instructions, not
@@ -137,6 +139,8 @@ static char *copy_string(const char *source) {
 typedef struct DecodeContext {
   size_t function_index;
   const char *function_name;
+  const char *source_file;
+  uint32_t source_line, source_column;
   const WasmModule *module;
 } DecodeContext;
 
@@ -161,8 +165,17 @@ static void function_error(Diagnostics *diagnostics, const DecodeContext *contex
   va_start(arguments, format);
   vsnprintf(reason, sizeof(reason), format, arguments);
   va_end(arguments);
-  if (has_descriptive_function_name(context->function_name))
-    diagnostics_error(diagnostics, "function %zu '%s': %s", context->function_index, context->function_name, reason);
+  if (has_descriptive_function_name(context->function_name)) {
+    if (context->source_file != NULL)
+      diagnostics_error(diagnostics, "function %zu '%s' at %s:%u:%u: %s", context->function_index,
+                        context->function_name, context->source_file, context->source_line, context->source_column,
+                        reason);
+    else
+      diagnostics_error(diagnostics, "function %zu '%s': %s", context->function_index, context->function_name,
+                        reason);
+  } else if (context->source_file != NULL)
+    diagnostics_error(diagnostics, "function %zu at %s:%u:%u: %s", context->function_index, context->source_file,
+                      context->source_line, context->source_column, reason);
   else
     diagnostics_error(diagnostics, "function %zu: %s", context->function_index, reason);
 }
@@ -175,12 +188,22 @@ static void expression_error(Diagnostics *diagnostics, const DecodeContext *cont
   va_start(arguments, format);
   vsnprintf(reason, sizeof(reason), format, arguments);
   va_end(arguments);
-  if (has_descriptive_function_name(context->function_name))
-    diagnostics_error(diagnostics, "Wasm %s in function %zu '%s' at expression path %s: %s", opcode,
-                      context->function_index, context->function_name, path, reason);
+  if (has_descriptive_function_name(context->function_name)) {
+    if (context->source_file != NULL)
+      diagnostics_error(diagnostics,
+                        "Wasm %s in function %zu '%s' at %s:%u:%u, expression path %s: %s", opcode,
+                        context->function_index, context->function_name, context->source_file, context->source_line,
+                        context->source_column, path, reason);
+    else
+      diagnostics_error(diagnostics, "Wasm %s in function %zu '%s' at expression path %s: %s", opcode,
+                        context->function_index, context->function_name, path, reason);
+  } else if (context->source_file != NULL)
+    diagnostics_error(diagnostics, "Wasm %s in function %zu at %s:%u:%u, expression path %s: %s", opcode,
+                      context->function_index, context->source_file, context->source_line, context->source_column, path,
+                      reason);
   else
-    diagnostics_error(diagnostics, "Wasm %s in function %zu at expression path %s: %s", opcode, context->function_index,
-                      path, reason);
+    diagnostics_error(diagnostics, "Wasm %s in function %zu at expression path %s: %s", opcode,
+                      context->function_index, path, reason);
 }
 
 /* Recursively releases one compiler-owned expression tree. */
@@ -1233,22 +1256,43 @@ static void print_binaryen_type_tuple(FILE *stream, BinaryenType type) {
   free(items);
 }
 
+/* Captures original function names so DWARF survives function-removing cleanup. */
+static bool bind_dwarf_function_names(BinaryenModuleRef source, WasmDwarfInfo *dwarf, Diagnostics *diagnostics) {
+  BinaryenIndex index;
+  size_t defined_index = 0;
+  for (index = 0; index < BinaryenGetNumFunctions(source); ++index) {
+    BinaryenFunctionRef function = BinaryenGetFunctionByIndex(source, index);
+    const char *import_module = BinaryenFunctionImportGetModule(function);
+    if (import_module != NULL && import_module[0] != '\0')
+      continue;
+    if (!wasm_dwarf_set_function_name(dwarf, defined_index++, BinaryenFunctionGetName(function), diagnostics))
+      return false;
+  }
+  return true;
+}
+
 /* Writes an intentionally non-validating Binaryen module inventory for users.
  */
 bool wasm_module_report_profile(const char *path, FILE *stream, Diagnostics *diagnostics) {
-  char *contents = NULL, *text = NULL;
-  size_t size = 0;
+  char *contents = NULL, *filtered = NULL, *text = NULL;
+  size_t size = 0, filtered_size = 0;
   BinaryenModuleRef source = NULL;
   BinaryenIndex index, import_count = 0;
+  size_t defined_index = 0;
+  WasmDwarfInfo dwarf = {0};
   bool success = false;
 
   if (!read_file(path, &contents, &size, diagnostics))
     goto done;
-  source = BinaryenModuleReadWithFeatures(contents, size, binaryen_decode_features());
+  if (!wasm_dwarf_prepare_input(contents, size, &filtered, &filtered_size, &dwarf, diagnostics))
+    goto done;
+  source = BinaryenModuleReadWithFeatures(filtered, filtered_size, binaryen_decode_features());
   if (source == NULL || !BinaryenModuleValidate(source)) {
     diagnostics_error(diagnostics, "Binaryen could not load '%s' as a valid Wasm module", path);
     goto done;
   }
+  if (!bind_dwarf_function_names(source, &dwarf, diagnostics))
+    goto done;
   text = BinaryenModuleAllocateAndWriteText(source);
   if (text == NULL) {
     diagnostics_error(diagnostics,
@@ -1275,21 +1319,42 @@ bool wasm_module_report_profile(const char *path, FILE *stream, Diagnostics *dia
   fprintf(stream, "element segments: %u\n", (unsigned)BinaryenGetNumElementSegments(source));
   fprintf(stream, "data segments: %u\n", (unsigned)BinaryenGetNumDataSegments(source));
   fprintf(stream, "memory: %s\n", BinaryenHasMemory(source) ? "present" : "absent");
+  if (!dwarf.present)
+    fputs("DWARF: absent\n", stream);
+  else {
+    fprintf(stream, "DWARF: %zu custom section%s filtered before Binaryen\n", dwarf.section_count,
+            dwarf.section_count == 1 ? "" : "s");
+    fprintf(stream, "DWARF line table: %s", dwarf.line_table_supported ? "supported" : "unavailable");
+    if (dwarf.line_version != 0)
+      fprintf(stream, " (version %u)", dwarf.line_version);
+    if (dwarf.line_error != NULL)
+      fprintf(stream, ": %s", dwarf.line_error);
+    fputc('\n', stream);
+    fputs("DWARF sections:", stream);
+    for (size_t section = 0; section < dwarf.section_count; ++section)
+      fprintf(stream, " %s", dwarf.section_names[section]);
+    fputc('\n', stream);
+  }
   fputs("\nFunctions:\n", stream);
   for (index = 0; index < BinaryenGetNumFunctions(source); ++index) {
     BinaryenFunctionRef function = BinaryenGetFunctionByIndex(source, index);
     const char *name = BinaryenFunctionGetName(function);
     const char *import_module = BinaryenFunctionImportGetModule(function);
     const char *import_name = BinaryenFunctionImportGetBase(function);
+    const WasmDwarfFunctionLocation *location = NULL;
     fprintf(stream, "  [%u] %s", (unsigned)index, name != NULL && name[0] != '\0' ? name : "<unnamed>");
     if (import_module != NULL && import_module[0] != '\0')
       fprintf(stream, " import %s.%s", import_module, import_name != NULL ? import_name : "<unnamed>");
-    else
+    else {
+      location = wasm_dwarf_find_function(&dwarf, name, defined_index++);
       fprintf(stream, " defined locals=%u", (unsigned)BinaryenFunctionGetNumVars(function));
+    }
     fputs(" params=", stream);
     print_binaryen_type_tuple(stream, BinaryenFunctionGetParams(function));
     fputs(" results=", stream);
     print_binaryen_type_tuple(stream, BinaryenFunctionGetResults(function));
+    if (location != NULL && location->file != NULL)
+      fprintf(stream, " source=%s:%u:%u", location->file, location->line, location->column);
     fputc('\n', stream);
   }
   fputs("\nBinaryen Wasm text (complete module; inspect this for every "
@@ -1303,7 +1368,9 @@ bool wasm_module_report_profile(const char *path, FILE *stream, Diagnostics *dia
     diagnostics_error(diagnostics, "cannot write Wasm profile report");
 done:
   free(text);
+  free(filtered);
   free(contents);
+  wasm_dwarf_dispose(&dwarf);
   if (source != NULL)
     BinaryenModuleDispose(source);
   return success;
@@ -1602,20 +1669,29 @@ static BinaryenModuleRef normalize_binaryen_module(BinaryenModuleRef source, con
 /* Loads, validates, and converts one Wasm module through the Binaryen C API. */
 bool wasm_module_load(const char *path, const char *entry_name, bool optimize_input, WasmModule *module,
                       Diagnostics *diagnostics) {
-  char *contents = NULL;
-  size_t size = 0;
+  char *contents = NULL, *filtered = NULL;
+  size_t size = 0, filtered_size = 0;
   BinaryenModuleRef source = NULL;
   BinaryenIndex index;
   WasmBinaryMetadata metadata;
+  WasmDwarfInfo dwarf = {0};
+  size_t defined_index = 0;
   memset(module, 0, sizeof(*module));
   if (!read_file(path, &contents, &size, diagnostics))
     return false;
-  source = BinaryenModuleReadWithFeatures(contents, size, binaryen_decode_features());
-  if (source != NULL && !read_binary_module_metadata(contents, size, &metadata, diagnostics)) {
+  if (!wasm_dwarf_prepare_input(contents, size, &filtered, &filtered_size, &dwarf, diagnostics)) {
     free(contents);
+    return false;
+  }
+  source = BinaryenModuleReadWithFeatures(filtered, filtered_size, binaryen_decode_features());
+  if (source != NULL && !read_binary_module_metadata(filtered, filtered_size, &metadata, diagnostics)) {
+    free(filtered);
+    free(contents);
+    wasm_dwarf_dispose(&dwarf);
     BinaryenModuleDispose(source);
     return false;
   }
+  free(filtered);
   free(contents);
   if (source == NULL || !BinaryenModuleValidate(source)) {
     diagnostics_error(diagnostics,
@@ -1625,15 +1701,23 @@ bool wasm_module_load(const char *path, const char *entry_name, bool optimize_in
                       path);
     if (source)
       BinaryenModuleDispose(source);
+    wasm_dwarf_dispose(&dwarf);
     return false;
   }
+  if (!bind_dwarf_function_names(source, &dwarf, diagnostics))
+    goto fail;
+  if (dwarf.line_table_present && !dwarf.line_table_supported)
+    diagnostics_note(diagnostics, "input DWARF was safely ignored for source mapping: %s; translation continues",
+                     dwarf.line_error != NULL ? dwarf.line_error : "unsupported line-table encoding");
   if (optimize_input && needs_binaryen_normalization(source, entry_name)) {
     WasmBinaryMetadata normalized_metadata;
     BinaryenModuleRef normalized =
         normalize_binaryen_module(source, entry_name, &metadata, &normalized_metadata, diagnostics);
     BinaryenModuleDispose(source);
-    if (normalized == NULL)
+    if (normalized == NULL) {
+      wasm_dwarf_dispose(&dwarf);
       return false;
+    }
     source = normalized;
     metadata = normalized_metadata;
   }
@@ -1668,6 +1752,7 @@ bool wasm_module_load(const char *path, const char *entry_name, bool optimize_in
     BinaryenFunctionRef function = BinaryenGetFunctionByIndex(source, index);
     WasmFunction *out = &module->functions[index];
     const char *import_module;
+    const WasmDwarfFunctionLocation *source_location = NULL;
     DecodeContext context;
     out->index = index;
     out->name = copy_string(BinaryenFunctionGetName(function));
@@ -1675,8 +1760,23 @@ bool wasm_module_load(const char *path, const char *entry_name, bool optimize_in
       goto fail;
     out->diagnostic_name =
         copy_string(has_descriptive_function_name(out->name) ? out->name : exported_function_name(module, out->name));
+    import_module = BinaryenFunctionImportGetModule(function);
+    out->is_import = import_module != NULL && import_module[0] != '\0';
+    if (!out->is_import) {
+      source_location = wasm_dwarf_find_function(&dwarf, out->name, defined_index++);
+      if (source_location != NULL && source_location->file != NULL) {
+        out->source_file = copy_string(source_location->file);
+        if (out->source_file == NULL)
+          goto fail;
+        out->source_line = source_location->line;
+        out->source_column = source_location->column;
+      }
+    }
     context.function_index = out->index;
     context.function_name = out->diagnostic_name;
+    context.source_file = out->source_file;
+    context.source_line = out->source_line;
+    context.source_column = out->source_column;
     context.module = module;
     if (!convert_tuple_type(BinaryenFunctionGetParams(function), &out->params, &out->param_count, diagnostics,
                             &context))
@@ -1687,8 +1787,6 @@ bool wasm_module_load(const char *path, const char *entry_name, bool optimize_in
                      binaryen_type_name(BinaryenFunctionGetResults(function)));
       goto fail;
     }
-    import_module = BinaryenFunctionImportGetModule(function);
-    out->is_import = import_module != NULL && import_module[0] != '\0';
     if (out->is_import) {
       out->import_module = copy_string(import_module);
       out->import_name = copy_string(BinaryenFunctionImportGetBase(function));
@@ -1715,10 +1813,12 @@ bool wasm_module_load(const char *path, const char *entry_name, bool optimize_in
   if (!read_data_segments(source, module, metadata.active_data_offsets_are_i32_const, diagnostics))
     goto fail;
   BinaryenModuleDispose(source);
+  wasm_dwarf_dispose(&dwarf);
   return true;
 fail:
   if (source)
     BinaryenModuleDispose(source);
+  wasm_dwarf_dispose(&dwarf);
   wasm_module_dispose(module);
   return false;
 }
@@ -1731,6 +1831,7 @@ void wasm_module_dispose(WasmModule *module) {
       WasmFunction *f = &module->functions[index];
       free(f->name);
       free(f->diagnostic_name);
+      free(f->source_file);
       free(f->import_module);
       free(f->import_name);
       free(f->params);

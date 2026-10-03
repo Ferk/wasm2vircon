@@ -13,9 +13,19 @@
 /* Reports a legalization rejection with the same stable identity as decoding. */
 static void legalization_error(Diagnostics *diagnostics, const WasmFunction *function, const WasmExpr *expression,
                                const char *reason) {
-  if (function->diagnostic_name != NULL && function->diagnostic_name[0] != '\0')
-    diagnostics_error(diagnostics, "Wasm %s in function %zu '%s' at expression path %s: %s", expression->opcode,
-                      function->index, function->diagnostic_name, expression->path, reason);
+  if (function->diagnostic_name != NULL && function->diagnostic_name[0] != '\0') {
+    if (function->source_file != NULL)
+      diagnostics_error(diagnostics,
+                        "Wasm %s in function %zu '%s' at %s:%u:%u, expression path %s: %s", expression->opcode,
+                        function->index, function->diagnostic_name, function->source_file, function->source_line,
+                        function->source_column, expression->path, reason);
+    else
+      diagnostics_error(diagnostics, "Wasm %s in function %zu '%s' at expression path %s: %s", expression->opcode,
+                        function->index, function->diagnostic_name, expression->path, reason);
+  } else if (function->source_file != NULL)
+    diagnostics_error(diagnostics, "Wasm %s in function %zu at %s:%u:%u, expression path %s: %s",
+                      expression->opcode, function->index, function->source_file, function->source_line,
+                      function->source_column, expression->path, reason);
   else
     diagnostics_error(diagnostics, "Wasm %s in function %zu at expression path %s: %s", expression->opcode,
                       function->index, expression->path, reason);

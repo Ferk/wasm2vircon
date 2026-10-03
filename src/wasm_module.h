@@ -164,6 +164,9 @@ typedef struct WasmFunction {
   size_t index;
   char *name;
   char *diagnostic_name;
+  /* Best function-level source location recovered from input DWARF. */
+  char *source_file;
+  uint32_t source_line, source_column;
   bool is_import;
   char *import_module, *import_name;
   /* Owned parameter types. Functions may use any practical arity. */

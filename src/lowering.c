@@ -2364,16 +2364,38 @@ done:
   if (!success && diagnostics->errors == errors_before) {
     size_t index = function_index(validated->module, function);
     const WasmExpr *expression = context.current_expression;
-    if (expression != NULL && function->diagnostic_name != NULL && function->diagnostic_name[0] != '\0')
-      diagnostics_error(diagnostics,
-                        "internal compiler error lowering Wasm %s in function %zu '%s' at expression path %s",
-                        expression->opcode, index, function->diagnostic_name, expression->path);
-    else if (expression != NULL)
-      diagnostics_error(diagnostics, "internal compiler error lowering Wasm %s in function %zu at expression path %s",
-                        expression->opcode, index, expression->path);
-    else if (function->diagnostic_name != NULL && function->diagnostic_name[0] != '\0')
-      diagnostics_error(diagnostics, "internal compiler error lowering function %zu '%s'", index,
-                        function->diagnostic_name);
+    if (expression != NULL && function->diagnostic_name != NULL && function->diagnostic_name[0] != '\0') {
+      if (function->source_file != NULL)
+        diagnostics_error(
+            diagnostics,
+            "internal compiler error lowering Wasm %s in function %zu '%s' at %s:%u:%u, expression path %s",
+            expression->opcode, index, function->diagnostic_name, function->source_file, function->source_line,
+            function->source_column, expression->path);
+      else
+        diagnostics_error(diagnostics,
+                          "internal compiler error lowering Wasm %s in function %zu '%s' at expression path %s",
+                          expression->opcode, index, function->diagnostic_name, expression->path);
+    }
+    else if (expression != NULL) {
+      if (function->source_file != NULL)
+        diagnostics_error(diagnostics,
+                          "internal compiler error lowering Wasm %s in function %zu at %s:%u:%u, expression path %s",
+                          expression->opcode, index, function->source_file, function->source_line,
+                          function->source_column, expression->path);
+      else
+        diagnostics_error(diagnostics,
+                          "internal compiler error lowering Wasm %s in function %zu at expression path %s",
+                          expression->opcode, index, expression->path);
+    }
+    else if (function->diagnostic_name != NULL && function->diagnostic_name[0] != '\0') {
+      if (function->source_file != NULL)
+        diagnostics_error(diagnostics, "internal compiler error lowering function %zu '%s' at %s:%u:%u", index,
+                          function->diagnostic_name, function->source_file, function->source_line,
+                          function->source_column);
+      else
+        diagnostics_error(diagnostics, "internal compiler error lowering function %zu '%s'", index,
+                          function->diagnostic_name);
+    }
     else
       diagnostics_error(diagnostics, "internal compiler error lowering function %zu", index);
   }

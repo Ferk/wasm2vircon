@@ -554,7 +554,11 @@ WebAssembly machine.
 
 A rejection normally means the frontend emitted a construct outside this
 profile. The diagnostic includes the Wasm opcode, function index, and a useful
-function name when one is available, plus an expression path.
+function name when one is available, plus an expression path. When an
+unstripped input contains supported DWARF v2-v4 line information, it also
+includes the best function-level source file, line, and column. This location
+does not yet claim instruction-level precision; see [WebAssembly DWARF
+input](dwarf.md).
 
 Treat that as an investigation point:
 
