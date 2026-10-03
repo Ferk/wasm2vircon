@@ -1,0 +1,5 @@
+source=unsigned-division.c
+entry=__original_main
+expectations=expected.asm
+sim_commands=v32sim.commands
+sim_expectations=expected.v32sim

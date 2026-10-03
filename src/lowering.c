@@ -1900,7 +1900,10 @@ static bool emit_unsigned_division_helper(Context *context) {
          emit(context, "  jt R3, __wasm_trap") && emit(context, "  mov R3, 0") && emit(context, "  mov R4, 0") &&
          emit(context, "  mov R5, 32") && emit_label(context, "__wasm_i32_div_u_loop") &&
          emit(context, "  mov R6, R1") && emit(context, "  mov R7, -31") && emit(context, "  shl R6, R7") &&
-         emit(context, "  shl R1, 1") && emit(context, "  shl R4, 1") && emit(context, "  or R4, R6") &&
+         /* Vircon32 right shifts are arithmetic. Mask the extracted sign bit
+          * so the restoring divider appends 0 or 1, never 0xFFFFFFFF. */
+         emit(context, "  and R6, 1") && emit(context, "  shl R1, 1") && emit(context, "  shl R4, 1") &&
+         emit(context, "  or R4, R6") &&
          emit(context, "  mov R6, R4") && emit(context, "  xor R6, 0x80000000") && emit(context, "  mov R7, R2") &&
          emit(context, "  xor R7, 0x80000000") && emit(context, "  ige R6, R7") &&
          emit(context, "  jf R6, __wasm_i32_div_u_skip") && emit(context, "  isub R4, R2") &&

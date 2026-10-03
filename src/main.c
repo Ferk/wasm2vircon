@@ -24,9 +24,7 @@ static void print_usage(FILE *stream) {
                   "assembly.\n"
                   "The default entry export is main; --entry selects a different "
                   "frontend\n"
-                  "entry export. Entries may return void or i32. The canonical mutable i32\n"
-                  "__stack_pointer linker ABI global is accepted automatically; other Wasm\n"
-                  "globals remain unsupported.\n"
+                  "entry export. Entries may return void or i32.\n"
                   "\n"
                   "--validate-only performs decoding and VirconWasm validation without "
                   "writing assembly.\n"
@@ -39,7 +37,6 @@ static void print_usage(FILE *stream) {
                   "VirconWasm profile. It also inventories input DWARF and reports\n"
                   "best-available function source locations. DWARF custom sections are\n"
                   "handled before Binaryen, so unstripped frontend modules are accepted.\n");
-  fputs("In-process Binaryen normalization is always enabled.\n", stream);
 }
 
 /* Parses one module invocation and releases every compiler stage on exit. */
