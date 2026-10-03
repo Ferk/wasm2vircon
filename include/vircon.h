@@ -309,12 +309,13 @@ static inline void draw_region_rotozoomed_at(int x, int y) {
  * once; this macro keeps the component writes visible at the call site. */
 #define define_region_topleft(min_x, min_y, max_x, max_y)                                                              \
   do {                                                                                                                 \
-    int vircon__region_min_x = (min_x);                                                                                \
-    int vircon__region_min_y = (min_y);                                                                                \
-    int vircon__region_max_x = (max_x);                                                                                \
-    int vircon__region_max_y = (max_y);                                                                                \
-    define_region(vircon__region_min_x, vircon__region_min_y, vircon__region_max_x, vircon__region_max_y,              \
-                  vircon__region_min_x, vircon__region_min_y);                                                         \
+    int vircon__topleft_min_x = (min_x);                                                                               \
+    int vircon__topleft_min_y = (min_y);                                                                               \
+    int vircon__topleft_max_x = (max_x);                                                                               \
+    int vircon__topleft_max_y = (max_y);                                                                               \
+    set_region_minimum(vircon__topleft_min_x, vircon__topleft_min_y);                                                  \
+    set_region_maximum(vircon__topleft_max_x, vircon__topleft_max_y);                                                  \
+    set_region_hotspot(vircon__topleft_min_x, vircon__topleft_min_y);                                                  \
   } while (0)
 
 /* Define the selected region with its integer-centre hotspot. */
