@@ -60,12 +60,6 @@ typedef struct CheckedAddress {
   uint32_t base_local, offset, width;
   bool mergeable;
 } CheckedAddress;
-/* One group of guaranteed loads that may share an early bounds check. */
-typedef struct LoadRangeHint {
-  uint32_t base_local, offset, width;
-  size_t access_count;
-  bool checked;
-} LoadRangeHint;
 /* Alignment facts accumulated at one structured branch target. */
 typedef struct AlignmentTarget {
   const char *name;
@@ -101,8 +95,6 @@ typedef struct Context {
   uint32_t *local_address_bases, *local_address_offsets;
   CheckedAddress checked_addresses[16];
   size_t checked_address_count;
-  LoadRangeHint load_range_hints[8];
-  size_t load_range_hint_count;
   /* R13 may retain one proven-aligned Vircon word address inside a straight
    * line region. Calls and control-flow joins invalidate this cache. */
   bool target_word_address_cached;
@@ -901,148 +893,6 @@ static bool lower_br_table(Context *context, const WasmExpr *expression, Value *
          emit(context, "  mov R4, [R3]") && emit(context, "  jmp R4");
 }
 
-/* Recognizes the small affine pointer forms emitted for ordinary structure
- * fields. Offsets retain Wasm's wrapping representation; range collection
- * separately rejects any form that crosses the i32 address boundary. */
-static bool affine_pointer_expression(const WasmExpr *expression, uint32_t *base_local, uint32_t *offset) {
-  const WasmExpr *affine;
-  const WasmExpr *constant;
-  uint32_t affine_offset;
-
-  if (expression->kind == WASM_EXPR_LOCAL_GET) {
-    *base_local = expression->index;
-    *offset = 0;
-    return true;
-  }
-  if (expression->kind == WASM_EXPR_LOCAL_SET && expression->is_tee && expression->child_count == 1)
-    return affine_pointer_expression(expression->children[0], base_local, offset);
-  if (expression->kind != WASM_EXPR_BINARY || expression->child_count != 2 ||
-      (expression->binary_op != WASM_BINARY_ADD && expression->binary_op != WASM_BINARY_SUB))
-    return false;
-
-  affine = expression->children[0];
-  constant = expression->children[1];
-  if (constant->kind != WASM_EXPR_I32_CONST && expression->binary_op == WASM_BINARY_ADD) {
-    affine = expression->children[1];
-    constant = expression->children[0];
-  }
-  if (constant->kind != WASM_EXPR_I32_CONST || !affine_pointer_expression(affine, base_local, &affine_offset))
-    return false;
-  *offset = expression->binary_op == WASM_BINARY_ADD ? affine_offset + (uint32_t)constant->i32_value
-                                                     : affine_offset - (uint32_t)constant->i32_value;
-  return true;
-}
-
-/* Adds one guaranteed load to the per-expression range for its affine base. */
-static bool record_load_range_hint(Context *context, const WasmExpr *expression) {
-  LoadRangeHint *hint = NULL;
-  uint32_t base_local, offset;
-  uint64_t end;
-  size_t index;
-
-  if (!affine_pointer_expression(expression->children[0], &base_local, &offset))
-    return true;
-  end = (uint64_t)offset + expression->offset + expression->bytes;
-  if ((uint64_t)offset + expression->offset > UINT32_MAX || end > (uint64_t)UINT32_MAX + 1u)
-    return true;
-  offset += expression->offset;
-  /* Reconstructing a check from the canonical base must not rely on an i32
-   * wrap that occurs only after adding a large affine displacement. */
-  if (offset > VIRCON_LINEAR_MEMORY_BYTES || end > VIRCON_LINEAR_MEMORY_BYTES)
-    return true;
-  for (index = 0; index < context->load_range_hint_count; ++index)
-    if (context->load_range_hints[index].base_local == base_local) {
-      hint = &context->load_range_hints[index];
-      break;
-    }
-  if (hint == NULL) {
-    if (context->load_range_hint_count == sizeof(context->load_range_hints) / sizeof(context->load_range_hints[0]))
-      return true;
-    hint = &context->load_range_hints[context->load_range_hint_count++];
-    *hint = (LoadRangeHint){.base_local = base_local, .offset = offset,
-                            .width = expression->bytes, .access_count = 1};
-    return true;
-  }
-  {
-    uint32_t union_start = hint->offset < offset ? hint->offset : offset;
-    uint64_t hint_end = (uint64_t)hint->offset + hint->width;
-    uint64_t union_end = hint_end > end ? hint_end : end;
-    if (union_end - union_start > VIRCON_LINEAR_MEMORY_BYTES)
-      return true;
-    hint->offset = union_start;
-    hint->width = (uint32_t)(union_end - union_start);
-    ++hint->access_count;
-  }
-  return true;
-}
-
-/* Collects loads that are all evaluated before the root expression can make
- * externally observable changes. Nested calls, stores, and control flow are
- * barriers; the root call/store itself occurs only after its children. */
-static bool collect_guaranteed_loads(Context *context, const WasmExpr *expression, bool is_root) {
-  size_t index;
-
-  switch (expression->kind) {
-  case WASM_EXPR_LOAD:
-    if (expression->bytes > 4 || expression->child_count != 1 ||
-        !collect_guaranteed_loads(context, expression->children[0], false))
-      return false;
-    return record_load_range_hint(context, expression);
-  case WASM_EXPR_STORE:
-  case WASM_EXPR_CALL:
-    if (!is_root)
-      return false;
-    break;
-  case WASM_EXPR_I32_CONST:
-  case WASM_EXPR_I64_CONST:
-  case WASM_EXPR_F32_CONST:
-  case WASM_EXPR_LOCAL_GET:
-  case WASM_EXPR_NOP:
-    return true;
-  case WASM_EXPR_LOCAL_SET:
-  case WASM_EXPR_UNARY:
-  case WASM_EXPR_BINARY:
-  case WASM_EXPR_SELECT:
-  case WASM_EXPR_DROP:
-    break;
-  default:
-    return false;
-  }
-  for (index = 0; index < expression->child_count; ++index)
-    if (!collect_guaranteed_loads(context, expression->children[index], false))
-      return false;
-  return true;
-}
-
-/* Reports whether an expression writes one local. Such a write could change
- * the affine base between two otherwise related loads. */
-static bool expression_writes_local(const WasmExpr *expression, uint32_t local) {
-  size_t index;
-  if (expression->kind == WASM_EXPR_LOCAL_SET && expression->index == local)
-    return true;
-  for (index = 0; index < expression->child_count; ++index)
-    if (expression_writes_local(expression->children[index], local))
-      return true;
-  return false;
-}
-
-/* Prepares conservative full-span checks for one straight-line expression. */
-static void prepare_load_range_hints(Context *context, const WasmExpr *expression) {
-  size_t read_index, write_index = 0;
-  context->load_range_hint_count = 0;
-  if (!collect_guaranteed_loads(context, expression, true)) {
-    context->load_range_hint_count = 0;
-    return;
-  }
-  for (read_index = 0; read_index < context->load_range_hint_count; ++read_index) {
-    LoadRangeHint hint = context->load_range_hints[read_index];
-    if (hint.access_count < 2 || expression_writes_local(expression, hint.base_local))
-      continue;
-    context->load_range_hints[write_index++] = hint;
-  }
-  context->load_range_hint_count = write_index;
-}
-
 /* Checks a Wasm byte address against the current dynamic length and leaves
  * its effective byte address in R2. Valid target sizes are below 2^31 bytes,
  * so a negative signed value identifies every out-of-range unsigned address. */
@@ -1124,29 +974,6 @@ static void record_checked_address(Context *context, Value pointer, uint32_t off
   if (context->checked_address_count == sizeof(context->checked_addresses) / sizeof(context->checked_addresses[0]))
     context->checked_address_count = 0;
   context->checked_addresses[context->checked_address_count++] = candidate;
-}
-
-/* Checks a byte address already materialized in R2. This form is used when
- * the source expression has already performed its own wrapping i32 pointer
- * arithmetic, so no Wasm memarg offset remains to overflow. */
-static bool check_materialized_address(Context *context, uint32_t width) {
-  bool success;
-  if (width > VIRCON_LINEAR_MEMORY_BYTES)
-    return emit(context, "  jmp __wasm_trap");
-  if (!context->memory_can_grow) {
-    if (width > context->memory_bytes)
-      return emit(context, "  jmp __wasm_trap");
-    success = emit(context, "  mov R1, R2") && emit(context, "  xor R1, 0x80000000") &&
-              emit(context, "  igt R1, 0x%08X", (context->memory_bytes - width) ^ 0x80000000u) &&
-              emit(context, "  jt R1, __wasm_trap");
-    return success;
-  }
-  return emit(context, "  mov R1, R2") && emit(context, "  ilt R1, 0") &&
-         emit(context, "  jt R1, __wasm_trap") &&
-         emit(context, "  mov R1, [%u]", VIRCON_WASM_MEMORY_PAGES_WORD) && emit(context, "  imul R1, 65536") &&
-         emit(context, "  mov R3, 0x%08X", width) && emit(context, "  igt R3, R1") &&
-         emit(context, "  jt R3, __wasm_trap") && emit(context, "  isub R1, R3") &&
-         emit(context, "  mov R3, R2") && emit(context, "  igt R3, R1") && emit(context, "  jt R3, __wasm_trap");
 }
 
 /* Emits or reuses a Wasm bounds check and leaves the effective byte address
@@ -1254,25 +1081,6 @@ static bool has_cached_word_operand(Context *context, Value pointer, uint32_t of
   return find_cached_word_operand(context, pointer, offset, operand, sizeof(operand));
 }
 
-/* Finds an unconsumed full-span check prepared for the current affine load. */
-static LoadRangeHint *find_load_range_hint(Context *context, Value pointer, uint32_t offset, uint32_t width) {
-  uint64_t start, end;
-  size_t index;
-  if (!pointer.has_address_identity)
-    return NULL;
-  start = (uint64_t)pointer.address_offset + offset;
-  end = start + width;
-  if (start > UINT32_MAX || end > (uint64_t)UINT32_MAX + 1u)
-    return NULL;
-  for (index = 0; index < context->load_range_hint_count; ++index) {
-    LoadRangeHint *hint = &context->load_range_hints[index];
-    if (!hint->checked && hint->base_local == pointer.address_base_local && start >= hint->offset &&
-        end <= (uint64_t)hint->offset + hint->width)
-      return hint;
-  }
-  return NULL;
-}
-
 /* Records the target word address currently held in R13. */
 static void record_cached_word_address(Context *context, Value pointer, uint32_t offset) {
   if (!pointer.has_address_identity)
@@ -1356,9 +1164,7 @@ static bool store_i32_at_r2(Context *context, int value_register, bool proven_al
 /* Lowers a validated byte or i32 Wasm load into packed-memory operations. */
 static bool lower_load(Context *context, const WasmExpr *expression, Value *value) {
   Value pointer = {0}, result = {0};
-  LoadRangeHint *range_hint;
   bool proven_aligned, cached_word_address;
-  bool address_ready = false;
   int slot;
   if (!lower_expression(context, expression->children[0], &pointer) || !pointer.present)
     return false;
@@ -1366,32 +1172,7 @@ static bool lower_load(Context *context, const WasmExpr *expression, Value *valu
                    word_access_is_proven_aligned(context, expression->children[0], expression->offset);
   cached_word_address = proven_aligned && has_cached_word_operand(context, pointer, expression->offset);
   result = pointer;
-  if (!reserve_value_slot(context, &result))
-    return false;
-  range_hint = find_load_range_hint(context, pointer, expression->offset, expression->bytes);
-  if (range_hint != NULL) {
-    uint64_t access_start = (uint64_t)pointer.address_offset + expression->offset;
-    if (access_start == range_hint->offset) {
-      if (!effective_address(context, pointer, expression->offset, range_hint->width, !cached_word_address))
-        return false;
-      address_ready = true;
-    } else {
-      Value base = {.slot = local_slot(context->function, range_hint->base_local),
-                    .type = WASM_VALUE_I32, .present = true, .is_borrowed = true,
-                    .has_address_identity = true, .address_base_local = range_hint->base_local};
-      uint32_t adjustment = range_hint->offset - (uint32_t)access_start;
-      if (!load_value(context, 2, pointer) ||
-          (adjustment != 0 && !emit(context, "  iadd R2, 0x%08X", adjustment)) ||
-          !check_materialized_address(context, range_hint->width))
-        return false;
-      record_checked_address(context, base, range_hint->offset, range_hint->width);
-      if (!cached_word_address && adjustment != 0 && !emit(context, "  iadd R2, 0x%08X", 0u - adjustment))
-        return false;
-      address_ready = true;
-    }
-    range_hint->checked = true;
-  }
-  if (!address_ready &&
+  if (!reserve_value_slot(context, &result) ||
       !effective_address(context, pointer, expression->offset, expression->bytes, !cached_word_address))
     return false;
   result.has_address_identity = false;
@@ -3044,10 +2825,6 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
       bool address_was_cached = context->target_word_address_cached;
       uint32_t cached_base_local = context->target_word_address_base_local;
       uint32_t cached_offset = context->target_word_address_offset;
-      CheckedAddress saved_checked_addresses[16];
-      size_t saved_checked_address_count = context->checked_address_count;
-      memcpy(saved_checked_addresses, context->checked_addresses,
-             saved_checked_address_count * sizeof(saved_checked_addresses[0]));
       /* Values below +2^31 can be clamped at -2^31 and converted directly.
        * The false comparison path combines the upper saturation and NaN
        * cases; NaN is the only value unequal to itself. */
@@ -3062,11 +2839,7 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
           !emit(context, "  mov R1, 0") || !emit_label(context, done))
         return false;
       /* These private branches alter only R1/R2. Every route to the merge
-       * therefore preserves checked memory facts and the target word address
-       * held in R13; ordinary Wasm control-flow labels still clear both. */
-      memcpy(context->checked_addresses, saved_checked_addresses,
-             saved_checked_address_count * sizeof(saved_checked_addresses[0]));
-      context->checked_address_count = saved_checked_address_count;
+       * therefore preserves the target word address held in R13. */
       context->target_word_address_cached = address_was_cached;
       context->target_word_address_base_local = cached_base_local;
       context->target_word_address_offset = cached_offset;
@@ -3172,10 +2945,18 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
       if (value->present)
         release(context, *value);
       value->present = false;
-      prepare_load_range_hints(context, expression->children[index]);
       if (!lower_expression(context, expression->children[index], value))
         return false;
-      context->load_range_hint_count = 0;
+    }
+    /* Store the ordinary fallthrough value before the branch target. A
+     * value-carrying br has already stored its own result and must jump past
+     * this copy; placing the copy after the label would overwrite immediate
+     * branch values with the syntactic fallthrough expression. */
+    if (result.present) {
+      if (value->present && (!load_value(context, 1, *value) || !store_slot(context, result.slot, 1)))
+        return false;
+      release(context, *value);
+      *value = result;
     }
     if (expression->name != NULL) {
       Target target = pop_target(context);
@@ -3184,12 +2965,6 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
         return false;
       }
       free(target.label);
-    }
-    if (result.present) {
-      if (value->present && (!load_value(context, 1, *value) || !store_slot(context, result.slot, 1)))
-        return false;
-      release(context, *value);
-      *value = result;
     }
     return true;
     }

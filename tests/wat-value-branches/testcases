@@ -1,3 +1,4 @@
 source=value-branches.wat
 entry=__original_main
 expectations=expected.asm
+ordered_expectations=expected-order.asm

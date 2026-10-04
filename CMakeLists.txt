@@ -179,18 +179,20 @@ endif()
 option(BUILD_TESTING "Build and register wasm2vircon tests" OFF)
 include(CTest)
 if(BUILD_TESTING)
-  add_executable(wasm2vircon-memory-model-test tests/memory-model-test.c)
+  # Small native unit tests live in self-contained directories just like the
+  # source-to-ROM fixtures below.
+  add_executable(wasm2vircon-memory-model-test tests/unit-memory-model/test.c)
   target_compile_features(wasm2vircon-memory-model-test PRIVATE c_std_11)
   wasm2vircon_enable_warnings(wasm2vircon-memory-model-test)
   add_test(NAME wasm2vircon-memory-model COMMAND wasm2vircon-memory-model-test)
 
-  add_executable(wasm2vircon-u32-to-f32-test tests/u32-to-f32-test.c)
+  add_executable(wasm2vircon-u32-to-f32-test tests/unit-u32-to-f32/test.c)
   target_compile_features(wasm2vircon-u32-to-f32-test PRIVATE c_std_11)
   wasm2vircon_enable_warnings(wasm2vircon-u32-to-f32-test)
   add_test(NAME wasm2vircon-u32-to-f32 COMMAND wasm2vircon-u32-to-f32-test)
 
   add_executable(wasm2vircon-vircon-ir-test
-    tests/vircon-ir-test.c
+    tests/unit-vircon-ir/test.c
     src/vircon_ir.c
     src/diagnostics.c
   )
@@ -199,7 +201,7 @@ if(BUILD_TESTING)
   wasm2vircon_enable_warnings(wasm2vircon-vircon-ir-test)
   add_test(NAME wasm2vircon-vircon-ir COMMAND wasm2vircon-vircon-ir-test)
 
-  add_executable(wasm2vircon-dwarf-fixture tests/dwarf-fixture.c)
+  add_executable(wasm2vircon-dwarf-fixture tests/dwarf/fixture.c)
   target_compile_features(wasm2vircon-dwarf-fixture PRIVATE c_std_11)
   wasm2vircon_enable_warnings(wasm2vircon-dwarf-fixture)
 
@@ -226,15 +228,38 @@ if(BUILD_TESTING)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli-inspection-test.cmake
   )
 
-  add_test(
-    NAME wasm2vircon-wasm-profile
-    COMMAND ${CMAKE_COMMAND}
-      -DTOOL=$<TARGET_FILE:wasm2vircon>
-      -DWASM_AS=${WASM_AS_EXECUTABLE}
-      -DASSEMBLE=${VIRCON_ASSEMBLE_EXECUTABLE}
-      -DTESTS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests
-      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run-wasm-tests.cmake
-  )
+  # Read one metadata field while configuring individual CTest cases. The
+  # execution runners remain responsible for full metadata validation.
+  function(wasm2vircon_test_metadata metadata_file key output_variable)
+    file(STRINGS "${metadata_file}" metadata_value REGEX "^${key}=" LIMIT_COUNT 1)
+    if(metadata_value)
+      string(REGEX REPLACE "^[^=]*=" "" metadata_value "${metadata_value}")
+    endif()
+    set(${output_variable} "${metadata_value}" PARENT_SCOPE)
+  endfunction()
+
+  # Expose every WAT fixture as its own CTest entry instead of hiding all
+  # profile checks behind one umbrella test.
+  file(GLOB wasm_case_metadata CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/wat-*/testcases")
+  foreach(metadata_file IN LISTS wasm_case_metadata)
+    get_filename_component(case_directory "${metadata_file}" DIRECTORY)
+    get_filename_component(case_name "${case_directory}" NAME)
+    wasm2vircon_test_metadata("${metadata_file}" source case_source)
+    wasm2vircon_test_metadata("${metadata_file}" cli_only case_cli_only)
+    if(case_source MATCHES "\\.wat$" AND NOT case_cli_only STREQUAL "true")
+      add_test(
+        NAME ${case_name}
+        COMMAND ${CMAKE_COMMAND}
+          -DTOOL=$<TARGET_FILE:wasm2vircon>
+          -DWASM_AS=${WASM_AS_EXECUTABLE}
+          -DASSEMBLE=${VIRCON_ASSEMBLE_EXECUTABLE}
+          -DTESTS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests
+          -DCASE_DIRECTORY=${case_directory}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run-wasm-tests.cmake
+      )
+      set_tests_properties(${case_name} PROPERTIES LABELS wasm)
+    endif()
+  endforeach()
 
   find_program(CLANG_EXECUTABLE clang REQUIRED)
   find_program(WASM_LD_EXECUTABLE wasm-ld REQUIRED)
@@ -243,45 +268,65 @@ if(BUILD_TESTING)
   find_program(VIRCON_WAV2VIRCON_EXECUTABLE wav2vircon REQUIRED)
   find_program(VIRCON_TILED2VIRCON_EXECUTABLE tiled2vircon REQUIRED)
 
-  add_test(
-    NAME wasm2vircon-rom-profile
-    COMMAND ${CMAKE_COMMAND}
-      -DTOOL=$<TARGET_FILE:wasm2vircon>
-      -DCLANG=${CLANG_EXECUTABLE}
-      -DWASM_LD=${WASM_LD_EXECUTABLE}
-      -DASSEMBLE=${VIRCON_ASSEMBLE_EXECUTABLE}
-      -DPACKROM=${VIRCON_PACKROM_EXECUTABLE}
-      -DPNG2VIRCON=${VIRCON_PNG2VIRCON_EXECUTABLE}
-      -DWAV2VIRCON=${VIRCON_WAV2VIRCON_EXECUTABLE}
-      -DTILED2VIRCON=${VIRCON_TILED2VIRCON_EXECUTABLE}
-      -DTESTS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests
-      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run-rom-tests.cmake
-  )
-  set_tests_properties(wasm2vircon-rom-profile PROPERTIES LABELS integration)
+  # Likewise, compile/package each C fixture independently so CTest reports
+  # the exact application or API case that fails.
+  file(GLOB rom_case_metadata CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/c-*/testcases")
+  foreach(metadata_file IN LISTS rom_case_metadata)
+    get_filename_component(case_directory "${metadata_file}" DIRECTORY)
+    get_filename_component(case_name "${case_directory}" NAME)
+    wasm2vircon_test_metadata("${metadata_file}" source case_source)
+    if(case_source MATCHES "\\.c$")
+      add_test(
+        NAME ${case_name}
+        COMMAND ${CMAKE_COMMAND}
+          -DTOOL=$<TARGET_FILE:wasm2vircon>
+          -DCLANG=${CLANG_EXECUTABLE}
+          -DWASM_LD=${WASM_LD_EXECUTABLE}
+          -DASSEMBLE=${VIRCON_ASSEMBLE_EXECUTABLE}
+          -DPACKROM=${VIRCON_PACKROM_EXECUTABLE}
+          -DPNG2VIRCON=${VIRCON_PNG2VIRCON_EXECUTABLE}
+          -DWAV2VIRCON=${VIRCON_WAV2VIRCON_EXECUTABLE}
+          -DTILED2VIRCON=${VIRCON_TILED2VIRCON_EXECUTABLE}
+          -DTESTS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests
+          -DCASE_DIRECTORY=${case_directory}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run-rom-tests.cmake
+      )
+      set_tests_properties(${case_name} PROPERTIES LABELS "integration;rom")
+    endif()
+  endforeach()
 
   set(WASM2VIRCON_V32SIM_EXECUTABLE "" CACHE FILEPATH
     "Path to an externally built v32sim executable for optional execution tests")
   set(WASM2VIRCON_V32SIM_BIOS "" CACHE FILEPATH
     "Path to an installed Vircon32 BIOS .v32 for optional execution tests")
   if(WASM2VIRCON_V32SIM_EXECUTABLE AND WASM2VIRCON_V32SIM_BIOS)
-    add_test(
-      NAME wasm2vircon-simulator
-      COMMAND ${CMAKE_COMMAND}
-        -DTOOL=$<TARGET_FILE:wasm2vircon>
-        -DCLANG=${CLANG_EXECUTABLE}
-        -DWASM_LD=${WASM_LD_EXECUTABLE}
-        -DASSEMBLE=${VIRCON_ASSEMBLE_EXECUTABLE}
-        -DPACKROM=${VIRCON_PACKROM_EXECUTABLE}
-        -DPNG2VIRCON=${VIRCON_PNG2VIRCON_EXECUTABLE}
-        -DWAV2VIRCON=${VIRCON_WAV2VIRCON_EXECUTABLE}
-        -DTILED2VIRCON=${VIRCON_TILED2VIRCON_EXECUTABLE}
-        -DTESTS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests
-        -DTEST_MODE=simulator
-        -DV32SIM=${WASM2VIRCON_V32SIM_EXECUTABLE}
-        -DV32SIM_BIOS=${WASM2VIRCON_V32SIM_BIOS}
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run-rom-tests.cmake
-    )
-    set_tests_properties(wasm2vircon-simulator PROPERTIES LABELS simulator)
+    foreach(metadata_file IN LISTS rom_case_metadata)
+      get_filename_component(case_directory "${metadata_file}" DIRECTORY)
+      get_filename_component(case_name "${case_directory}" NAME)
+      wasm2vircon_test_metadata("${metadata_file}" sim_commands case_sim_commands)
+      if(case_sim_commands)
+        set(simulator_test_name "${case_name}-simulator")
+        add_test(
+          NAME ${simulator_test_name}
+          COMMAND ${CMAKE_COMMAND}
+            -DTOOL=$<TARGET_FILE:wasm2vircon>
+            -DCLANG=${CLANG_EXECUTABLE}
+            -DWASM_LD=${WASM_LD_EXECUTABLE}
+            -DASSEMBLE=${VIRCON_ASSEMBLE_EXECUTABLE}
+            -DPACKROM=${VIRCON_PACKROM_EXECUTABLE}
+            -DPNG2VIRCON=${VIRCON_PNG2VIRCON_EXECUTABLE}
+            -DWAV2VIRCON=${VIRCON_WAV2VIRCON_EXECUTABLE}
+            -DTILED2VIRCON=${VIRCON_TILED2VIRCON_EXECUTABLE}
+            -DTESTS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests
+            -DCASE_DIRECTORY=${case_directory}
+            -DTEST_MODE=simulator
+            -DV32SIM=${WASM2VIRCON_V32SIM_EXECUTABLE}
+            -DV32SIM_BIOS=${WASM2VIRCON_V32SIM_BIOS}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/run-rom-tests.cmake
+        )
+        set_tests_properties(${simulator_test_name} PROPERTIES LABELS simulator)
+      endif()
+    endforeach()
   else()
     message(STATUS
       "v32sim execution tests are disabled; set WASM2VIRCON_V32SIM_EXECUTABLE "

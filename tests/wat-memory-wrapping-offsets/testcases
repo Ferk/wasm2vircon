@@ -1,4 +1,4 @@
-source=load-span-wrap.wat
+source=wrapping-offsets.wat
 entry=main
 expectations=expected.asm
 forbidden_expectations=forbidden.asm
