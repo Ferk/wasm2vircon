@@ -17,7 +17,8 @@ static const char *const OPCODE_NAMES[VIRCON_IR_OPCODE_COUNT] = {
     "isub", "imul", "idiv",  "imod", "and",   "or",   "xor",  "shl",  "ieq",  "ine",  "ilt",
     "ile",  "igt",  "ige",   "fadd", "fsub",  "fmul", "fdiv", "fmod", "feq",  "fne",  "flt",
     "fle",  "fgt",  "fge",   "cif",  "cfi",   "fsgn", "fabs", "flr",  "ceil", "round", "sin",
-    "acos", "log",  "pow",   "atan2", "imin", "imax", "iabs", "fmin", "fmax", "in",    "out"};
+    "acos", "log",  "pow",   "atan2", "imin", "imax", "iabs", "fmin", "fmax", "in",    "out",
+    "sets"};
 
 /* Writes one structured register using the official assembler spelling. */
 static bool emit_register(FILE *file, VirconIrRegister reg) {

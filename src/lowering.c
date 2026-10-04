@@ -20,6 +20,7 @@
 
 #define LINEAR_BASE VIRCON_LINEAR_MEMORY_BASE
 #define TEMP_SLOTS 48u
+#define LOCAL_ZERO_UNROLL_LIMIT 4u
 /* Keep common small calls allocation-free; this is not an ABI arity limit. */
 #define INLINE_CALL_ARGUMENTS 4u
 
@@ -311,6 +312,26 @@ static size_t local_storage_words(const WasmFunction *function) {
   for (index = 0; index < function->local_count; ++index)
     words += function->locals[index] == WASM_VALUE_I64 ? 2u : 1u;
   return words;
+}
+
+/* Restores Wasm's per-invocation zero value for every non-parameter local.
+ * Small frames use direct stores; larger frames use Vircon32's native SETS
+ * operation over the contiguous local range [BP-local_words, BP-1]. */
+static bool initialize_function_locals(Context *context, size_t local_words) {
+  size_t index;
+  if (local_words == 0)
+    return true;
+  if (local_words <= LOCAL_ZERO_UNROLL_LIMIT) {
+    if (!emit(context, "  mov R1, 0"))
+      return false;
+    for (index = 1; index <= local_words; ++index)
+      if (!emit(context, "  mov [BP-%zu], R1", index))
+        return false;
+    return true;
+  }
+  return emit(context, "  mov R11, %zu", local_words) && emit(context, "  mov R12, 0") &&
+         emit(context, "  mov R13, BP") && emit(context, "  isub R13, %zu", local_words) &&
+         emit(context, "  sets");
 }
 
 /* Finds the largest caller-owned argument area required by one function body.
@@ -3306,7 +3327,7 @@ static bool lower_function(const ValidatedModule *validated, const WasmFunction 
   Value result = {0};
   char label[64];
   bool success = false;
-  size_t outgoing_slots, frame_slots;
+  size_t outgoing_slots, frame_slots, local_words;
   unsigned errors_before = diagnostics->errors;
   context.validated = validated;
   context.function = function;
@@ -3317,7 +3338,8 @@ static bool lower_function(const ValidatedModule *validated, const WasmFunction 
   if (!initialize_local_alignments(&context))
     goto done;
   outgoing_slots = outgoing_call_slots(validated->module, function->body);
-  frame_slots = local_storage_words(function);
+  local_words = local_storage_words(function);
+  frame_slots = local_words;
   if (frame_slots > SIZE_MAX - TEMP_SLOTS || outgoing_slots > SIZE_MAX - frame_slots - TEMP_SLOTS) {
     diagnostics_error(diagnostics, "function %zu requires an unrepresentable stack frame",
                       function_index(validated->module, function));
@@ -3333,7 +3355,8 @@ static bool lower_function(const ValidatedModule *validated, const WasmFunction 
   snprintf(context.return_label, sizeof(context.return_label), "__wasm_return_%zu",
            function_index(validated->module, function));
   if (!emit_label(&context, label) || !emit(&context, "  push BP") || !emit(&context, "  mov BP, SP") ||
-      !emit(&context, "  isub SP, %zu", frame_slots) || !lower_expression(&context, function->body, &result))
+      !emit(&context, "  isub SP, %zu", frame_slots) || !initialize_function_locals(&context, local_words) ||
+      !lower_expression(&context, function->body, &result))
     goto done;
   if (function->result == WASM_VALUE_I32 || function->result == WASM_VALUE_F32) {
     if (result.present) {

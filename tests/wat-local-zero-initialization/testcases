@@ -1,0 +1,3 @@
+source=local-zero-initialization.wat
+entry=main
+expectations=expected.asm

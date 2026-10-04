@@ -217,6 +217,12 @@ recursion. Each caller reserves exactly enough outgoing stack words for its
 widest defined call; platform imports continue to lower directly to hardware
 operations rather than consuming a generic argument area.
 
+Every invocation initializes each non-parameter local to its Wasm zero value
+before executing the function body. This means `i32` locals begin at `0`,
+`f32` locals begin at positive zero, and both words of an `i64` local begin at
+zero. Parameters retain the values supplied by the caller. Compiler-owned
+temporary slots are separate and are written before they are read.
+
 ### Integer operations
 
 All `i32` arithmetic below works on 32-bit values. Addition, subtraction,

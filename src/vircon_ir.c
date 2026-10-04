@@ -14,7 +14,8 @@ static const char *const GENERATED_OPCODE_NAMES[VIRCON_IR_OPCODE_COUNT] = {
     "isub", "imul", "idiv",  "imod", "and",   "or",   "xor",  "shl",  "ieq",  "ine",  "ilt",
     "ile",  "igt",  "ige",   "fadd", "fsub",  "fmul", "fdiv", "fmod", "feq",  "fne",  "flt",
     "fle",  "fgt",  "fge",   "cif",  "cfi",   "fsgn", "fabs", "flr",  "ceil", "round", "sin",
-    "acos", "log",  "pow",   "atan2", "imin", "imax", "iabs", "fmin", "fmax", "in",    "out"};
+    "acos", "log",  "pow",   "atan2", "imin", "imax", "iabs", "fmin", "fmax", "in",    "out",
+    "sets"};
 
 /* Copies one null-terminated identifier into IR-owned storage. */
 static char *copy_string(const char *text) {
@@ -487,6 +488,8 @@ void vircon_ir_optimize_copies(VirconIrProgram *program) {
       if (node->operand_count != 0 && node->operands[0].kind == VIRCON_IR_OPERAND_REGISTER &&
           opcode_writes_first_register(node->opcode))
         register_values[node->operands[0].reg] = next_value++;
+      if (node->opcode == VIRCON_IR_OPCODE_SETS)
+        clear_frame_value_facts(register_values, &frame_value_count);
       if (node->opcode == VIRCON_IR_OPCODE_CALL || node->opcode == VIRCON_IR_OPCODE_JMP ||
           node->opcode == VIRCON_IR_OPCODE_RET || node->opcode == VIRCON_IR_OPCODE_HLT)
         clear_frame_value_facts(register_values, &frame_value_count);
