@@ -36,6 +36,9 @@ typedef struct Value {
   /* Borrowed values alias a parameter/local frame slot and must be copied
    * before evaluating another expression that could overwrite that local. */
   bool is_borrowed;
+  /* A result kept transiently in one target register for an immediate
+   * consumer, encoded as register number plus one so zero remains "none". */
+  unsigned register_plus_one;
   /* Optional affine identity used only to reuse an already emitted bounds
    * check. The represented Wasm pointer remains a byte offset. */
   bool has_address_identity;
@@ -139,6 +142,7 @@ typedef struct Context {
   bool fast_bound_active;
   LoopBoundKind fast_bound_kind;
   uint32_t fast_bound_value;
+  int preferred_result_register;
   const WasmExpr *current_expression;
 } Context;
 
@@ -402,7 +406,8 @@ static int temp_slot(Context *context) { return temp_slots(context, 1); }
 /* Releases the most recently reserved temporary when value owns one. */
 static void release(Context *context, Value value) {
   unsigned words = value.type == WASM_VALUE_I64 ? 2u : 1u;
-  if (value.present && !value.is_immediate && !value.is_borrowed && context->temp_depth >= words)
+  if (value.present && value.register_plus_one == 0 && !value.is_immediate && !value.is_borrowed &&
+      context->temp_depth >= words)
     context->temp_depth -= words;
 }
 /* Loads a frame slot into a target register. */
@@ -412,13 +417,16 @@ static bool store_slot(Context *context, int slot, int reg) { return emit(contex
 /* Loads a one-word value regardless of whether it is still an immediate or
  * has already been assigned compiler-owned frame storage. */
 static bool load_value(Context *context, int reg, Value value) {
-  return value.is_immediate ? emit(context, "  mov R%d, 0x%08X", reg, value.immediate)
+  return value.register_plus_one != 0
+             ? (reg == (int)value.register_plus_one - 1 ||
+                emit(context, "  mov R%d, R%d", reg, (int)value.register_plus_one - 1))
+         : value.is_immediate ? emit(context, "  mov R%d, 0x%08X", reg, value.immediate)
                             : load_slot(context, reg, value.slot);
 }
 /* Reserves uninitialized writable storage for an immediate result. */
 static bool reserve_value_slot(Context *context, Value *value) {
   int slot;
-  if (!value->is_immediate && !value->is_borrowed)
+  if (!value->is_immediate && !value->is_borrowed && value->register_plus_one == 0)
     return true;
   slot = temp_slot(context);
   if (slot == 0)
@@ -438,7 +446,26 @@ static bool materialize_value(Context *context, Value *value) {
 
 /* Copies a borrowed local only when later evaluation could invalidate it. */
 static bool materialize_borrowed(Context *context, Value *value) {
-  return !value->is_borrowed || materialize_value(context, value);
+  return (!value->is_borrowed && value->register_plus_one == 0) || materialize_value(context, value);
+}
+
+/* Retains a one-word result in the preferred target register when the caller
+ * will consume it immediately. Register-backed values are deliberately short
+ * lived: any operation which may clobber the register materializes them first. */
+static bool retain_result_register(Context *context, Value *value, WasmValueType type) {
+  int reg = context->preferred_result_register;
+  if (reg < 0 || type == WASM_VALUE_I64)
+    return false;
+  release(context, *value);
+  value->slot = 0;
+  value->high_slot = 0;
+  value->type = type;
+  value->is_immediate = false;
+  value->is_borrowed = false;
+  value->register_plus_one = (unsigned)reg + 1u;
+  value->has_address_identity = false;
+  value->present = true;
+  return true;
 }
 
 /* Invalidates bounds/alias facts affected by assigning one Wasm local, then
@@ -1318,8 +1345,12 @@ static bool lower_if(Context *context, const WasmExpr *expression, Value *value)
   Value condition = {0}, arm = {0}, result = {0};
   char else_label[64], end_label[64];
   bool has_result = expression->value_type == WASM_VALUE_I32 || expression->value_type == WASM_VALUE_F32;
+  int previous_result_register = context->preferred_result_register;
 
-  if (!lower_expression(context, expression->children[0], &condition) || !condition.present ||
+  context->preferred_result_register = 1;
+  bool lowered_condition = lower_expression(context, expression->children[0], &condition);
+  context->preferred_result_register = previous_result_register;
+  if (!lowered_condition || !condition.present ||
       !fresh_label(context, "if_end", end_label, sizeof(end_label)) || !load_value(context, 1, condition))
     return false;
   release(context, condition);
@@ -2937,8 +2968,12 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     return false;
   if (cached_loop_bound) {
     if (!load_value(context, 1, left_source) || !emit(context, "  ilt R1, R10") ||
-        !store_slot(context, left.slot, 1))
+        (!retain_result_register(context, &left, expression->value_type) && !store_slot(context, left.slot, 1)))
       return false;
+    if (left.register_plus_one != 0) {
+      *value = left;
+      return true;
+    }
     left.has_address_identity = false;
     *value = left;
     return true;
@@ -2948,7 +2983,14 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     return false;
   immediate_opcode = right.is_immediate ? binary_immediate_opcode(expression->binary_op) : NULL;
   if (immediate_opcode != NULL) {
-    if (!emit(context, "  %s R1, 0x%08X", immediate_opcode, right.immediate) || !store_slot(context, left.slot, 1))
+    if (!emit(context, "  %s R1, 0x%08X", immediate_opcode, right.immediate))
+      return false;
+    if (retain_result_register(context, &left, expression->value_type)) {
+      release(context, right);
+      *value = left;
+      return true;
+    }
+    if (!store_slot(context, left.slot, 1))
       return false;
     set_binary_address_identity(&left, &left_source, &right, expression->binary_op);
     *value = left;
@@ -3144,6 +3186,11 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
   case WASM_BINARY_OTHER:
     diagnostics_error(context->diagnostics, "internal error: unsupported binary operation passed validation");
     return false;
+  }
+  if (retain_result_register(context, &left, expression->value_type)) {
+    release(context, right);
+    *value = left;
+    return true;
   }
   if (!store_slot(context, left.slot, 1))
     return false;
@@ -3452,6 +3499,10 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
         return false;
     } else
       return false;
+    if (retain_result_register(context, &left, expression->value_type)) {
+      *value = left;
+      return true;
+    }
     if (!store_slot(context, left.slot, 1))
       return false;
     left.has_address_identity = false;
@@ -3598,12 +3649,16 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
       const Target *branch_target = find_target(context, expression->name);
       const char *target = branch_target == NULL ? NULL : branch_target->label;
       int result_slot = branch_target == NULL ? 0 : branch_target->result_slot;
-      if (target == NULL || result_slot == 0 ||
-          !lower_expression(context, expression->children[0], &left) || !left.present ||
-          !materialize_borrowed(context, &left) ||
-          !lower_expression(context, expression->children[1], &condition) || !condition.present ||
-          !fresh_label(context, "br_if_fallthrough", end, sizeof(end)) || !load_value(context, 1, condition) ||
-          !emit(context, "  jf R1, %s", end) || !load_value(context, 1, left) ||
+      int previous_result_register = context->preferred_result_register;
+      bool lowered_condition;
+      if (target == NULL || result_slot == 0 || !lower_expression(context, expression->children[0], &left) ||
+          !left.present || !materialize_borrowed(context, &left))
+        return false;
+      context->preferred_result_register = 1;
+      lowered_condition = lower_expression(context, expression->children[1], &condition);
+      context->preferred_result_register = previous_result_register;
+      if (!lowered_condition || !condition.present || !fresh_label(context, "br_if_fallthrough", end, sizeof(end)) ||
+          !load_value(context, 1, condition) || !emit(context, "  jf R1, %s", end) || !load_value(context, 1, left) ||
           !store_slot(context, result_slot, 1) || !emit(context, "  jmp %s", target))
         return false;
       release(context, condition);
@@ -3612,9 +3667,16 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
       *value = left;
       return true;
     }
-    if (!lower_expression(context, expression->children[0], &condition) || !condition.present ||
+    {
+      int previous_result_register = context->preferred_result_register;
+      bool lowered_condition;
+      context->preferred_result_register = 1;
+      lowered_condition = lower_expression(context, expression->children[0], &condition);
+      context->preferred_result_register = previous_result_register;
+      if (!lowered_condition || !condition.present ||
         !load_value(context, 1, condition))
-      return false;
+        return false;
+    }
     release(context, condition);
     {
       const char *target = find_target_label(context, expression->name);
@@ -3710,6 +3772,7 @@ static bool lower_function(const ValidatedModule *validated, const WasmFunction 
   context.diagnostics = diagnostics;
   context.memory_bytes = memory_bytes;
   context.memory_can_grow = memory_can_grow;
+  context.preferred_result_register = -1;
   if (!initialize_local_alignments(&context))
     goto done;
   outgoing_slots = outgoing_call_slots(validated->module, function->body);

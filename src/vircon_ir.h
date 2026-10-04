@@ -158,5 +158,7 @@ bool vircon_ir_append_pointer(VirconIrProgram *program, const char *target, Diag
 bool vircon_ir_append_generated_instruction(VirconIrProgram *program, char *text, Diagnostics *diagnostics);
 /* Simplifies constants and redundant copies within straight-line regions. */
 void vircon_ir_optimize_local(VirconIrProgram *program);
+/* Removes frame stores proven dead by compiler-owned control-flow liveness. */
+void vircon_ir_eliminate_dead_frame_stores(VirconIrProgram *program);
 
 #endif

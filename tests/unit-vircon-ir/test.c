@@ -146,6 +146,27 @@ int main(void) {
     return fail(&program, diagnostic_stream, 15);
 
   vircon_ir_dispose(&program);
+  vircon_ir_init(&program);
+  if (!append_instruction(&program, &diagnostics, "  mov R1, 1") ||
+      !append_instruction(&program, &diagnostics, "  mov [BP-3], R1") ||
+      !append_instruction(&program, &diagnostics, "  mov R2, 2") ||
+      !append_instruction(&program, &diagnostics, "  mov [BP-3], R2") ||
+      !append_instruction(&program, &diagnostics, "  mov [BP-4], R1") ||
+      !vircon_ir_append_label(&program, "__frame_live", &diagnostics) ||
+      !append_instruction(&program, &diagnostics, "  mov R3, [BP-4]") ||
+      !append_instruction(&program, &diagnostics, "  ret"))
+    return fail(&program, diagnostic_stream, 16);
+  vircon_ir_eliminate_dead_frame_stores(&program);
+  if (program.count != 6 || program.nodes[0].operands[1].immediate != 1 ||
+      program.nodes[1].operands[1].immediate != 2 ||
+      program.nodes[2].operands[0].kind != VIRCON_IR_OPERAND_MEMORY_REGISTER ||
+      program.nodes[2].operands[0].displacement != -4 || program.nodes[3].kind != VIRCON_IR_NODE_LABEL ||
+      program.nodes[4].opcode != VIRCON_IR_OPCODE_MOV ||
+      program.nodes[4].operands[1].kind != VIRCON_IR_OPERAND_MEMORY_REGISTER ||
+      program.nodes[4].operands[1].displacement != -4 || program.nodes[5].opcode != VIRCON_IR_OPCODE_RET)
+    return fail(&program, diagnostic_stream, 17);
+
+  vircon_ir_dispose(&program);
   fclose(diagnostic_stream);
   return 0;
 }

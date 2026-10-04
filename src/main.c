@@ -136,6 +136,7 @@ int main(int argc, char **argv) {
   if (!lower_module_to_vircon_ir(&validated, &program, &diagnostics))
     goto done;
   vircon_ir_optimize_local(&program);
+  vircon_ir_eliminate_dead_frame_stores(&program);
   if (!emit_vircon_assembly(&program, output_path, &diagnostics))
     goto done;
   status = 0;
