@@ -1,0 +1,3 @@
+source=range-wrap.wat
+entry=main
+expectations=expected.asm

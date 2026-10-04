@@ -1,0 +1,4 @@
+source=range-proof.wat
+entry=main
+expectations=expected.asm
+forbidden_expectations=forbidden.asm

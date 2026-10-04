@@ -1,0 +1,3 @@
+source=alignment-flow.wat
+entry=main
+expectations=expected.asm

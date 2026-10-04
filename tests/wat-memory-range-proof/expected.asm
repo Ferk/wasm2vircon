@@ -1,0 +1,3 @@
+igt R1, 0x8000FFFC
+igt R1, 0x8000FFF4
+mov R1, [R13+1]

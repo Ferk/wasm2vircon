@@ -53,9 +53,11 @@ typedef struct JumpTable {
   char **target_labels;
   size_t target_count;
 } JumpTable;
-/* One exact byte-address range proven in the current straight-line region. */
+/* One byte-address range proven in the current straight-line region. Ranges
+ * become mergeable only after successful checks establish both endpoints. */
 typedef struct CheckedAddress {
   uint32_t base_local, offset, width;
+  bool mergeable;
 } CheckedAddress;
 /* Alignment facts accumulated at one structured branch target. */
 typedef struct AlignmentTarget {
@@ -873,37 +875,90 @@ static bool lower_br_table(Context *context, const WasmExpr *expression, Value *
 /* Checks a Wasm byte address against the current dynamic length and leaves
  * its effective byte address in R2. Valid target sizes are below 2^31 bytes,
  * so a negative signed value identifies every out-of-range unsigned address. */
+static bool checked_identity_range(Value pointer, uint32_t offset, uint32_t width,
+                                   uint32_t *start, uint64_t *end) {
+  uint64_t range_start;
+
+  if (!pointer.has_address_identity)
+    return false;
+  range_start = (uint64_t)pointer.address_offset + offset;
+  if (range_start > UINT32_MAX || range_start + width > (uint64_t)UINT32_MAX + 1u)
+    return false;
+  *start = (uint32_t)range_start;
+  *end = range_start + width;
+  return true;
+}
+
+/* Reports whether an earlier successful check proves the requested range. */
 static bool checked_address_is_reusable(const Context *context, Value pointer, uint32_t offset, uint32_t width) {
   size_t index;
   uint32_t identity_offset;
+  uint32_t range_start = 0;
+  uint64_t range_end = 0;
+  bool range_is_mergeable;
+
   if (!pointer.has_address_identity)
     return false;
   identity_offset = pointer.address_offset + offset;
+  range_is_mergeable = checked_identity_range(pointer, offset, width, &range_start, &range_end);
   for (index = 0; index < context->checked_address_count; ++index) {
     const CheckedAddress *checked = &context->checked_addresses[index];
     if (checked->base_local == pointer.address_base_local && checked->offset == identity_offset &&
         checked->width >= width)
       return true;
+    if (range_is_mergeable && checked->mergeable && checked->base_local == pointer.address_base_local &&
+        range_start >= checked->offset && range_end <= (uint64_t)checked->offset + checked->width)
+      return true;
   }
   return false;
 }
 
-/* Remembers an exact checked address without changing Wasm pointer meaning. */
+/* Remembers a successful check. Two checks sharing an affine base may prove
+ * the interval between them once their bounded offset distance rules out an
+ * intervening i32 wrap. This never moves a trap ahead of either check. */
 static void record_checked_address(Context *context, Value pointer, uint32_t offset, uint32_t width) {
-  CheckedAddress *checked;
+  CheckedAddress candidate;
+  uint64_t candidate_end = 0;
+  size_t index = 0;
+
   if (!pointer.has_address_identity)
     return;
+  candidate.base_local = pointer.address_base_local;
+  candidate.offset = pointer.address_offset + offset;
+  candidate.width = width;
+  candidate.mergeable = checked_identity_range(pointer, offset, width, &candidate.offset, &candidate_end);
+
+  while (candidate.mergeable && index < context->checked_address_count) {
+    CheckedAddress *checked = &context->checked_addresses[index];
+    uint64_t checked_end = (uint64_t)checked->offset + checked->width;
+    uint32_t union_start;
+    uint64_t union_end;
+
+    if (!checked->mergeable || checked->base_local != candidate.base_local) {
+      ++index;
+      continue;
+    }
+    union_start = checked->offset < candidate.offset ? checked->offset : candidate.offset;
+    union_end = checked_end > candidate_end ? checked_end : candidate_end;
+    if (union_end - union_start > VIRCON_LINEAR_MEMORY_BYTES) {
+      ++index;
+      continue;
+    }
+    candidate.offset = union_start;
+    candidate.width = (uint32_t)(union_end - union_start);
+    candidate_end = union_end;
+    context->checked_addresses[index] = context->checked_addresses[--context->checked_address_count];
+  }
+
   if (context->checked_address_count == sizeof(context->checked_addresses) / sizeof(context->checked_addresses[0]))
     context->checked_address_count = 0;
-  checked = &context->checked_addresses[context->checked_address_count++];
-  checked->base_local = pointer.address_base_local;
-  checked->offset = pointer.address_offset + offset;
-  checked->width = width;
+  context->checked_addresses[context->checked_address_count++] = candidate;
 }
 
 /* Emits or reuses a Wasm bounds check and leaves the effective byte address
  * in R2. Cache entries never cross labels or assignments to their base local. */
-static bool effective_address(Context *context, Value pointer, uint32_t offset, uint32_t width) {
+static bool effective_address(Context *context, Value pointer, uint32_t offset, uint32_t width,
+                              bool materialize_address) {
   uint64_t required = (uint64_t)offset + width;
   bool success;
   if (required > VIRCON_LINEAR_MEMORY_BYTES)
@@ -912,11 +967,11 @@ static bool effective_address(Context *context, Value pointer, uint32_t offset, 
     uint64_t address = (uint64_t)pointer.immediate + offset;
     if (address > context->memory_bytes || width > (uint64_t)context->memory_bytes - address)
       return emit(context, "  jmp __wasm_trap");
-    return emit(context, "  mov R2, 0x%08X", (uint32_t)address);
+    return !materialize_address || emit(context, "  mov R2, 0x%08X", (uint32_t)address);
   }
   if (checked_address_is_reusable(context, pointer, offset, width))
-    return load_value(context, 2, pointer) &&
-           (offset == 0 || emit(context, "  iadd R2, 0x%08X", offset));
+    return !materialize_address ||
+           (load_value(context, 2, pointer) && (offset == 0 || emit(context, "  iadd R2, 0x%08X", offset)));
   if (!context->memory_can_grow) {
     if (required > context->memory_bytes)
       return emit(context, "  jmp __wasm_trap");
@@ -997,6 +1052,12 @@ static bool find_cached_word_operand(Context *context, Value pointer, uint32_t o
   word_displacement = signed_difference / 4;
   cached_word_operand(word_displacement, operand, size);
   return true;
+}
+
+/* Tests whether an aligned access can use the retained target address. */
+static bool has_cached_word_operand(Context *context, Value pointer, uint32_t offset) {
+  char operand[48];
+  return find_cached_word_operand(context, pointer, offset, operand, sizeof(operand));
 }
 
 /* Records the target word address currently held in R13. */
@@ -1082,13 +1143,16 @@ static bool store_i32_at_r2(Context *context, int value_register, bool proven_al
 /* Lowers a validated byte or i32 Wasm load into packed-memory operations. */
 static bool lower_load(Context *context, const WasmExpr *expression, Value *value) {
   Value pointer = {0}, result = {0};
-  bool proven_aligned;
+  bool proven_aligned, cached_word_address;
   int slot;
   if (!lower_expression(context, expression->children[0], &pointer) || !pointer.present)
     return false;
+  proven_aligned = expression->bytes == 4 &&
+                   word_access_is_proven_aligned(context, expression->children[0], expression->offset);
+  cached_word_address = proven_aligned && has_cached_word_operand(context, pointer, expression->offset);
   result = pointer;
   if (!reserve_value_slot(context, &result) ||
-      !effective_address(context, pointer, expression->offset, expression->bytes))
+      !effective_address(context, pointer, expression->offset, expression->bytes, !cached_word_address))
     return false;
   result.has_address_identity = false;
   if (expression->bytes == 1) {
@@ -1097,7 +1161,6 @@ static bool lower_load(Context *context, const WasmExpr *expression, Value *valu
     *value = result;
     return true;
   }
-  proven_aligned = word_access_is_proven_aligned(context, expression->children[0], expression->offset);
   if (!load_i32_at_r2(context, 1, proven_aligned, pointer, expression->offset))
     return false;
   slot = result.slot;
@@ -1109,10 +1172,15 @@ static bool lower_load(Context *context, const WasmExpr *expression, Value *valu
 /* Lowers a validated byte or i32 Wasm store into packed-memory operations. */
 static bool lower_store(Context *context, const WasmExpr *expression, Value *value) {
   Value pointer = {0}, input = {0};
-  bool proven_aligned;
+  bool proven_aligned, cached_word_address;
   if (!lower_expression(context, expression->children[0], &pointer) || !materialize_borrowed(context, &pointer) ||
-      !lower_expression(context, expression->children[1], &input) || !pointer.present || !input.present ||
-      !effective_address(context, pointer, expression->offset, expression->bytes) || !load_value(context, 1, input))
+      !lower_expression(context, expression->children[1], &input) || !pointer.present || !input.present)
+    return false;
+  proven_aligned = expression->bytes == 4 &&
+                   word_access_is_proven_aligned(context, expression->children[0], expression->offset);
+  cached_word_address = proven_aligned && has_cached_word_operand(context, pointer, expression->offset);
+  if (!effective_address(context, pointer, expression->offset, expression->bytes, !cached_word_address) ||
+      !load_value(context, 1, input))
     return false;
   if (expression->bytes == 1) {
     if (!store_byte_at_r2(context, 1))
@@ -1122,7 +1190,6 @@ static bool lower_store(Context *context, const WasmExpr *expression, Value *val
     value->present = false;
     return true;
   }
-  proven_aligned = word_access_is_proven_aligned(context, expression->children[0], expression->offset);
   if (!store_i32_at_r2(context, 1, proven_aligned, pointer, expression->offset))
     return false;
   release(context, input);
@@ -1151,7 +1218,7 @@ static bool lower_i64_load(Context *context, const WasmExpr *expression, Value *
   if (!lower_expression(context, expression->children[0], &pointer) || !pointer.present)
     return false;
   result = pointer;
-  if (!reserve_value_slot(context, &result) || !effective_address(context, pointer, expression->offset, 8))
+  if (!reserve_value_slot(context, &result) || !effective_address(context, pointer, expression->offset, 8, true))
     return false;
   high_slot = temp_slot(context);
   if (high_slot == 0 || !store_slot(context, high_slot, 2) ||
@@ -1172,7 +1239,7 @@ static bool lower_i64_store(Context *context, const WasmExpr *expression, Value 
 
   if (!lower_expression(context, expression->children[0], &pointer) || !materialize_borrowed(context, &pointer) ||
       !lower_expression(context, expression->children[1], &input) || !pointer.present || !input.present ||
-      input.type != WASM_VALUE_I64 || !effective_address(context, pointer, expression->offset, 8))
+      input.type != WASM_VALUE_I64 || !effective_address(context, pointer, expression->offset, 8, true))
     return false;
   address_slot = temp_slot(context);
   if (address_slot == 0 || !store_slot(context, address_slot, 2) || !load_slot(context, 1, input.slot) ||
@@ -1524,7 +1591,7 @@ static bool lower_i64_load_store(Context *context, const WasmExpr *expression, V
   if (!lower_expression(context, expression->children[0], &destination) ||
       !materialize_value(context, &destination) || !lower_expression(context, expression->children[1], &source) ||
       !source.present || !materialize_value(context, &source) ||
-      !effective_address(context, source, expression->source_offset, 8))
+      !effective_address(context, source, expression->source_offset, 8, true))
     return false;
 
   high_word.slot = temp_slot(context);
@@ -1536,7 +1603,7 @@ static bool lower_i64_load_store(Context *context, const WasmExpr *expression, V
     return false;
   high_word.present = true;
 
-  if (!effective_address(context, destination, expression->offset, 8))
+  if (!effective_address(context, destination, expression->offset, 8, true))
     return false;
   destination_address.slot = temp_slot(context);
   if (destination_address.slot == 0 || !store_slot(context, destination_address.slot, 2) ||
@@ -1564,7 +1631,7 @@ static bool lower_i64_load_store_local_tee(Context *context, const WasmExpr *exp
   if (!lower_expression(context, expression->children[0], &destination) ||
       !materialize_value(context, &destination) || !lower_expression(context, expression->children[1], &source) ||
       !source.present || !materialize_value(context, &source) ||
-      !effective_address(context, source, expression->source_offset, 8))
+      !effective_address(context, source, expression->source_offset, 8, true))
     return false;
   high_word.slot = temp_slot(context);
   if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) ||
@@ -1578,7 +1645,7 @@ static bool lower_i64_load_store_local_tee(Context *context, const WasmExpr *exp
   /* local.tee writes the pair before the enclosing i64.store observes it. */
   if (!load_slot(context, 1, source.slot) || !store_slot(context, local_low, 1) ||
       !load_slot(context, 1, high_word.slot) || !store_slot(context, local_high, 1) ||
-      !effective_address(context, destination, expression->offset, 8))
+      !effective_address(context, destination, expression->offset, 8, true))
     return false;
   destination_address.slot = temp_slot(context);
   if (destination_address.slot == 0 || !store_slot(context, destination_address.slot, 2) ||
@@ -1606,7 +1673,7 @@ static bool lower_i64_packed_i32_store(Context *context, const WasmExpr *express
       !materialize_borrowed(context, &destination) ||
       !lower_expression(context, expression->children[1], &high_word) || !materialize_borrowed(context, &high_word) ||
       !lower_expression(context, expression->children[2], &low_word) || !destination.present || !high_word.present ||
-      !low_word.present || !effective_address(context, destination, expression->offset, 8) ||
+      !low_word.present || !effective_address(context, destination, expression->offset, 8, true) ||
       !load_value(context, 1, low_word) || !store_i32_at_r2(context, 1, false, (Value){0}, 0) ||
       !load_value(context, 2, destination) || !emit(context, "  iadd R2, 4") ||
       !load_value(context, 1, high_word) || !store_i32_at_r2(context, 1, false, (Value){0}, 0))
@@ -1631,7 +1698,8 @@ static bool lower_i64_word_extract(Context *context, const WasmExpr *expression,
   if (!lower_expression(context, expression->children[0], &pointer) || !pointer.present)
     return false;
   low_word = pointer;
-  if (!reserve_value_slot(context, &low_word) || !effective_address(context, pointer, expression->source_offset, 8))
+  if (!reserve_value_slot(context, &low_word) ||
+      !effective_address(context, pointer, expression->source_offset, 8, true))
     return false;
   high_word.slot = temp_slot(context);
   if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) ||
@@ -1673,7 +1741,7 @@ static bool lower_i64_local_tee_word_extract(Context *context, const WasmExpr *e
   int local_high = i64_local_high_slot(context->function, expression->index);
 
   if (result_slot == 0 || !lower_expression(context, expression->children[0], &pointer) || !pointer.present ||
-      !effective_address(context, pointer, expression->source_offset, 8))
+      !effective_address(context, pointer, expression->source_offset, 8, true))
     return false;
   high_word.slot = temp_slot(context);
   if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) ||

@@ -1,0 +1,4 @@
+source=address-cache.wat
+entry=main
+expectations=expected.asm
+wasm_as_options=--enable-nontrapping-float-to-int
