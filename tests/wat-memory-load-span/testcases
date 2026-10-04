@@ -1,0 +1,4 @@
+source=load-span.wat
+entry=main
+expectations=expected.asm
+forbidden_expectations=forbidden.asm

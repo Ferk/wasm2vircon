@@ -1,0 +1,2 @@
+iadd R1, 0xFFFFFFF8
+igt R1, 0x8000FFFC

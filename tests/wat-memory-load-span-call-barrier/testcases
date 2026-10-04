@@ -1,0 +1,3 @@
+source=load-span-call-barrier.wat
+entry=main
+expectations=expected.asm
