@@ -423,7 +423,7 @@ static bool load_value(Context *context, int reg, Value value) {
          : value.is_immediate ? emit(context, "  mov R%d, 0x%08X", reg, value.immediate)
                             : load_slot(context, reg, value.slot);
 }
-/* Reserves uninitialized writable storage for an immediate result. */
+/* Reserves writable storage for an immediate, borrowed, or register value. */
 static bool reserve_value_slot(Context *context, Value *value) {
   int slot;
   if (!value->is_immediate && !value->is_borrowed && value->register_plus_one == 0)
@@ -434,13 +434,14 @@ static bool reserve_value_slot(Context *context, Value *value) {
   value->slot = slot;
   value->is_immediate = false;
   value->is_borrowed = false;
+  value->register_plus_one = 0;
   return true;
 }
-/* Materializes an immediate when its original value must survive in storage. */
+/* Materializes a transient value when its original value must survive in storage. */
 static bool materialize_value(Context *context, Value *value) {
   Value source = *value;
   return reserve_value_slot(context, value) &&
-         ((!source.is_immediate && !source.is_borrowed) ||
+         ((!source.is_immediate && !source.is_borrowed && source.register_plus_one == 0) ||
           (load_value(context, 1, source) && store_slot(context, value->slot, 1)));
 }
 
@@ -2978,12 +2979,12 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     *value = left;
     return true;
   }
-  if (!lower_expression(context, expression->children[1], &right) || !right.present ||
-      !load_value(context, 1, left_source))
+  if (!lower_expression(context, expression->children[1], &right) || !right.present)
     return false;
   immediate_opcode = right.is_immediate ? binary_immediate_opcode(expression->binary_op) : NULL;
   if (immediate_opcode != NULL) {
-    if (!emit(context, "  %s R1, 0x%08X", immediate_opcode, right.immediate))
+    if (!load_value(context, 1, left_source) ||
+        !emit(context, "  %s R1, 0x%08X", immediate_opcode, right.immediate))
       return false;
     if (retain_result_register(context, &left, expression->value_type)) {
       release(context, right);
@@ -2996,7 +2997,13 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     *value = left;
     return true;
   }
-  if (!load_value(context, 2, right))
+  /* A nested right expression may itself be retained in R1. Preserve it in
+   * R2 before restoring the left operand into R1; doing these loads in the
+   * opposite order would silently replace both operands with the left value. */
+  if (right.register_plus_one == 2) {
+    if (!load_value(context, 2, right) || !load_value(context, 1, left_source))
+      return false;
+  } else if (!load_value(context, 1, left_source) || !load_value(context, 2, right))
     return false;
 
   switch (expression->binary_op) {
