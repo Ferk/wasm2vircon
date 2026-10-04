@@ -161,7 +161,6 @@ foreach(source_path IN LISTS source_paths)
       "${CLANG_EXECUTABLE}"
       --target=wasm32-unknown-unknown
       -O2
-      -fno-jump-tables
       -ffreestanding
       -fno-builtin
       -nostdlib

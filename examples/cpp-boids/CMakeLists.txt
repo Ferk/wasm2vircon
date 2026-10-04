@@ -41,7 +41,7 @@ set(project_rom "${CMAKE_CURRENT_BINARY_DIR}/${project_name}.v32")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/rom.xml.in" "${project_xml}" @ONLY)
 
 set(cpp_wasm_flags
-  --target=wasm32-unknown-unknown -O2 -std=c++17 -fno-jump-tables
+  --target=wasm32-unknown-unknown -O2 -std=c++17
   -ffreestanding -fno-builtin -nostdlib -fno-exceptions -fno-rtti
   -I "${WASM2VIRCON_ROOT}/include")
 

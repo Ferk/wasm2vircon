@@ -188,7 +188,7 @@ foreach(case_directory IN LISTS case_directories)
   set(xml_file "${case_output}/${program_name}.xml")
   set(rom_file "${case_output}/${program_name}.v32")
 
-  set(clang_flags --target=wasm32-unknown-unknown -O2 -fno-jump-tables -ffreestanding -fno-builtin -nostdlib)
+  set(clang_flags --target=wasm32-unknown-unknown -O2 -ffreestanding -fno-builtin -nostdlib)
   separate_arguments(include_directories NATIVE_COMMAND "${case_include_dirs}")
   foreach(include_directory IN LISTS include_directories)
     set(include_path "${case_directory}/${include_directory}")

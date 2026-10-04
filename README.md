@@ -156,7 +156,7 @@ and are still validated normally.
 The build helper deliberately uses:
 
 ```text
---target=wasm32-unknown-unknown -O2 -fno-jump-tables
+--target=wasm32-unknown-unknown -O2
 -ffreestanding -fno-builtin -nostdlib
 wasm-ld --no-entry --export=main --allow-undefined
 ```
