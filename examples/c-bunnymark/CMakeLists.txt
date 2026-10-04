@@ -9,14 +9,13 @@ cmake_minimum_required(VERSION 3.20)
 # the corresponding Vircon32 resource IDs, starting at zero.
 # ---------------------------------------------------------------------------
 
-set(project_name "CBoids")
-set(project_rom_title "C Boids")
+set(project_name "CBunnymark")
+set(project_rom_title "C BunnyMark")
 set(project_rom_version "1.0")
 set(project_entry "main")
 
 set(project_sources
   src/main.c
-  src/boids.c
 )
 
 # List project-owned headers so editing one triggers recompilation. The public
@@ -28,9 +27,8 @@ set(project_include_directories)
 set(project_compile_options)
 set(project_link_options)
 
-# PNG files listed here become .vtex texture files for packaging in the ROM
 set(project_textures
-  # assets/myAsset.png
+  assets/bunny.png
 )
 
 # WAV files listed here become sound-0.vsnd, sound-1.vsnd, and so on.
