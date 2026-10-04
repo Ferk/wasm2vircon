@@ -92,6 +92,11 @@ typedef struct Context {
   uint32_t *local_address_bases, *local_address_offsets;
   CheckedAddress checked_addresses[16];
   size_t checked_address_count;
+  /* R13 may retain one proven-aligned Vircon word address inside a straight
+   * line region. Calls and control-flow joins invalidate this cache. */
+  bool target_word_address_cached;
+  uint32_t target_word_address_base_local;
+  uint32_t target_word_address_offset;
   const WasmExpr *current_expression;
 } Context;
 
@@ -141,6 +146,7 @@ static bool fresh_label(Context *context, const char *kind, char *out, size_t si
 static bool emit_label(Context *context, const char *label) {
   size_t index;
   context->checked_address_count = 0;
+  context->target_word_address_cached = false;
   /* A label may be reached without executing the preceding textual path.
    * Reset aliases to their local's own runtime value at every join. */
   for (index = 0; index < context->local_alignment_count; ++index) {
@@ -380,6 +386,8 @@ static void assign_local_address_identity(Context *context, uint32_t local, cons
 
   if (local >= context->local_alignment_count)
     return;
+  if (context->target_word_address_cached && context->target_word_address_base_local == local)
+    context->target_word_address_cached = false;
   for (read_index = 0; read_index < context->checked_address_count; ++read_index)
     if (context->checked_addresses[read_index].base_local != local)
       context->checked_addresses[write_index++] = context->checked_addresses[read_index];
@@ -957,12 +965,67 @@ static bool store_byte_at_r2(Context *context, int value_register) {
          emit(context, "  shl R6, R3") && emit(context, "  or R5, R6") && emit(context, "  mov [R4], R5");
 }
 
+/* Formats an R13-relative word operand for a cached aligned Wasm address. */
+static void cached_word_operand(int32_t displacement, char *operand, size_t size) {
+  if (displacement == 0)
+    snprintf(operand, size, "[R13]");
+  else if (displacement > 0)
+    snprintf(operand, size, "[R13+%d]", displacement);
+  else
+    snprintf(operand, size, "[R13%d]", displacement);
+}
+
+/* Returns a cached target-word operand when two aligned Wasm addresses share
+ * the same affine local base. The byte-offset difference becomes a target
+ * word displacement without changing the Wasm pointer representation. */
+static bool find_cached_word_operand(Context *context, Value pointer, uint32_t offset,
+                                     char *operand, size_t size) {
+  uint32_t effective_offset, byte_difference;
+  int32_t signed_difference;
+  int32_t word_displacement;
+
+  if (!context->target_word_address_cached || !pointer.has_address_identity ||
+      context->target_word_address_base_local != pointer.address_base_local)
+    return false;
+  effective_offset = pointer.address_offset + offset;
+  byte_difference = effective_offset - context->target_word_address_offset;
+  if ((byte_difference & 3u) != 0)
+    return false;
+  /* Interpret the wrapping byte delta as a signed two's-complement offset
+   * without relying on an implementation-defined unsigned-to-signed cast. */
+  memcpy(&signed_difference, &byte_difference, sizeof(signed_difference));
+  word_displacement = signed_difference / 4;
+  cached_word_operand(word_displacement, operand, size);
+  return true;
+}
+
+/* Records the target word address currently held in R13. */
+static void record_cached_word_address(Context *context, Value pointer, uint32_t offset) {
+  if (!pointer.has_address_identity)
+    return;
+  context->target_word_address_cached = true;
+  context->target_word_address_base_local = pointer.address_base_local;
+  context->target_word_address_offset = pointer.address_offset + offset;
+}
+
 /* Loads an i32 at the already checked Wasm byte address in R2. */
-static bool load_i32_at_r2(Context *context, int result_register, bool proven_aligned) {
+static bool load_i32_at_r2(Context *context, int result_register, bool proven_aligned,
+                           Value pointer, uint32_t offset) {
   char aligned[64], done[64];
-  if (proven_aligned)
-    return emit(context, "  shl R2, -2") && emit(context, "  iadd R2, %u", LINEAR_BASE) &&
-           emit(context, "  mov R%d, [R2]", result_register);
+  char operand[48];
+  if (proven_aligned) {
+    if (find_cached_word_operand(context, pointer, offset, operand, sizeof(operand)))
+      return emit(context, "  mov R%d, %s", result_register, operand);
+    if (!emit(context, "  shl R2, -2") || !emit(context, "  iadd R2, %u", LINEAR_BASE))
+      return false;
+    if (pointer.has_address_identity) {
+      if (!emit(context, "  mov R13, R2"))
+        return false;
+      record_cached_word_address(context, pointer, offset);
+      return emit(context, "  mov R%d, [R13]", result_register);
+    }
+    return emit(context, "  mov R%d, [R2]", result_register);
+  }
   if (!fresh_label(context, "load_aligned", aligned, sizeof(aligned)) ||
       !fresh_label(context, "load_done", done, sizeof(done)) || !emit(context, "  mov R1, R2") ||
       !emit(context, "  and R1, 3") || !emit(context, "  jf R1, %s", aligned) || !emit(context, "  mov R6, 0"))
@@ -981,11 +1044,23 @@ static bool load_i32_at_r2(Context *context, int result_register, bool proven_al
 }
 
 /* Stores an i32 at the already checked Wasm byte address in R2. */
-static bool store_i32_at_r2(Context *context, int value_register, bool proven_aligned) {
+static bool store_i32_at_r2(Context *context, int value_register, bool proven_aligned,
+                            Value pointer, uint32_t offset) {
   char aligned[64], done[64];
-  if (proven_aligned)
-    return emit(context, "  shl R2, -2") && emit(context, "  iadd R2, %u", LINEAR_BASE) &&
-           emit(context, "  mov [R2], R%d", value_register);
+  char operand[48];
+  if (proven_aligned) {
+    if (find_cached_word_operand(context, pointer, offset, operand, sizeof(operand)))
+      return emit(context, "  mov %s, R%d", operand, value_register);
+    if (!emit(context, "  shl R2, -2") || !emit(context, "  iadd R2, %u", LINEAR_BASE))
+      return false;
+    if (pointer.has_address_identity) {
+      if (!emit(context, "  mov R13, R2"))
+        return false;
+      record_cached_word_address(context, pointer, offset);
+      return emit(context, "  mov [R13], R%d", value_register);
+    }
+    return emit(context, "  mov [R2], R%d", value_register);
+  }
   if (!fresh_label(context, "store_aligned", aligned, sizeof(aligned)) ||
       !fresh_label(context, "store_done", done, sizeof(done)) || !emit(context, "  mov R7, R2") ||
       !emit(context, "  and R7, 3") || !emit(context, "  jf R7, %s", aligned))
@@ -1023,7 +1098,7 @@ static bool lower_load(Context *context, const WasmExpr *expression, Value *valu
     return true;
   }
   proven_aligned = word_access_is_proven_aligned(context, expression->children[0], expression->offset);
-  if (!load_i32_at_r2(context, 1, proven_aligned))
+  if (!load_i32_at_r2(context, 1, proven_aligned, pointer, expression->offset))
     return false;
   slot = result.slot;
   if (!store_slot(context, slot, 1))
@@ -1048,7 +1123,7 @@ static bool lower_store(Context *context, const WasmExpr *expression, Value *val
     return true;
   }
   proven_aligned = word_access_is_proven_aligned(context, expression->children[0], expression->offset);
-  if (!store_i32_at_r2(context, 1, proven_aligned))
+  if (!store_i32_at_r2(context, 1, proven_aligned, pointer, expression->offset))
     return false;
   release(context, input);
   release(context, pointer);
@@ -1079,9 +1154,10 @@ static bool lower_i64_load(Context *context, const WasmExpr *expression, Value *
   if (!reserve_value_slot(context, &result) || !effective_address(context, pointer, expression->offset, 8))
     return false;
   high_slot = temp_slot(context);
-  if (high_slot == 0 || !store_slot(context, high_slot, 2) || !load_i32_at_r2(context, 1, false) ||
+  if (high_slot == 0 || !store_slot(context, high_slot, 2) ||
+      !load_i32_at_r2(context, 1, false, (Value){0}, 0) ||
       !store_slot(context, result.slot, 1) || !load_slot(context, 2, high_slot) || !emit(context, "  iadd R2, 4") ||
-      !load_i32_at_r2(context, 1, false) || !store_slot(context, high_slot, 1))
+      !load_i32_at_r2(context, 1, false, (Value){0}, 0) || !store_slot(context, high_slot, 1))
     return false;
   result.high_slot = high_slot;
   result.type = WASM_VALUE_I64;
@@ -1100,8 +1176,9 @@ static bool lower_i64_store(Context *context, const WasmExpr *expression, Value 
     return false;
   address_slot = temp_slot(context);
   if (address_slot == 0 || !store_slot(context, address_slot, 2) || !load_slot(context, 1, input.slot) ||
-      !store_i32_at_r2(context, 1, false) || !load_slot(context, 2, address_slot) || !emit(context, "  iadd R2, 4") ||
-      !load_slot(context, 1, input.high_slot) || !store_i32_at_r2(context, 1, false))
+      !store_i32_at_r2(context, 1, false, (Value){0}, 0) || !load_slot(context, 2, address_slot) ||
+      !emit(context, "  iadd R2, 4") || !load_slot(context, 1, input.high_slot) ||
+      !store_i32_at_r2(context, 1, false, (Value){0}, 0))
     return false;
 
   release(context, (Value){.slot = address_slot, .type = WASM_VALUE_I32, .present = true});
@@ -1451,9 +1528,11 @@ static bool lower_i64_load_store(Context *context, const WasmExpr *expression, V
     return false;
 
   high_word.slot = temp_slot(context);
-  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) || !load_i32_at_r2(context, 1, false) ||
+  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) ||
+      !load_i32_at_r2(context, 1, false, (Value){0}, 0) ||
       !store_slot(context, source.slot, 1) || !load_slot(context, 2, high_word.slot) ||
-      !emit(context, "  iadd R2, 4") || !load_i32_at_r2(context, 1, false) || !store_slot(context, high_word.slot, 1))
+      !emit(context, "  iadd R2, 4") || !load_i32_at_r2(context, 1, false, (Value){0}, 0) ||
+      !store_slot(context, high_word.slot, 1))
     return false;
   high_word.present = true;
 
@@ -1462,8 +1541,9 @@ static bool lower_i64_load_store(Context *context, const WasmExpr *expression, V
   destination_address.slot = temp_slot(context);
   if (destination_address.slot == 0 || !store_slot(context, destination_address.slot, 2) ||
       !load_slot(context, 2, destination_address.slot) || !load_slot(context, 1, source.slot) ||
-      !store_i32_at_r2(context, 1, false) || !load_slot(context, 2, destination_address.slot) ||
-      !emit(context, "  iadd R2, 4") || !load_slot(context, 1, high_word.slot) || !store_i32_at_r2(context, 1, false))
+      !store_i32_at_r2(context, 1, false, (Value){0}, 0) ||
+      !load_slot(context, 2, destination_address.slot) || !emit(context, "  iadd R2, 4") ||
+      !load_slot(context, 1, high_word.slot) || !store_i32_at_r2(context, 1, false, (Value){0}, 0))
     return false;
 
   destination_address.present = true;
@@ -1487,9 +1567,11 @@ static bool lower_i64_load_store_local_tee(Context *context, const WasmExpr *exp
       !effective_address(context, source, expression->source_offset, 8))
     return false;
   high_word.slot = temp_slot(context);
-  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) || !load_i32_at_r2(context, 1, false) ||
+  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) ||
+      !load_i32_at_r2(context, 1, false, (Value){0}, 0) ||
       !store_slot(context, source.slot, 1) || !load_slot(context, 2, high_word.slot) ||
-      !emit(context, "  iadd R2, 4") || !load_i32_at_r2(context, 1, false) || !store_slot(context, high_word.slot, 1))
+      !emit(context, "  iadd R2, 4") || !load_i32_at_r2(context, 1, false, (Value){0}, 0) ||
+      !store_slot(context, high_word.slot, 1))
     return false;
   high_word.present = true;
 
@@ -1501,8 +1583,9 @@ static bool lower_i64_load_store_local_tee(Context *context, const WasmExpr *exp
   destination_address.slot = temp_slot(context);
   if (destination_address.slot == 0 || !store_slot(context, destination_address.slot, 2) ||
       !load_slot(context, 2, destination_address.slot) || !load_slot(context, 1, source.slot) ||
-      !store_i32_at_r2(context, 1, false) || !load_slot(context, 2, destination_address.slot) ||
-      !emit(context, "  iadd R2, 4") || !load_slot(context, 1, high_word.slot) || !store_i32_at_r2(context, 1, false))
+      !store_i32_at_r2(context, 1, false, (Value){0}, 0) ||
+      !load_slot(context, 2, destination_address.slot) || !emit(context, "  iadd R2, 4") ||
+      !load_slot(context, 1, high_word.slot) || !store_i32_at_r2(context, 1, false, (Value){0}, 0))
     return false;
   destination_address.present = true;
   release(context, destination_address);
@@ -1524,9 +1607,9 @@ static bool lower_i64_packed_i32_store(Context *context, const WasmExpr *express
       !lower_expression(context, expression->children[1], &high_word) || !materialize_borrowed(context, &high_word) ||
       !lower_expression(context, expression->children[2], &low_word) || !destination.present || !high_word.present ||
       !low_word.present || !effective_address(context, destination, expression->offset, 8) ||
-      !load_value(context, 1, low_word) || !store_i32_at_r2(context, 1, false) ||
+      !load_value(context, 1, low_word) || !store_i32_at_r2(context, 1, false, (Value){0}, 0) ||
       !load_value(context, 2, destination) || !emit(context, "  iadd R2, 4") ||
-      !load_value(context, 1, high_word) || !store_i32_at_r2(context, 1, false))
+      !load_value(context, 1, high_word) || !store_i32_at_r2(context, 1, false, (Value){0}, 0))
     return false;
 
   release(context, low_word);
@@ -1551,9 +1634,11 @@ static bool lower_i64_word_extract(Context *context, const WasmExpr *expression,
   if (!reserve_value_slot(context, &low_word) || !effective_address(context, pointer, expression->source_offset, 8))
     return false;
   high_word.slot = temp_slot(context);
-  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) || !load_i32_at_r2(context, 1, false) ||
+  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) ||
+      !load_i32_at_r2(context, 1, false, (Value){0}, 0) ||
       !store_slot(context, low_word.slot, 1) || !load_slot(context, 2, high_word.slot) ||
-      !emit(context, "  iadd R2, 4") || !load_i32_at_r2(context, 1, false) || !store_slot(context, high_word.slot, 1))
+      !emit(context, "  iadd R2, 4") || !load_i32_at_r2(context, 1, false, (Value){0}, 0) ||
+      !store_slot(context, high_word.slot, 1))
     return false;
   high_word.present = true;
 
@@ -1591,9 +1676,10 @@ static bool lower_i64_local_tee_word_extract(Context *context, const WasmExpr *e
       !effective_address(context, pointer, expression->source_offset, 8))
     return false;
   high_word.slot = temp_slot(context);
-  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) || !load_i32_at_r2(context, 1, false) ||
+  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) ||
+      !load_i32_at_r2(context, 1, false, (Value){0}, 0) ||
       !store_slot(context, local_low, 1) || !load_slot(context, 2, high_word.slot) || !emit(context, "  iadd R2, 4") ||
-      !load_i32_at_r2(context, 1, false) || !store_slot(context, local_high, 1) ||
+      !load_i32_at_r2(context, 1, false, (Value){0}, 0) || !store_slot(context, local_high, 1) ||
       !extract_i64_word(context, local_low, local_high, expression->i64_value) || !store_slot(context, result_slot, 1))
     return false;
 
@@ -1624,6 +1710,7 @@ static bool lower_bulk_memory(Context *context, const WasmExpr *expression, Valu
     release(context, arguments[index - 1]);
   if (!emit(context, "  call %s", helper))
     return false;
+  context->target_word_address_cached = false;
   value->present = false;
   return true;
 }
@@ -2095,6 +2182,7 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
       free(arguments);
     return false;
   }
+  context->target_word_address_cached = false;
   if (callee->result == WASM_VALUE_I32 || callee->result == WASM_VALUE_F32) {
     int slot = temp_slot(context);
     if (slot == 0 || !store_slot(context, slot, 0)) {
@@ -2335,6 +2423,7 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
   case WASM_BINARY_DIV_U:
     if (!emit(context, "  call __wasm_i32_div_u") || !store_slot(context, left.slot, 0))
       return false;
+    context->target_word_address_cached = false;
     left.has_address_identity = false;
     release(context, right);
     *value = left;
@@ -2343,6 +2432,7 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     if (!emit(context, "  call __wasm_i32_div_u") || !load_slot(context, 1, left.slot) ||
         !emit(context, "  imul R0, R2") || !emit(context, "  isub R1, R0"))
       return false;
+    context->target_word_address_cached = false;
     break;
   case WASM_BINARY_REM_S:
     if (!fresh_label(context, "rem_s_normal", normal, sizeof(normal)) ||
@@ -2643,6 +2733,9 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
         return false;
     } else if (expression->unary_op == WASM_UNARY_TRUNC_SAT_F32_TO_I32) {
       char special[64], nan[64], done[64];
+      bool address_was_cached = context->target_word_address_cached;
+      uint32_t cached_base_local = context->target_word_address_base_local;
+      uint32_t cached_offset = context->target_word_address_offset;
       /* Values below +2^31 can be clamped at -2^31 and converted directly.
        * The false comparison path combines the upper saturation and NaN
        * cases; NaN is the only value unequal to itself. */
@@ -2656,6 +2749,11 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
           !emit(context, "  mov R1, 0x7FFFFFFF") || !emit(context, "  jmp %s", done) || !emit_label(context, nan) ||
           !emit(context, "  mov R1, 0") || !emit_label(context, done))
         return false;
+      /* These private branches alter only R1/R2. Every route to the merge
+       * therefore preserves the target word address held in R13. */
+      context->target_word_address_cached = address_was_cached;
+      context->target_word_address_base_local = cached_base_local;
+      context->target_word_address_offset = cached_offset;
     } else if (expression->unary_op == WASM_UNARY_F32_NEG) {
       if (!emit(context, "  fsgn R1"))
         return false;
