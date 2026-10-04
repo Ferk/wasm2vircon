@@ -60,6 +60,30 @@ typedef struct CheckedAddress {
   uint32_t base_local, offset, width;
   bool mergeable;
 } CheckedAddress;
+/* Runtime source for a loop trip limit accepted by the first conservative
+ * affine-loop versioner. */
+typedef enum LoopBoundKind {
+  LOOP_BOUND_NONE,
+  LOOP_BOUND_CONSTANT,
+  LOOP_BOUND_LOCAL,
+  LOOP_BOUND_ALIGNED_MEMORY
+} LoopBoundKind;
+typedef enum LoopTripKind {
+  LOOP_TRIP_NONE,
+  LOOP_TRIP_INCREMENT_TO_LIMIT,
+  LOOP_TRIP_COUNTDOWN
+} LoopTripKind;
+/* One guarded affine loop. The fast copy may omit checks only for
+ * byte ranges covered by [minimum_offset, maximum_end). */
+typedef struct LoopFastPath {
+  bool valid;
+  bool use_word_pointer;
+  uint32_t base_local, counter_local, stride;
+  uint32_t minimum_offset, maximum_end;
+  LoopTripKind trip_kind;
+  LoopBoundKind bound_kind;
+  uint32_t bound_value;
+} LoopFastPath;
 /* Alignment facts accumulated at one structured branch target. */
 typedef struct AlignmentTarget {
   const char *name;
@@ -100,6 +124,21 @@ typedef struct Context {
   bool target_word_address_cached;
   uint32_t target_word_address_base_local;
   uint32_t target_word_address_offset;
+  /* A loop-version guard has proven every iteration of this affine range in
+   * bounds. Wasm pointers remain byte offsets; only redundant checks are
+   * skipped while lowering the guarded fast copy. */
+  bool fast_memory_active;
+  uint32_t fast_memory_base_local;
+  uint32_t fast_memory_minimum_offset;
+  uint32_t fast_memory_maximum_end;
+  /* R13 is a native word pointer for a proven-aligned affine Wasm pointer;
+   * R10 retains a stable increment-loop limit loaded by the version guard. */
+  bool fast_word_pointer_active;
+  uint32_t fast_word_pointer_base_local;
+  uint32_t fast_word_pointer_stride;
+  bool fast_bound_active;
+  LoopBoundKind fast_bound_kind;
+  uint32_t fast_bound_value;
   const WasmExpr *current_expression;
 } Context;
 
@@ -803,6 +842,477 @@ static bool lower_expression(Context *context, const WasmExpr *expression, Value
 static bool lower_expression_impl(Context *context, const WasmExpr *expression, Value *value);
 static bool emit_i32_shr_s(Context *context);
 
+#define LOOP_ACCESS_GROUP_LIMIT 8u
+
+/* One syntactically affine load group discovered while inspecting a loop. */
+typedef struct LoopAccessGroup {
+  uint32_t base_local, minimum_offset, maximum_end, access_count;
+  bool all_word_aligned;
+} LoopAccessGroup;
+
+/* Conservative scratch state for recognizing a versionable affine loop. */
+typedef struct LoopScan {
+  const Context *context;
+  const char *loop_name;
+  uint32_t *assignment_counts;
+  uint32_t *strides;
+  bool *stride_assignments;
+  size_t local_count;
+  LoopAccessGroup groups[LOOP_ACCESS_GROUP_LIMIT];
+  size_t group_count;
+  bool rejected;
+  bool has_store;
+  bool has_backedge;
+  uint32_t counter_local;
+  LoopTripKind trip_kind;
+  LoopBoundKind bound_kind;
+  uint32_t bound_value;
+} LoopScan;
+
+/* Recognizes local.get plus an optional nonnegative constant byte offset. */
+static bool syntactic_affine_local(const WasmExpr *expression, uint32_t *local, uint32_t *offset) {
+  uint64_t sum;
+  uint32_t child_local, child_offset;
+
+  if (expression->kind == WASM_EXPR_LOCAL_GET) {
+    *local = expression->index;
+    *offset = 0;
+    return true;
+  }
+  if (expression->kind == WASM_EXPR_LOCAL_SET && expression->is_tee && expression->child_count == 1)
+    return syntactic_affine_local(expression->children[0], local, offset);
+  if (expression->kind != WASM_EXPR_BINARY || expression->binary_op != WASM_BINARY_ADD ||
+      expression->child_count != 2)
+    return false;
+  if (syntactic_affine_local(expression->children[0], &child_local, &child_offset) &&
+      expression->children[1]->kind == WASM_EXPR_I32_CONST && expression->children[1]->i32_value >= 0) {
+    sum = (uint64_t)child_offset + (uint32_t)expression->children[1]->i32_value;
+  } else if (expression->children[0]->kind == WASM_EXPR_I32_CONST &&
+             expression->children[0]->i32_value >= 0 &&
+             syntactic_affine_local(expression->children[1], &child_local, &child_offset)) {
+    sum = (uint64_t)child_offset + (uint32_t)expression->children[0]->i32_value;
+  } else
+    return false;
+  if (sum > UINT32_MAX)
+    return false;
+  *local = child_local;
+  *offset = (uint32_t)sum;
+  return true;
+}
+
+/* Recognizes the side-effect-free subset of affine pointer expressions. This
+ * deliberately excludes local.tee: a cached target operand may replace the
+ * address calculation, but it must never remove a Wasm local assignment. */
+static bool syntactic_pure_affine_local(const WasmExpr *expression, uint32_t *local, uint32_t *offset) {
+  uint64_t sum;
+  uint32_t child_local, child_offset;
+
+  if (expression->kind == WASM_EXPR_LOCAL_GET) {
+    *local = expression->index;
+    *offset = 0;
+    return true;
+  }
+  if (expression->kind != WASM_EXPR_BINARY || expression->binary_op != WASM_BINARY_ADD ||
+      expression->child_count != 2)
+    return false;
+  if (syntactic_pure_affine_local(expression->children[0], &child_local, &child_offset) &&
+      expression->children[1]->kind == WASM_EXPR_I32_CONST && expression->children[1]->i32_value >= 0) {
+    sum = (uint64_t)child_offset + (uint32_t)expression->children[1]->i32_value;
+  } else if (expression->children[0]->kind == WASM_EXPR_I32_CONST &&
+             expression->children[0]->i32_value >= 0 &&
+             syntactic_pure_affine_local(expression->children[1], &child_local, &child_offset)) {
+    sum = (uint64_t)child_offset + (uint32_t)expression->children[0]->i32_value;
+  } else
+    return false;
+  if (sum > UINT32_MAX)
+    return false;
+  *local = child_local;
+  *offset = (uint32_t)sum;
+  return true;
+}
+
+/* Recognizes the positive constant update local = local + stride. */
+static bool syntactic_positive_local_stride(const WasmExpr *expression, uint32_t local, uint32_t *stride) {
+  const WasmExpr *left, *right;
+  if (expression->kind != WASM_EXPR_BINARY || expression->binary_op != WASM_BINARY_ADD ||
+      expression->child_count != 2)
+    return false;
+  left = expression->children[0];
+  right = expression->children[1];
+  if (left->kind == WASM_EXPR_I32_CONST) {
+    const WasmExpr *swap = left;
+    left = right;
+    right = swap;
+  }
+  if (left->kind != WASM_EXPR_LOCAL_GET || left->index != local || right->kind != WASM_EXPR_I32_CONST ||
+      right->i32_value <= 0)
+    return false;
+  *stride = (uint32_t)right->i32_value;
+  return true;
+}
+
+/* Accepts a loop-limit expression that can be read without introducing a new
+ * trap. Constant-address memory is allowed only when it is aligned and known
+ * to be inside the fixed initial memory. */
+static bool parse_loop_bound(const Context *context, const WasmExpr *expression,
+                             LoopBoundKind *kind, uint32_t *value) {
+  uint64_t address;
+  if (expression->kind == WASM_EXPR_I32_CONST) {
+    *kind = LOOP_BOUND_CONSTANT;
+    *value = (uint32_t)expression->i32_value;
+    return true;
+  }
+  if (expression->kind == WASM_EXPR_LOCAL_GET &&
+      local_value_type(context->function, expression->index) == WASM_VALUE_I32) {
+    *kind = LOOP_BOUND_LOCAL;
+    *value = expression->index;
+    return true;
+  }
+  if (expression->kind != WASM_EXPR_LOAD || expression->bytes != 4 || expression->child_count != 1 ||
+      expression->children[0]->kind != WASM_EXPR_I32_CONST)
+    return false;
+  address = (uint64_t)(uint32_t)expression->children[0]->i32_value + expression->offset;
+  if ((address & 3u) != 0 || address > context->memory_bytes || 4u > (uint64_t)context->memory_bytes - address)
+    return false;
+  *kind = LOOP_BOUND_ALIGNED_MEMORY;
+  *value = (uint32_t)address;
+  return true;
+}
+
+/* Recognizes the two canonical counted backedges currently versioned: a
+ * forward index compared with a stable limit, or a positive counter reduced
+ * by one until zero. */
+static bool parse_counted_backedge(const LoopScan *scan, const WasmExpr *branch,
+                                   uint32_t *counter_local, LoopTripKind *trip_kind,
+                                   LoopBoundKind *bound_kind, uint32_t *bound_value) {
+  const WasmExpr *condition, *increment, *left, *right;
+  uint32_t stride;
+  if (branch->kind != WASM_EXPR_BR_IF || branch->name == NULL || scan->loop_name == NULL ||
+      strcmp(branch->name, scan->loop_name) != 0 || branch->child_count == 0)
+    return false;
+  condition = branch->children[branch->child_count - 1];
+  if (condition->kind == WASM_EXPR_LOCAL_SET && condition->is_tee && condition->child_count == 1) {
+    increment = condition->children[0];
+    if (increment->kind != WASM_EXPR_BINARY || increment->binary_op != WASM_BINARY_ADD ||
+        increment->child_count != 2)
+      return false;
+    left = increment->children[0];
+    right = increment->children[1];
+    if (left->kind == WASM_EXPR_I32_CONST) {
+      const WasmExpr *swap = left;
+      left = right;
+      right = swap;
+    }
+    if (left->kind != WASM_EXPR_LOCAL_GET || left->index != condition->index ||
+        right->kind != WASM_EXPR_I32_CONST || right->i32_value != -1)
+      return false;
+    *counter_local = condition->index;
+    *trip_kind = LOOP_TRIP_COUNTDOWN;
+    *bound_kind = LOOP_BOUND_NONE;
+    *bound_value = 0;
+    return true;
+  }
+  if (condition->kind != WASM_EXPR_BINARY || condition->binary_op != WASM_BINARY_LT_S ||
+      condition->child_count != 2 || condition->children[0]->kind != WASM_EXPR_LOCAL_SET ||
+      !condition->children[0]->is_tee || condition->children[0]->child_count != 1)
+    return false;
+  *counter_local = condition->children[0]->index;
+  increment = condition->children[0]->children[0];
+  if (!syntactic_positive_local_stride(increment, *counter_local, &stride) || stride != 1)
+    return false;
+  *trip_kind = LOOP_TRIP_INCREMENT_TO_LIMIT;
+  return parse_loop_bound(scan->context, condition->children[1], bound_kind, bound_value);
+}
+
+/* Adds one direct affine load/store to a bounded set of candidate base locals. */
+static void record_loop_access(LoopScan *scan, const WasmExpr *expression) {
+  uint32_t local, pointer_offset;
+  uint64_t start, end;
+  size_t index;
+  LoopAccessGroup *group = NULL;
+
+  if (expression->child_count == 0)
+    return;
+  if (!syntactic_affine_local(expression->children[0], &local, &pointer_offset)) {
+    return;
+  }
+  start = (uint64_t)pointer_offset + expression->offset;
+  end = start + expression->bytes;
+  if (start > UINT32_MAX || end > UINT32_MAX)
+    return;
+  for (index = 0; index < scan->group_count; ++index)
+    if (scan->groups[index].base_local == local) {
+      group = &scan->groups[index];
+      break;
+    }
+  if (group == NULL) {
+    if (scan->group_count == LOOP_ACCESS_GROUP_LIMIT)
+      return;
+    group = &scan->groups[scan->group_count++];
+    *group = (LoopAccessGroup){.base_local = local,
+                               .minimum_offset = (uint32_t)start,
+                               .maximum_end = (uint32_t)end,
+                               .all_word_aligned = true};
+  }
+  if (start < group->minimum_offset)
+    group->minimum_offset = (uint32_t)start;
+  if (end > group->maximum_end)
+    group->maximum_end = (uint32_t)end;
+  if (expression->bytes != 4 || (start & 3u) != 0)
+    group->all_word_aligned = false;
+  ++group->access_count;
+}
+
+/* Walks one loop body without interpreting arbitrary control flow. Rejection
+ * is deliberately conservative: the first implementation accepts only
+ * affine loads/stores, imported hardware calls, and no nested loops. */
+static void scan_versionable_loop(LoopScan *scan, const WasmExpr *expression) {
+  size_t index;
+  if (scan->rejected)
+    return;
+  if (expression->kind == WASM_EXPR_LOOP) {
+    scan->rejected = true;
+    return;
+  }
+  if (expression->kind == WASM_EXPR_I64_CONST_STORE || expression->kind == WASM_EXPR_I64_LOAD_STORE ||
+      expression->kind == WASM_EXPR_I64_LOAD_STORE_LOCAL_TEE ||
+      expression->kind == WASM_EXPR_I64_PACKED_I32_STORE || expression->kind == WASM_EXPR_MEMORY_COPY ||
+      expression->kind == WASM_EXPR_MEMORY_FILL || expression->kind == WASM_EXPR_MEMORY_GROW) {
+    scan->rejected = true;
+    return;
+  }
+  if (expression->kind == WASM_EXPR_CALL) {
+    const WasmFunction *callee = wasm_module_find_function(scan->context->validated->module, expression->name);
+    if (callee == NULL || !callee->is_import) {
+      scan->rejected = true;
+      return;
+    }
+  }
+  if ((expression->kind == WASM_EXPR_BR && expression->name != NULL && scan->loop_name != NULL &&
+       strcmp(expression->name, scan->loop_name) == 0) ||
+      (expression->kind == WASM_EXPR_BR_TABLE && scan->loop_name != NULL)) {
+    size_t target_index;
+    if (expression->kind == WASM_EXPR_BR ||
+        (expression->name != NULL && strcmp(expression->name, scan->loop_name) == 0)) {
+      scan->rejected = true;
+      return;
+    }
+    for (target_index = 0; target_index < expression->branch_target_count; ++target_index)
+      if (strcmp(expression->branch_targets[target_index], scan->loop_name) == 0) {
+        scan->rejected = true;
+        return;
+      }
+  }
+  if (expression->kind == WASM_EXPR_LOAD || expression->kind == WASM_EXPR_STORE) {
+    record_loop_access(scan, expression);
+    if (expression->kind == WASM_EXPR_STORE)
+      scan->has_store = true;
+  }
+  if (expression->kind == WASM_EXPR_LOCAL_SET && expression->index < scan->local_count) {
+    uint32_t stride;
+    ++scan->assignment_counts[expression->index];
+    if (expression->child_count == 1 &&
+        syntactic_positive_local_stride(expression->children[0], expression->index, &stride)) {
+      scan->strides[expression->index] = stride;
+      scan->stride_assignments[expression->index] = true;
+    }
+  }
+  if (expression->kind == WASM_EXPR_BR_IF && expression->name != NULL && scan->loop_name != NULL &&
+      strcmp(expression->name, scan->loop_name) == 0) {
+    uint32_t counter;
+    LoopTripKind trip_kind;
+    LoopBoundKind bound_kind;
+    uint32_t bound_value;
+    if (scan->has_backedge ||
+        !parse_counted_backedge(scan, expression, &counter, &trip_kind, &bound_kind, &bound_value)) {
+      scan->rejected = true;
+      return;
+    }
+    scan->has_backedge = true;
+    scan->counter_local = counter;
+    scan->trip_kind = trip_kind;
+    scan->bound_kind = bound_kind;
+    scan->bound_value = bound_value;
+  }
+  for (index = 0; index < expression->child_count; ++index)
+    scan_versionable_loop(scan, expression->children[index]);
+}
+
+/* Builds the narrow affine-loop plan used by the guarded fast/checked copies. */
+static LoopFastPath analyze_loop_fast_path(const Context *context, const WasmExpr *loop) {
+  LoopFastPath plan = {0};
+  LoopScan scan = {.context = context, .loop_name = loop->name};
+  size_t index, best = SIZE_MAX;
+
+  if (context->memory_can_grow || loop->name == NULL || loop->child_count != 1)
+    return plan;
+  scan.local_count = context->function->param_count + context->function->local_count;
+  scan.assignment_counts = calloc(scan.local_count == 0 ? 1 : scan.local_count,
+                                  sizeof(*scan.assignment_counts));
+  scan.strides = calloc(scan.local_count == 0 ? 1 : scan.local_count, sizeof(*scan.strides));
+  scan.stride_assignments = calloc(scan.local_count == 0 ? 1 : scan.local_count,
+                                   sizeof(*scan.stride_assignments));
+  if (scan.assignment_counts == NULL || scan.strides == NULL || scan.stride_assignments == NULL)
+    goto done;
+  scan_versionable_loop(&scan, loop->children[0]);
+  if (scan.rejected || !scan.has_backedge || scan.counter_local >= scan.local_count ||
+      scan.assignment_counts[scan.counter_local] != 1)
+    goto done;
+  /* A linear-memory limit is stable across imported hardware calls, but an
+   * arbitrary store in the same loop could alias it. Countdown loops and
+   * local/constant limits do not have that ambiguity. */
+  if (scan.has_store && scan.bound_kind == LOOP_BOUND_ALIGNED_MEMORY)
+    goto done;
+  if (scan.bound_kind == LOOP_BOUND_LOCAL &&
+      (scan.bound_value >= scan.local_count || scan.assignment_counts[scan.bound_value] != 0))
+    goto done;
+  for (index = 0; index < scan.group_count; ++index) {
+    const LoopAccessGroup *group = &scan.groups[index];
+    if (group->access_count < 2 || group->base_local >= scan.local_count ||
+        group->base_local == scan.counter_local || scan.assignment_counts[group->base_local] != 1 ||
+        !scan.stride_assignments[group->base_local] || scan.strides[group->base_local] == 0 ||
+        scan.strides[group->base_local] > INT32_MAX ||
+        local_value_type(context->function, group->base_local) != WASM_VALUE_I32 ||
+        local_value_type(context->function, scan.counter_local) != WASM_VALUE_I32 ||
+        group->maximum_end > context->memory_bytes)
+      continue;
+    if (best == SIZE_MAX || group->access_count > scan.groups[best].access_count)
+      best = index;
+  }
+  if (best != SIZE_MAX) {
+    const LoopAccessGroup *group = &scan.groups[best];
+    plan.valid = true;
+    plan.base_local = group->base_local;
+    plan.counter_local = scan.counter_local;
+    plan.stride = scan.strides[group->base_local];
+    plan.minimum_offset = group->minimum_offset;
+    plan.maximum_end = group->maximum_end;
+    plan.trip_kind = scan.trip_kind;
+    plan.bound_kind = scan.bound_kind;
+    plan.bound_value = scan.bound_value;
+    plan.use_word_pointer = group->all_word_aligned && (plan.stride & 3u) == 0 &&
+                            context->local_alignments[plan.base_local] >= 4;
+  }
+done:
+  free(scan.assignment_counts);
+  free(scan.strides);
+  free(scan.stride_assignments);
+  return plan;
+}
+
+/* Reads one accepted loop bound into a target register. */
+static bool emit_loop_bound(Context *context, const LoopFastPath *plan, int reg) {
+  switch (plan->bound_kind) {
+  case LOOP_BOUND_CONSTANT:
+    return emit(context, "  mov R%d, 0x%08X", reg, plan->bound_value);
+  case LOOP_BOUND_LOCAL:
+    return load_slot(context, reg, local_slot(context->function, plan->bound_value));
+  case LOOP_BOUND_ALIGNED_MEMORY:
+    return emit(context, "  mov R%d, [%u]", reg, LINEAR_BASE + plan->bound_value / 4u);
+  case LOOP_BOUND_NONE:
+    break;
+  }
+  return false;
+}
+
+/* Emits a non-trapping loop-version guard. Failure selects the original
+ * checked loop; success proves every planned affine access in every iteration.
+ * Keeping the checked fallback is what preserves Wasm's exact trap order. */
+static bool emit_loop_fast_guard(Context *context, const LoopFastPath *plan, const char *checked_label) {
+  uint32_t maximum_base = context->memory_bytes - plan->maximum_end;
+  int counter_slot = local_slot(context->function, plan->counter_local);
+  int base_slot = local_slot(context->function, plan->base_local);
+
+  if (!load_slot(context, 1, counter_slot))
+    return false;
+  if (plan->trip_kind == LOOP_TRIP_COUNTDOWN) {
+    if (!emit(context, "  mov R3, R1") || !emit(context, "  igt R1, 0") ||
+        !emit(context, "  jf R1, %s", checked_label))
+      return false;
+  } else if (plan->trip_kind == LOOP_TRIP_INCREMENT_TO_LIMIT) {
+    if (!emit(context, "  mov R2, R1") || !emit(context, "  ilt R2, 0") ||
+        !emit(context, "  jt R2, %s", checked_label) || !emit_loop_bound(context, plan, 3) ||
+        !emit(context, "  mov R10, R3") ||
+        !emit(context, "  mov R2, R3") || !emit(context, "  igt R2, R1") ||
+        !emit(context, "  jf R2, %s", checked_label) || !emit(context, "  isub R3, R1"))
+      return false;
+  } else
+    return false;
+
+  return load_slot(context, 2, base_slot) && emit(context, "  mov R4, R2") &&
+         emit(context, "  xor R4, 0x80000000") &&
+         emit(context, "  igt R4, 0x%08X", maximum_base ^ 0x80000000u) &&
+         emit(context, "  jt R4, %s", checked_label) && emit(context, "  mov R4, %u", maximum_base) &&
+         emit(context, "  isub R4, R2") && emit(context, "  idiv R4, %u", plan->stride) &&
+         emit(context, "  isub R3, 1") && emit(context, "  igt R3, R4") &&
+         emit(context, "  jt R3, %s", checked_label);
+}
+
+/* Emits one copy of a structured loop body, selecting whether the surrounding
+ * runtime guard permits its affine memory accesses to bypass bounds checks. */
+static bool lower_loop_copy(Context *context, const WasmExpr *loop, const LoopFastPath *plan,
+                            const char *label, bool fast) {
+  Value body_value = {0};
+  Target target;
+  bool success;
+
+  if (!push_target(context, loop->name, label, 0))
+    return false;
+  if (!emit_label(context, label)) {
+    target = pop_target(context);
+    free(target.label);
+    return false;
+  }
+  context->fast_memory_active = fast;
+  if (fast) {
+    context->fast_memory_base_local = plan->base_local;
+    context->fast_memory_minimum_offset = plan->minimum_offset;
+    context->fast_memory_maximum_end = plan->maximum_end;
+    context->fast_word_pointer_active = plan->use_word_pointer;
+    context->fast_word_pointer_base_local = plan->base_local;
+    context->fast_word_pointer_stride = plan->stride / 4u;
+    context->fast_bound_active = plan->trip_kind == LOOP_TRIP_INCREMENT_TO_LIMIT;
+    context->fast_bound_kind = plan->bound_kind;
+    context->fast_bound_value = plan->bound_value;
+  }
+  success = lower_expression(context, loop->children[0], &body_value);
+  context->fast_memory_active = false;
+  context->fast_word_pointer_active = false;
+  context->fast_bound_active = false;
+  release(context, body_value);
+  target = pop_target(context);
+  free(target.label);
+  return success;
+}
+
+/* Duplicates one recognized loop behind a safe span guard. The normal checked
+ * copy remains the semantic fallback for every unusual or invalid runtime
+ * state, while the common valid path uses native aligned memory operations. */
+static bool lower_versioned_loop(Context *context, const WasmExpr *loop,
+                                 const LoopFastPath *plan, Value *value) {
+  char fast_label[64], checked_label[64], join_label[64];
+  unsigned entry_temp_depth = context->temp_depth;
+
+  if (!fresh_label(context, "loop_fast", fast_label, sizeof(fast_label)) ||
+      !fresh_label(context, "loop_checked", checked_label, sizeof(checked_label)) ||
+      !fresh_label(context, "loop_join", join_label, sizeof(join_label)) ||
+      !emit_loop_fast_guard(context, plan, checked_label) ||
+      (plan->use_word_pointer &&
+       (!emit(context, "  shl R2, -2") || !emit(context, "  iadd R2, %u", LINEAR_BASE) ||
+        !emit(context, "  mov R13, R2"))) ||
+      !lower_loop_copy(context, loop, plan, fast_label, true) ||
+      !emit(context, "  jmp %s", join_label))
+    return false;
+
+  /* Both copies start with identical Wasm locals. Compiler-owned temporary
+   * slots may therefore be reused even though only one copy executes. */
+  context->temp_depth = entry_temp_depth;
+  if (!lower_loop_copy(context, loop, plan, checked_label, false) || !emit_label(context, join_label))
+    return false;
+  value->present = false;
+  return true;
+}
+
 /* Lowers a structured if and merges an optional one-word result from its two arms. */
 static bool lower_if(Context *context, const WasmExpr *expression, Value *value) {
   Value condition = {0}, arm = {0}, result = {0};
@@ -976,6 +1486,20 @@ static void record_checked_address(Context *context, Value pointer, uint32_t off
   context->checked_addresses[context->checked_address_count++] = candidate;
 }
 
+/* Reports whether the active loop-version guard proves this affine access for
+ * every fast-path iteration. The exclusive end calculation is widened so a
+ * wrapping Wasm offset can never become an unchecked target access. */
+static bool fast_loop_covers_access(const Context *context, Value pointer, uint32_t offset, uint32_t width) {
+  uint64_t start, end;
+  if (!context->fast_memory_active || !pointer.has_address_identity ||
+      pointer.address_base_local != context->fast_memory_base_local)
+    return false;
+  start = (uint64_t)pointer.address_offset + offset;
+  end = start + width;
+  return start >= context->fast_memory_minimum_offset &&
+         end <= context->fast_memory_maximum_end;
+}
+
 /* Emits or reuses a Wasm bounds check and leaves the effective byte address
  * in R2. Cache entries never cross labels or assignments to their base local. */
 static bool effective_address(Context *context, Value pointer, uint32_t offset, uint32_t width,
@@ -984,6 +1508,10 @@ static bool effective_address(Context *context, Value pointer, uint32_t offset, 
   bool success;
   if (required > VIRCON_LINEAR_MEMORY_BYTES)
     return emit(context, "  jmp __wasm_trap");
+  if (fast_loop_covers_access(context, pointer, offset, width))
+    return !materialize_address ||
+           (load_value(context, 2, pointer) &&
+            (offset == 0 || emit(context, "  iadd R2, 0x%08X", offset)));
   if (pointer.is_immediate) {
     uint64_t address = (uint64_t)pointer.immediate + offset;
     if (address > context->memory_bytes || width > (uint64_t)context->memory_bytes - address)
@@ -1060,6 +1588,15 @@ static bool find_cached_word_operand(Context *context, Value pointer, uint32_t o
   int32_t signed_difference;
   int32_t word_displacement;
 
+  if (context->fast_word_pointer_active && pointer.has_address_identity &&
+      pointer.address_base_local == context->fast_word_pointer_base_local) {
+    effective_offset = pointer.address_offset + offset;
+    if ((effective_offset & 3u) == 0 &&
+        fast_loop_covers_access(context, pointer, offset, 4)) {
+      cached_word_operand((int32_t)(effective_offset / 4u), operand, size);
+      return true;
+    }
+  }
   if (!context->target_word_address_cached || !pointer.has_address_identity ||
       context->target_word_address_base_local != pointer.address_base_local)
     return false;
@@ -1081,6 +1618,30 @@ static bool has_cached_word_operand(Context *context, Value pointer, uint32_t of
   return find_cached_word_operand(context, pointer, offset, operand, sizeof(operand));
 }
 
+/* Builds a compiler value for a pure affine pointer without emitting its byte
+ * arithmetic when the guarded loop already carries the corresponding native
+ * word pointer. Wasm pointer values remain byte offsets everywhere else. */
+static bool make_fast_word_pointer(Context *context, const WasmExpr *expression,
+                                   uint32_t memory_offset, Value *pointer) {
+  uint32_t local, offset, base;
+
+  if (!context->fast_word_pointer_active ||
+      !syntactic_pure_affine_local(expression, &local, &offset) ||
+      local >= context->local_alignment_count)
+    return false;
+  base = context->local_address_bases[local];
+  offset += context->local_address_offsets[local];
+  *pointer = (Value){.slot = local_slot(context->function, local),
+                     .type = WASM_VALUE_I32,
+                     .present = true,
+                     .is_borrowed = true,
+                     .has_address_identity = true,
+                     .address_base_local = base,
+                     .address_offset = offset};
+  return fast_loop_covers_access(context, *pointer, memory_offset, 4) &&
+         has_cached_word_operand(context, *pointer, memory_offset);
+}
+
 /* Records the target word address currently held in R13. */
 static void record_cached_word_address(Context *context, Value pointer, uint32_t offset) {
   if (!pointer.has_address_identity)
@@ -1100,7 +1661,7 @@ static bool load_i32_at_r2(Context *context, int result_register, bool proven_al
       return emit(context, "  mov R%d, %s", result_register, operand);
     if (!emit(context, "  shl R2, -2") || !emit(context, "  iadd R2, %u", LINEAR_BASE))
       return false;
-    if (pointer.has_address_identity) {
+    if (pointer.has_address_identity && !context->fast_word_pointer_active) {
       if (!emit(context, "  mov R13, R2"))
         return false;
       record_cached_word_address(context, pointer, offset);
@@ -1135,7 +1696,7 @@ static bool store_i32_at_r2(Context *context, int value_register, bool proven_al
       return emit(context, "  mov %s, R%d", operand, value_register);
     if (!emit(context, "  shl R2, -2") || !emit(context, "  iadd R2, %u", LINEAR_BASE))
       return false;
-    if (pointer.has_address_identity) {
+    if (pointer.has_address_identity && !context->fast_word_pointer_active) {
       if (!emit(context, "  mov R13, R2"))
         return false;
       record_cached_word_address(context, pointer, offset);
@@ -1166,10 +1727,11 @@ static bool lower_load(Context *context, const WasmExpr *expression, Value *valu
   Value pointer = {0}, result = {0};
   bool proven_aligned, cached_word_address;
   int slot;
-  if (!lower_expression(context, expression->children[0], &pointer) || !pointer.present)
-    return false;
   proven_aligned = expression->bytes == 4 &&
                    word_access_is_proven_aligned(context, expression->children[0], expression->offset);
+  if (!(proven_aligned && make_fast_word_pointer(context, expression->children[0], expression->offset, &pointer)) &&
+      (!lower_expression(context, expression->children[0], &pointer) || !pointer.present))
+    return false;
   cached_word_address = proven_aligned && has_cached_word_operand(context, pointer, expression->offset);
   result = pointer;
   if (!reserve_value_slot(context, &result) ||
@@ -1193,12 +1755,17 @@ static bool lower_load(Context *context, const WasmExpr *expression, Value *valu
 /* Lowers a validated byte or i32 Wasm store into packed-memory operations. */
 static bool lower_store(Context *context, const WasmExpr *expression, Value *value) {
   Value pointer = {0}, input = {0};
-  bool proven_aligned, cached_word_address;
-  if (!lower_expression(context, expression->children[0], &pointer) || !materialize_borrowed(context, &pointer) ||
-      !lower_expression(context, expression->children[1], &input) || !pointer.present || !input.present)
-    return false;
+  bool proven_aligned, cached_word_address, pointer_is_fast = false;
   proven_aligned = expression->bytes == 4 &&
                    word_access_is_proven_aligned(context, expression->children[0], expression->offset);
+  if (proven_aligned)
+    pointer_is_fast = make_fast_word_pointer(context, expression->children[0], expression->offset, &pointer);
+  if (!pointer_is_fast &&
+      (!lower_expression(context, expression->children[0], &pointer) || !pointer.present))
+    return false;
+  if ((!pointer_is_fast && !materialize_borrowed(context, &pointer)) ||
+      !lower_expression(context, expression->children[1], &input) || !input.present)
+    return false;
   cached_word_address = proven_aligned && has_cached_word_operand(context, pointer, expression->offset);
   if (!effective_address(context, pointer, expression->offset, expression->bytes, !cached_word_address) ||
       !load_value(context, 1, input))
@@ -2339,12 +2906,24 @@ static void set_binary_address_identity(Value *result, const Value *left, const 
   }
 }
 
+/* Matches the stable limit captured by an active loop-version guard. The
+ * guarded fast copy may reuse R10 because the loop scan rejected assignments
+ * to local limits and rejected stores when the limit resides in memory. */
+static bool is_cached_fast_loop_bound(const Context *context, const WasmExpr *expression) {
+  LoopBoundKind kind;
+  uint32_t value;
+  return context->fast_bound_active && parse_loop_bound(context, expression, &kind, &value) &&
+         kind == context->fast_bound_kind && value == context->fast_bound_value;
+}
+
 /* Lowers one supported typed binary operation through the compiler value model,
  * retaining a right-hand integer constant as a target immediate when legal. */
 static bool lower_binary(Context *context, const WasmExpr *expression, Value *value) {
   Value left = {0}, left_source = {0}, right = {0};
   char normal[64], done[64];
   const char *immediate_opcode;
+  bool cached_loop_bound = expression->binary_op == WASM_BINARY_LT_S &&
+                           is_cached_fast_loop_bound(context, expression->children[1]);
   if (!lower_expression(context, expression->children[0], &left) || !left.present)
     return false;
   /* A constant right operand cannot mutate a borrowed local. Other right
@@ -2354,8 +2933,18 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
       expression->children[1]->kind != WASM_EXPR_F32_CONST && !materialize_borrowed(context, &left))
     return false;
   left_source = left;
-  if (!reserve_value_slot(context, &left) || !lower_expression(context, expression->children[1], &right) ||
-      !right.present || !load_value(context, 1, left_source))
+  if (!reserve_value_slot(context, &left))
+    return false;
+  if (cached_loop_bound) {
+    if (!load_value(context, 1, left_source) || !emit(context, "  ilt R1, R10") ||
+        !store_slot(context, left.slot, 1))
+      return false;
+    left.has_address_identity = false;
+    *value = left;
+    return true;
+  }
+  if (!lower_expression(context, expression->children[1], &right) || !right.present ||
+      !load_value(context, 1, left_source))
     return false;
   immediate_opcode = right.is_immediate ? binary_immediate_opcode(expression->binary_op) : NULL;
   if (immediate_opcode != NULL) {
@@ -2761,6 +3350,12 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
         return false;
     } else if (!load_value(context, 1, left) || !store_slot(context, local_slot(context->function, expression->index), 1))
       return false;
+    /* Keep the guarded native pointer synchronized with the actual Wasm
+     * induction-local assignment. Updating here, rather than at a branch,
+     * remains correct even when structured control has multiple backedges. */
+    if (context->fast_word_pointer_active && expression->index == context->fast_word_pointer_base_local &&
+        !emit(context, "  iadd R13, %u", context->fast_word_pointer_stride))
+      return false;
     if (local_value_type(context->function, expression->index) == WASM_VALUE_I32)
       assign_local_address_identity(context, expression->index, &left);
     if (expression->is_tee) {
@@ -2969,6 +3564,10 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
     return true;
     }
   case WASM_EXPR_LOOP:
+    {
+    LoopFastPath fast_path = analyze_loop_fast_path(context, expression);
+    if (fast_path.valid)
+      return lower_versioned_loop(context, expression, &fast_path, value);
     if (!fresh_label(context, "loop", label, sizeof(label)) ||
         !push_target(context, expression->name, label, 0))
       return false;
@@ -2977,6 +3576,7 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
     free(pop_target(context).label);
     value->present = false;
     return true;
+    }
   case WASM_EXPR_BR: {
     const Target *branch_target = find_target(context, expression->name);
     const char *target = branch_target == NULL ? NULL : branch_target->label;
