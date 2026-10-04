@@ -446,10 +446,12 @@ All public functionality in this document is implemented in
 --include include
 ```
 
-The functions are deliberately marked no-inline for the supported Clang
-profile. They are still ordinary C, not compiler intrinsics; this keeps their
-generated Wasm control flow stable and avoids duplicating a helper body at
-each call site. `--extra-source` remains available for an application's own
+The functions are ordinary C, not compiler intrinsics. Thin state-access and
+hardware wrappers are normal `static inline` functions, allowing an optimizing
+frontend to replace them with their low-level imports and avoid unnecessary
+Wasm/Vircon call frames. Larger byte-memory, string, text, and formatting loops
+are kept out of line to avoid code duplication and unstable widened memory
+operations. `--extra-source` remains available for an application's own
 additional C files, but is not needed for the supplied C API.
 
 ## Current C and Wasm limitations

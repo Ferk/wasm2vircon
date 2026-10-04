@@ -6,4 +6,4 @@ __wasm_memory_grow_failed
 mov R1, 0x00000002
 mov [999998], R5
 # The grown page is addressed through normal packed Wasm memory lowering.
-iadd R4, 1000000
+iadd R3, 1000000

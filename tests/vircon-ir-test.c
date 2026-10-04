@@ -106,6 +106,21 @@ int main(void) {
     return fail(&program, diagnostic_stream, 11);
 
   vircon_ir_dispose(&program);
+  vircon_ir_init(&program);
+  if (!append_instruction(&program, &diagnostics, "  mov [BP-1], R1") ||
+      !append_instruction(&program, &diagnostics, "  mov R1, [BP-1]") ||
+      !append_instruction(&program, &diagnostics, "  iadd R1, 1") ||
+      !append_instruction(&program, &diagnostics, "  mov R1, [BP-1]") ||
+      !vircon_ir_append_label(&program, "__copy_join", &diagnostics) ||
+      !append_instruction(&program, &diagnostics, "  mov R1, [BP-1]"))
+    return fail(&program, diagnostic_stream, 12);
+  vircon_ir_optimize_copies(&program);
+  if (program.count != 5 || program.nodes[0].opcode != VIRCON_IR_OPCODE_MOV ||
+      program.nodes[1].opcode != VIRCON_IR_OPCODE_IADD || program.nodes[2].opcode != VIRCON_IR_OPCODE_MOV ||
+      program.nodes[3].kind != VIRCON_IR_NODE_LABEL || program.nodes[4].opcode != VIRCON_IR_OPCODE_MOV)
+    return fail(&program, diagnostic_stream, 13);
+
+  vircon_ir_dispose(&program);
   fclose(diagnostic_stream);
   return 0;
 }

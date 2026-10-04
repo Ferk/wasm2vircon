@@ -151,6 +151,8 @@ typedef struct WasmExpr {
   float f32_value;
   WasmValueType value_type;
   uint32_t index, offset, bytes, align, source_offset;
+  /* Frontend analysis fact: guaranteed byte alignment, capped at four. */
+  uint8_t guaranteed_alignment;
   bool is_signed, is_tee;
   WasmUnaryOp unary_op;
   WasmBinaryOp binary_op;

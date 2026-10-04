@@ -374,6 +374,15 @@ address used by the operation. The Wasm `align` immediate is only an
 optimization hint; correctness never depends on the runtime address actually
 having that alignment.
 
+The frontend separately derives conservative alignment facts from constants,
+integer address arithmetic, locals, and structured control flow. A proven
+four-byte-aligned `i32` or `f32` access becomes one native Vircon word access;
+an unproven address retains the complete aligned/unaligned implementation.
+Fixed-size memories use their constant byte limit, and exact bounds checks may
+be reused only within a straight-line region where the pointer identity and
+checked range still dominate the later access. These optimizations do not
+change Wasm byte pointers, trap ordering, or bounds semantics.
+
 ### i64 storage optimization
 
 The i64 instructions listed above are general supported expressions within a

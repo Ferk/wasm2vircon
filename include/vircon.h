@@ -25,6 +25,12 @@
 #define VIRCON__IMPORT(name)
 #endif
 
+#if defined(__GNUC__)
+#define VIRCON__NOINLINE __attribute__((noinline))
+#else
+#define VIRCON__NOINLINE
+#endif
+
 /* Private platform bindings. Not application API. */
 void vircon__set_background_color(int color) VIRCON__IMPORT("vircon_set_background_color");
 void vircon__end_frame(void) VIRCON__IMPORT("vircon_end_frame");
@@ -115,13 +121,11 @@ void vircon__spu_pause_all_channels(void) VIRCON__IMPORT("vircon_spu_pause_all_c
 void vircon__spu_stop_all_channels(void) VIRCON__IMPORT("vircon_spu_stop_all_channels");
 void vircon__spu_resume_all_channels(void) VIRCON__IMPORT("vircon_spu_resume_all_channels");
 
-/* Keep this header-only library as separate ordinary C functions.  Besides
- * avoiding code duplication at every call site, this deliberately preserves
- * the narrow, tested VirconWasm shape of the former separately compiled
- * runtime.  It is not a compiler intrinsic. */
-#if defined(__clang__)
-#pragma clang attribute push(__attribute__((noinline)), apply_to = function)
-#endif
+/* These header-only helpers are ordinary C rather than compiler intrinsics.
+ * Their `static inline` declarations deliberately allow an optimizing
+ * frontend to remove trivial wrapper calls around hardware imports. Larger
+ * byte-memory, string, text, and formatting loops are explicitly kept as
+ * ordinary defined Wasm functions to avoid duplicating their bodies. */
 
 /* Frame and BIOS-font text -------------------------------------------------
  * clear_screen uses a 32-bit Vircon colour word (for example 0xFF202040).
@@ -173,7 +177,7 @@ static inline int get_color_alpha(int color) { return (color >> 24) & 255; }
  * nonzero byte selects its glyph region in BIOS texture -1. A newline glyph
  * is drawn first, then x resets and y advances by 20. The selected texture is
  * restored afterwards; colour, scale, rotation and blending are unchanged. */
-static void vircon__print_at(int x, int y, const char *text) {
+static VIRCON__NOINLINE void vircon__print_at(int x, int y, const char *text) {
   const unsigned char *cursor = (const unsigned char *)text;
   const int initial_x = x;
   const int previous_texture = vircon__gpu_get_selected_texture();
@@ -196,7 +200,7 @@ static inline void print_at(int x, int y, const char *text) { vircon__print_at(x
 
 /* Small decimal display helpers. They are not printf and intentionally have
  * no locale, width, precision or general formatting support. */
-static int vircon__print_digits(int x, int y, unsigned value) {
+static VIRCON__NOINLINE int vircon__print_digits(int x, int y, unsigned value) {
   static char digit_text[2] = {'0', 0};
   unsigned quotient = value / 10u;
   if (quotient != 0)
@@ -660,7 +664,7 @@ static inline int tolower(int character) { return isupper(character) ? character
 static inline int toupper(int character) { return islower(character) ? character - 32 : character; }
 
 /* Writes count copies of the low byte of value and returns destination. */
-static inline void *memset(void *destination, int value, unsigned count) {
+static VIRCON__NOINLINE inline void *memset(void *destination, int value, unsigned count) {
   unsigned char *output = (unsigned char *)destination;
   while (count != 0) {
     *output++ = (unsigned char)value;
@@ -669,7 +673,7 @@ static inline void *memset(void *destination, int value, unsigned count) {
   return destination;
 }
 /* Copies non-overlapping byte regions and returns destination. */
-static inline void *memcpy(void *destination, const void *source, unsigned count) {
+static VIRCON__NOINLINE inline void *memcpy(void *destination, const void *source, unsigned count) {
   unsigned char *output = (unsigned char *)destination;
   const unsigned char *input = (const unsigned char *)source;
   while (count != 0) {
@@ -730,7 +734,7 @@ void free(void *memory);
 void *calloc(int count, int size);
 void *realloc(void *memory, int size);
 /* Compares byte regions as unsigned bytes, like the standard C routine. */
-static inline int memcmp(const void *first, const void *second, unsigned count) {
+static VIRCON__NOINLINE inline int memcmp(const void *first, const void *second, unsigned count) {
   const unsigned char *left = (const unsigned char *)first;
   const unsigned char *right = (const unsigned char *)second;
   while (count != 0) {
@@ -743,14 +747,14 @@ static inline int memcmp(const void *first, const void *second, unsigned count) 
   return 0;
 }
 /* Returns the count of bytes before a string's NUL terminator. */
-static inline unsigned strlen(const char *text) {
+static VIRCON__NOINLINE inline unsigned strlen(const char *text) {
   unsigned length = 0;
   while (text[length] != 0)
     ++length;
   return length;
 }
 /* Compares NUL-terminated strings as unsigned CP-1252-compatible bytes. */
-static inline int strcmp(const char *first, const char *second) {
+static VIRCON__NOINLINE inline int strcmp(const char *first, const char *second) {
   while (*(const unsigned char *)first == *(const unsigned char *)second) {
     if (*first == 0)
       return 0;
@@ -760,7 +764,7 @@ static inline int strcmp(const char *first, const char *second) {
   return (int)*(const unsigned char *)first - (int)*(const unsigned char *)second;
 }
 /* Compares at most count string bytes as unsigned bytes. */
-static inline int strncmp(const char *first, const char *second, unsigned count) {
+static VIRCON__NOINLINE inline int strncmp(const char *first, const char *second, unsigned count) {
   while (count != 0 && *(const unsigned char *)first == *(const unsigned char *)second) {
     if (*first == 0)
       return 0;
@@ -773,7 +777,7 @@ static inline int strncmp(const char *first, const char *second, unsigned count)
   return (int)*(const unsigned char *)first - (int)*(const unsigned char *)second;
 }
 /* Copies a NUL-terminated string and returns destination. */
-static inline char *strcpy(char *destination, const char *source) {
+static VIRCON__NOINLINE inline char *strcpy(char *destination, const char *source) {
   char *result = destination;
   while (*source != 0)
     *destination++ = *source++;
@@ -781,7 +785,7 @@ static inline char *strcpy(char *destination, const char *source) {
   return result;
 }
 /* Copies at most count bytes, padding remaining destination bytes with NUL. */
-static inline char *strncpy(char *destination, const char *source, unsigned count) {
+static VIRCON__NOINLINE inline char *strncpy(char *destination, const char *source, unsigned count) {
   char *result = destination;
   while (count != 0 && *source != 0) {
     *destination++ = *source++;
@@ -796,7 +800,7 @@ static inline char *strncpy(char *destination, const char *source, unsigned coun
   return result;
 }
 /* Appends a NUL-terminated source string and returns destination. */
-static inline char *strcat(char *destination, const char *source) {
+static VIRCON__NOINLINE inline char *strcat(char *destination, const char *source) {
   char *result = destination;
   while (*destination != 0)
     ++destination;
@@ -804,7 +808,7 @@ static inline char *strcat(char *destination, const char *source) {
   return result;
 }
 /* Appends at most count source bytes and always writes a terminator. */
-static inline char *strncat(char *destination, const char *source, unsigned count) {
+static VIRCON__NOINLINE inline char *strncat(char *destination, const char *source, unsigned count) {
   char *result = destination;
   volatile char *output;
   while (*destination != 0)
@@ -819,7 +823,7 @@ static inline char *strncat(char *destination, const char *source, unsigned coun
 }
 
 /* Stores a positive unsigned value in the requested base, in reverse first. */
-static inline void vircon__utoa(unsigned value, char *result, unsigned base) {
+static VIRCON__NOINLINE inline void vircon__utoa(unsigned value, char *result, unsigned base) {
   static const char digits[] = "0123456789ABCDEF";
   char *first = result;
   char *last;
@@ -837,7 +841,7 @@ static inline void vircon__utoa(unsigned value, char *result, unsigned base) {
 }
 /* Converts i32 values to a NUL-terminated base-2..16 byte string.
  * Base 10 is signed; all other bases format the i32 bit pattern unsigned. */
-static inline void itoa(int value, char *result, int base) {
+static VIRCON__NOINLINE inline void itoa(int value, char *result, int base) {
   unsigned magnitude;
   if (base < 2 || base > 16)
     return;
@@ -850,7 +854,7 @@ static inline void itoa(int value, char *result, int base) {
 }
 /* Formats a finite practical-range f32 with up to five fractional digits.
  * It is intentionally a small freestanding formatter, not printf or libc. */
-static inline void ftoa(float value, char *result) {
+static VIRCON__NOINLINE inline void ftoa(float value, char *result) {
   char *fraction_start;
   unsigned integer_part;
   unsigned fraction_part;
@@ -1143,8 +1147,5 @@ void *realloc(void *memory, int size) {
 #undef VIRCON__WASM_MAX_MEMORY_BYTES
 #endif
 
-#if defined(__clang__)
-#pragma clang attribute pop
-#endif
-
+#undef VIRCON__NOINLINE
 #endif

@@ -331,3 +331,176 @@ fail:
   free(text);
   return false;
 }
+
+/* Returns whether an operand names a compiler frame word through BP. */
+static bool frame_slot_operand(const VirconIrOperand *operand, int32_t *slot) {
+  if (operand->kind != VIRCON_IR_OPERAND_MEMORY_REGISTER || operand->reg != VIRCON_IR_REGISTER_BP)
+    return false;
+  *slot = operand->has_displacement ? operand->displacement : 0;
+  return true;
+}
+
+/* Returns whether an opcode replaces the value of its first register operand. */
+static bool opcode_writes_first_register(VirconIrOpcode opcode) {
+  switch (opcode) {
+  case VIRCON_IR_OPCODE_MOV:
+  case VIRCON_IR_OPCODE_POP:
+  case VIRCON_IR_OPCODE_IADD:
+  case VIRCON_IR_OPCODE_ISUB:
+  case VIRCON_IR_OPCODE_IMUL:
+  case VIRCON_IR_OPCODE_IDIV:
+  case VIRCON_IR_OPCODE_IMOD:
+  case VIRCON_IR_OPCODE_AND:
+  case VIRCON_IR_OPCODE_OR:
+  case VIRCON_IR_OPCODE_XOR:
+  case VIRCON_IR_OPCODE_SHL:
+  case VIRCON_IR_OPCODE_IEQ:
+  case VIRCON_IR_OPCODE_INE:
+  case VIRCON_IR_OPCODE_ILT:
+  case VIRCON_IR_OPCODE_ILE:
+  case VIRCON_IR_OPCODE_IGT:
+  case VIRCON_IR_OPCODE_IGE:
+  case VIRCON_IR_OPCODE_FADD:
+  case VIRCON_IR_OPCODE_FSUB:
+  case VIRCON_IR_OPCODE_FMUL:
+  case VIRCON_IR_OPCODE_FDIV:
+  case VIRCON_IR_OPCODE_FMOD:
+  case VIRCON_IR_OPCODE_FEQ:
+  case VIRCON_IR_OPCODE_FNE:
+  case VIRCON_IR_OPCODE_FLT:
+  case VIRCON_IR_OPCODE_FLE:
+  case VIRCON_IR_OPCODE_FGT:
+  case VIRCON_IR_OPCODE_FGE:
+  case VIRCON_IR_OPCODE_CIF:
+  case VIRCON_IR_OPCODE_CFI:
+  case VIRCON_IR_OPCODE_FSGN:
+  case VIRCON_IR_OPCODE_FABS:
+  case VIRCON_IR_OPCODE_FLR:
+  case VIRCON_IR_OPCODE_CEIL:
+  case VIRCON_IR_OPCODE_ROUND:
+  case VIRCON_IR_OPCODE_SIN:
+  case VIRCON_IR_OPCODE_ACOS:
+  case VIRCON_IR_OPCODE_LOG:
+  case VIRCON_IR_OPCODE_POW:
+  case VIRCON_IR_OPCODE_ATAN2:
+  case VIRCON_IR_OPCODE_IMIN:
+  case VIRCON_IR_OPCODE_IMAX:
+  case VIRCON_IR_OPCODE_IABS:
+  case VIRCON_IR_OPCODE_FMIN:
+  case VIRCON_IR_OPCODE_FMAX:
+  case VIRCON_IR_OPCODE_IN:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/* One symbolic value currently stored in a compiler frame word. */
+typedef struct FrameValueFact {
+  int32_t slot;
+  uint64_t value;
+} FrameValueFact;
+
+/* Finds or creates the symbolic-value entry for one BP-relative frame word. */
+static FrameValueFact *frame_value_fact(FrameValueFact *facts, size_t *count, int32_t slot) {
+  size_t index;
+  for (index = 0; index < *count; ++index)
+    if (facts[index].slot == slot)
+      return &facts[index];
+  if (*count == 128)
+    return NULL;
+  facts[*count] = (FrameValueFact){.slot = slot};
+  return &facts[(*count)++];
+}
+
+/* Invalidates symbolic values at a control-flow join or unknown store. */
+static void clear_frame_value_facts(uint64_t *register_values, size_t *frame_value_count) {
+  memset(register_values, 0, sizeof(uint64_t) * (VIRCON_IR_REGISTER_BP + 1));
+  *frame_value_count = 0;
+}
+
+/* Removes frame reloads/stores that are provably redundant in one straight
+ * line region. Labels and calls deliberately end the region; this pass is not
+ * a register allocator and never carries facts across a control-flow join. */
+void vircon_ir_optimize_copies(VirconIrProgram *program) {
+  uint64_t register_values[VIRCON_IR_REGISTER_BP + 1] = {0};
+  FrameValueFact frame_values[128] = {{0}};
+  size_t frame_value_count = 0;
+  uint64_t next_value = 1;
+  size_t read_index, write_index = 0;
+
+  for (read_index = 0; read_index < program->count; ++read_index) {
+    VirconIrNode *node = &program->nodes[read_index];
+    bool remove = false;
+
+    if (node->kind != VIRCON_IR_NODE_INSTRUCTION) {
+      clear_frame_value_facts(register_values, &frame_value_count);
+    } else if (node->opcode == VIRCON_IR_OPCODE_MOV && node->operand_count == 2) {
+      VirconIrOperand *destination = &node->operands[0];
+      VirconIrOperand *source = &node->operands[1];
+      int32_t slot;
+
+      if (destination->kind == VIRCON_IR_OPERAND_REGISTER && frame_slot_operand(source, &slot)) {
+        VirconIrRegister reg = destination->reg;
+        FrameValueFact *fact = frame_value_fact(frame_values, &frame_value_count, slot);
+        if (fact == NULL) {
+          frame_value_count = 0;
+          fact = frame_value_fact(frame_values, &frame_value_count, slot);
+        }
+        if (fact->value == 0)
+          fact->value = next_value++;
+        if (register_values[reg] == fact->value)
+          remove = true;
+        else
+          register_values[reg] = fact->value;
+      } else if (frame_slot_operand(destination, &slot) && source->kind == VIRCON_IR_OPERAND_REGISTER) {
+        VirconIrRegister reg = source->reg;
+        FrameValueFact *fact = frame_value_fact(frame_values, &frame_value_count, slot);
+        if (fact == NULL) {
+          frame_value_count = 0;
+          fact = frame_value_fact(frame_values, &frame_value_count, slot);
+        }
+        if (register_values[reg] == 0)
+          register_values[reg] = next_value++;
+        if (fact->value == register_values[reg])
+          remove = true;
+        else
+          fact->value = register_values[reg];
+      } else if (destination->kind == VIRCON_IR_OPERAND_REGISTER && source->kind == VIRCON_IR_OPERAND_REGISTER) {
+        VirconIrRegister destination_reg = destination->reg;
+        VirconIrRegister source_reg = source->reg;
+        if (destination_reg == source_reg)
+          remove = true;
+        else {
+          if (register_values[source_reg] == 0)
+            register_values[source_reg] = next_value++;
+          register_values[destination_reg] = register_values[source_reg];
+        }
+      } else if (destination->kind == VIRCON_IR_OPERAND_REGISTER) {
+        register_values[destination->reg] = next_value++;
+      } else if (destination->kind == VIRCON_IR_OPERAND_MEMORY_REGISTER ||
+                 destination->kind == VIRCON_IR_OPERAND_MEMORY_ABSOLUTE) {
+        /* An indirect store could alias a compiler frame word. */
+        clear_frame_value_facts(register_values, &frame_value_count);
+      }
+    } else {
+      if (node->operand_count != 0 && node->operands[0].kind == VIRCON_IR_OPERAND_REGISTER &&
+          opcode_writes_first_register(node->opcode))
+        register_values[node->operands[0].reg] = next_value++;
+      if (node->opcode == VIRCON_IR_OPCODE_CALL || node->opcode == VIRCON_IR_OPCODE_JMP ||
+          node->opcode == VIRCON_IR_OPCODE_RET || node->opcode == VIRCON_IR_OPCODE_HLT)
+        clear_frame_value_facts(register_values, &frame_value_count);
+    }
+
+    if (remove) {
+      dispose_node(node);
+      continue;
+    }
+    if (write_index != read_index) {
+      program->nodes[write_index] = *node;
+      memset(node, 0, sizeof(*node));
+    }
+    ++write_index;
+  }
+  program->count = write_index;
+}

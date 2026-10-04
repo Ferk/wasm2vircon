@@ -1,0 +1,9 @@
+<rom-definition version="1.0">
+    <rom type="cartridge" title="CBunnymark" version="1.0" />
+    <binary path="CBunnymark.vbin" />
+    <textures>
+        <texture path="textures/texture0.vtex" />
+    </textures>
+    <sounds>
+    </sounds>
+</rom-definition>

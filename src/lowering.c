@@ -32,6 +32,14 @@ typedef struct Value {
   WasmValueType type;
   bool present;
   bool is_immediate;
+  /* Borrowed values alias a parameter/local frame slot and must be copied
+   * before evaluating another expression that could overwrite that local. */
+  bool is_borrowed;
+  /* Optional affine identity used only to reuse an already emitted bounds
+   * check. The represented Wasm pointer remains a byte offset. */
+  bool has_address_identity;
+  uint32_t address_base_local;
+  uint32_t address_offset;
 } Value;
 /* A structured-control target mapped from a Wasm label to an assembly label. */
 typedef struct Target {
@@ -45,6 +53,23 @@ typedef struct JumpTable {
   char **target_labels;
   size_t target_count;
 } JumpTable;
+/* One exact byte-address range proven in the current straight-line region. */
+typedef struct CheckedAddress {
+  uint32_t base_local, offset, width;
+} CheckedAddress;
+/* Alignment facts accumulated at one structured branch target. */
+typedef struct AlignmentTarget {
+  const char *name;
+  uint8_t *incoming;
+  bool has_incoming;
+} AlignmentTarget;
+/* Temporary state for the structured alignment dataflow analysis. */
+typedef struct AlignmentAnalysis {
+  struct Context *context;
+  AlignmentTarget *targets;
+  size_t target_count, target_capacity;
+  bool failed;
+} AlignmentAnalysis;
 /* Per-function lowering state, including structured targets and temp slots. */
 typedef struct Context {
   const ValidatedModule *validated;
@@ -58,6 +83,15 @@ typedef struct Context {
   unsigned next_label, temp_depth;
   char return_label[64];
   uint32_t memory_bytes;
+  bool memory_can_grow;
+  /* Guaranteed byte alignment for parameters and locals, capped at one
+   * Vircon32 word. These facts are derived from every possible assignment;
+   * the Wasm memarg alignment hint is deliberately not trusted. */
+  uint8_t *local_alignments;
+  size_t local_alignment_count;
+  uint32_t *local_address_bases, *local_address_offsets;
+  CheckedAddress checked_addresses[16];
+  size_t checked_address_count;
   const WasmExpr *current_expression;
 } Context;
 
@@ -105,6 +139,14 @@ static bool fresh_label(Context *context, const char *kind, char *out, size_t si
 }
 /* Appends one structured assembly target label. */
 static bool emit_label(Context *context, const char *label) {
+  size_t index;
+  context->checked_address_count = 0;
+  /* A label may be reached without executing the preceding textual path.
+   * Reset aliases to their local's own runtime value at every join. */
+  for (index = 0; index < context->local_alignment_count; ++index) {
+    context->local_address_bases[index] = (uint32_t)index;
+    context->local_address_offsets[index] = 0;
+  }
   return vircon_ir_append_label(context->program, label, context->diagnostics);
 }
 
@@ -292,7 +334,7 @@ static int temp_slot(Context *context) { return temp_slots(context, 1); }
 /* Releases the most recently reserved temporary when value owns one. */
 static void release(Context *context, Value value) {
   unsigned words = value.type == WASM_VALUE_I64 ? 2u : 1u;
-  if (value.present && !value.is_immediate && context->temp_depth >= words)
+  if (value.present && !value.is_immediate && !value.is_borrowed && context->temp_depth >= words)
     context->temp_depth -= words;
 }
 /* Loads a frame slot into a target register. */
@@ -308,20 +350,49 @@ static bool load_value(Context *context, int reg, Value value) {
 /* Reserves uninitialized writable storage for an immediate result. */
 static bool reserve_value_slot(Context *context, Value *value) {
   int slot;
-  if (!value->is_immediate)
+  if (!value->is_immediate && !value->is_borrowed)
     return true;
   slot = temp_slot(context);
   if (slot == 0)
     return false;
   value->slot = slot;
   value->is_immediate = false;
+  value->is_borrowed = false;
   return true;
 }
 /* Materializes an immediate when its original value must survive in storage. */
 static bool materialize_value(Context *context, Value *value) {
   Value source = *value;
   return reserve_value_slot(context, value) &&
-         (!source.is_immediate || (load_value(context, 1, source) && store_slot(context, value->slot, 1)));
+         ((!source.is_immediate && !source.is_borrowed) ||
+          (load_value(context, 1, source) && store_slot(context, value->slot, 1)));
+}
+
+/* Copies a borrowed local only when later evaluation could invalidate it. */
+static bool materialize_borrowed(Context *context, Value *value) {
+  return !value->is_borrowed || materialize_value(context, value);
+}
+
+/* Invalidates bounds/alias facts affected by assigning one Wasm local, then
+ * records a non-self affine alias when the assigned value has one. */
+static void assign_local_address_identity(Context *context, uint32_t local, const Value *value) {
+  size_t read_index, write_index = 0, index;
+
+  if (local >= context->local_alignment_count)
+    return;
+  for (read_index = 0; read_index < context->checked_address_count; ++read_index)
+    if (context->checked_addresses[read_index].base_local != local)
+      context->checked_addresses[write_index++] = context->checked_addresses[read_index];
+  context->checked_address_count = write_index;
+  for (index = 0; index < context->local_alignment_count; ++index)
+    if (context->local_address_bases[index] == local) {
+      context->local_address_bases[index] = (uint32_t)index;
+      context->local_address_offsets[index] = 0;
+    }
+  if (value->has_address_identity && value->address_base_local != local) {
+    context->local_address_bases[local] = value->address_base_local;
+    context->local_address_offsets[local] = value->address_offset;
+  }
 }
 /* Maps a Wasm parameter/local index to its compiler-defined frame slot. */
 static int local_slot(const WasmFunction *function, uint32_t index) {
@@ -341,6 +412,349 @@ static WasmValueType local_value_type(const WasmFunction *function, uint32_t ind
     return function->params[index];
   index -= (uint32_t)function->param_count;
   return index < function->local_count ? function->locals[index] : WASM_VALUE_OTHER;
+}
+
+/* Returns the useful power-of-two byte alignment of a constant, capped at a
+ * Vircon32 word because wider alignment cannot simplify current memory ops. */
+static uint8_t constant_word_alignment(uint32_t value) {
+  if ((value & 3u) == 0)
+    return 4;
+  if ((value & 1u) == 0)
+    return 2;
+  return 1;
+}
+
+/* Derives the alignment of a binary result from its already analyzed inputs. */
+static uint8_t binary_result_alignment(const WasmExpr *expression, uint8_t left, uint8_t right) {
+  switch (expression->binary_op) {
+  case WASM_BINARY_ADD:
+  case WASM_BINARY_SUB:
+    return left < right ? left : right;
+  case WASM_BINARY_MUL:
+    if (left >= 4 || right >= 4 || (left >= 2 && right >= 2))
+      return 4;
+    return left > right ? left : right;
+  case WASM_BINARY_SHL:
+    if (expression->children[1]->kind == WASM_EXPR_I32_CONST) {
+      uint32_t shift = (uint32_t)expression->children[1]->i32_value & 31u;
+      if (shift >= 2 || left >= (uint8_t)(4u >> shift))
+        return 4;
+      return (uint8_t)(left << shift);
+    }
+    return left;
+  case WASM_BINARY_AND:
+    return left > right ? left : right;
+  case WASM_BINARY_OR:
+  case WASM_BINARY_XOR:
+    return left < right ? left : right;
+  default:
+    return 1;
+  }
+}
+
+/* Merges facts from one possible control-flow edge into a destination. */
+static void merge_alignment_facts(uint8_t *destination, bool *has_destination, const uint8_t *source,
+                                  size_t count) {
+  size_t index;
+  if (!*has_destination) {
+    memcpy(destination, source, count);
+    *has_destination = true;
+    return;
+  }
+  for (index = 0; index < count; ++index)
+    if (source[index] < destination[index])
+      destination[index] = source[index];
+}
+
+/* Pushes one Wasm structured target for branch-sensitive alignment analysis. */
+static bool push_alignment_target(AlignmentAnalysis *analysis, const char *name) {
+  AlignmentTarget *targets;
+  size_t capacity = analysis->target_capacity;
+  size_t count = analysis->context->local_alignment_count;
+
+  if (analysis->target_count == capacity) {
+    capacity = capacity == 0 ? 16 : capacity * 2;
+    targets = realloc(analysis->targets, capacity * sizeof(*targets));
+    if (targets == NULL)
+      return false;
+    analysis->targets = targets;
+    analysis->target_capacity = capacity;
+  }
+  analysis->targets[analysis->target_count] = (AlignmentTarget){.name = name};
+  analysis->targets[analysis->target_count].incoming = malloc(count == 0 ? 1 : count);
+  if (analysis->targets[analysis->target_count].incoming == NULL)
+    return false;
+  ++analysis->target_count;
+  return true;
+}
+
+/* Removes the innermost alignment target and releases its fact storage. */
+static void pop_alignment_target(AlignmentAnalysis *analysis) {
+  free(analysis->targets[analysis->target_count - 1].incoming);
+  --analysis->target_count;
+}
+
+/* Finds a structured alignment target using Wasm's innermost-label rule. */
+static AlignmentTarget *find_alignment_target(AlignmentAnalysis *analysis, const char *name) {
+  size_t index;
+  for (index = analysis->target_count; index != 0; --index)
+    if (analysis->targets[index - 1].name != NULL && name != NULL &&
+        strcmp(analysis->targets[index - 1].name, name) == 0)
+      return &analysis->targets[index - 1];
+  return NULL;
+}
+
+/* Records the current facts on one structured branch edge. */
+static void branch_alignment_to(AlignmentAnalysis *analysis, const char *name, const uint8_t *locals) {
+  AlignmentTarget *target = find_alignment_target(analysis, name);
+  if (target != NULL)
+    merge_alignment_facts(target->incoming, &target->has_incoming, locals,
+                          analysis->context->local_alignment_count);
+}
+
+static uint8_t analyze_expression_alignment(AlignmentAnalysis *analysis, WasmExpr *expression,
+                                            uint8_t *locals, bool *reachable);
+
+/* Analyzes a sequence block and merges both fallthrough and branch-to-block
+ * edges at its structured exit. */
+static uint8_t analyze_block_alignment(AlignmentAnalysis *analysis, WasmExpr *expression,
+                                       uint8_t *locals, bool *reachable) {
+  size_t index, count = analysis->context->local_alignment_count;
+  uint8_t result = 1;
+  AlignmentTarget *target;
+  bool has_exit = false;
+  uint8_t *exit_facts = malloc(count == 0 ? 1 : count);
+
+  if (exit_facts == NULL || !push_alignment_target(analysis, expression->name)) {
+    free(exit_facts);
+    analysis->failed = true;
+    return 1;
+  }
+  for (index = 0; index < expression->child_count && *reachable; ++index)
+    result = analyze_expression_alignment(analysis, expression->children[index], locals, reachable);
+  target = &analysis->targets[analysis->target_count - 1];
+  if (*reachable)
+    merge_alignment_facts(exit_facts, &has_exit, locals, count);
+  if (target->has_incoming)
+    merge_alignment_facts(exit_facts, &has_exit, target->incoming, count);
+  if (target->has_incoming && expression->value_type != WASM_VALUE_NONE)
+    result = 1;
+  if (has_exit)
+    memcpy(locals, exit_facts, count);
+  *reachable = has_exit;
+  pop_alignment_target(analysis);
+  free(exit_facts);
+  return expression->value_type == WASM_VALUE_NONE ? 1 : result;
+}
+
+/* Computes a fixed point for loop-header facts from entry and back-branch
+ * edges, then leaves only the loop's fallthrough facts as its exit state. */
+static uint8_t analyze_loop_alignment(AlignmentAnalysis *analysis, WasmExpr *expression,
+                                      uint8_t *locals, bool *reachable) {
+  size_t index, count = analysis->context->local_alignment_count;
+  uint8_t result = 1;
+  uint8_t *entry = malloc(count == 0 ? 1 : count);
+  uint8_t *header = malloc(count == 0 ? 1 : count);
+  uint8_t *body = malloc(count == 0 ? 1 : count);
+  bool body_reachable = true, changed;
+  AlignmentTarget *target;
+  size_t target_index;
+
+  if (entry == NULL || header == NULL || body == NULL ||
+      !push_alignment_target(analysis, expression->name)) {
+    free(entry);
+    free(header);
+    free(body);
+    analysis->failed = true;
+    return 1;
+  }
+  memcpy(entry, locals, count);
+  memcpy(header, locals, count);
+  target_index = analysis->target_count - 1;
+  do {
+    memcpy(body, header, count);
+    body_reachable = true;
+    target = &analysis->targets[target_index];
+    target->has_incoming = false;
+    result = expression->child_count == 0
+                 ? 1
+                 : analyze_expression_alignment(analysis, expression->children[0], body, &body_reachable);
+    target = &analysis->targets[target_index];
+    changed = false;
+    for (index = 0; index < count; ++index) {
+      uint8_t merged = entry[index];
+      if (target->has_incoming && target->incoming[index] < merged)
+        merged = target->incoming[index];
+      if (merged != header[index]) {
+        header[index] = merged;
+        changed = true;
+      }
+    }
+  } while (changed && !analysis->failed);
+  if (body_reachable)
+    memcpy(locals, body, count);
+  *reachable = body_reachable;
+  pop_alignment_target(analysis);
+  free(entry);
+  free(header);
+  free(body);
+  return result;
+}
+
+/* Records flow-sensitive byte alignment while simulating Wasm evaluation
+ * order. Structured targets preserve facts on early branches and loop edges. */
+static uint8_t analyze_expression_alignment(AlignmentAnalysis *analysis, WasmExpr *expression,
+                                            uint8_t *locals, bool *reachable) {
+  Context *context = analysis->context;
+  size_t index, count = context->local_alignment_count;
+  uint8_t result = 1, left = 1, right = 1;
+
+  if (!*reachable) {
+    expression->guaranteed_alignment = 1;
+    return 1;
+  }
+  switch (expression->kind) {
+  case WASM_EXPR_I32_CONST:
+    result = constant_word_alignment((uint32_t)expression->i32_value);
+    break;
+  case WASM_EXPR_LOCAL_GET:
+    result = expression->index < count ? locals[expression->index] : 1;
+    break;
+  case WASM_EXPR_LOCAL_SET:
+    if (expression->child_count != 0)
+      result = analyze_expression_alignment(analysis, expression->children[0], locals, reachable);
+    if (expression->index < count && local_value_type(context->function, expression->index) == WASM_VALUE_I32)
+      locals[expression->index] = result;
+    if (!expression->is_tee)
+      result = 1;
+    break;
+  case WASM_EXPR_BINARY:
+    if (expression->child_count == 2) {
+      left = analyze_expression_alignment(analysis, expression->children[0], locals, reachable);
+      right = analyze_expression_alignment(analysis, expression->children[1], locals, reachable);
+      result = binary_result_alignment(expression, left, right);
+    }
+    break;
+  case WASM_EXPR_SELECT:
+    if (expression->child_count == 3) {
+      left = analyze_expression_alignment(analysis, expression->children[0], locals, reachable);
+      right = analyze_expression_alignment(analysis, expression->children[1], locals, reachable);
+      analyze_expression_alignment(analysis, expression->children[2], locals, reachable);
+      result = left < right ? left : right;
+    }
+    break;
+  case WASM_EXPR_IF: {
+    uint8_t *true_locals = malloc(count == 0 ? 1 : count);
+    uint8_t *false_locals = malloc(count == 0 ? 1 : count);
+    bool true_reachable = true, false_reachable = true;
+    if (true_locals == NULL || false_locals == NULL || expression->child_count == 0) {
+      free(true_locals);
+      free(false_locals);
+      analysis->failed = true;
+      break;
+    }
+    analyze_expression_alignment(analysis, expression->children[0], locals, reachable);
+    if (!*reachable) {
+      free(true_locals);
+      free(false_locals);
+      break;
+    }
+    memcpy(true_locals, locals, count);
+    memcpy(false_locals, locals, count);
+    left = expression->child_count > 1
+               ? analyze_expression_alignment(analysis, expression->children[1], true_locals, &true_reachable)
+               : 1;
+    right = expression->child_count > 2
+                ? analyze_expression_alignment(analysis, expression->children[2], false_locals, &false_reachable)
+                : 1;
+    if (true_reachable && false_reachable) {
+      for (index = 0; index < count; ++index)
+        locals[index] = true_locals[index] < false_locals[index] ? true_locals[index] : false_locals[index];
+    } else if (true_reachable)
+      memcpy(locals, true_locals, count);
+    else if (false_reachable)
+      memcpy(locals, false_locals, count);
+    *reachable = true_reachable || false_reachable;
+    result = expression->child_count == 3
+                 ? (!true_reachable ? right : !false_reachable ? left : left < right ? left : right)
+                 : 1;
+    free(true_locals);
+    free(false_locals);
+    break;
+  }
+  case WASM_EXPR_BLOCK:
+    result = analyze_block_alignment(analysis, expression, locals, reachable);
+    break;
+  case WASM_EXPR_LOOP:
+    result = analyze_loop_alignment(analysis, expression, locals, reachable);
+    break;
+  case WASM_EXPR_BR:
+  case WASM_EXPR_BR_IF:
+    for (index = 0; index < expression->child_count; ++index)
+      analyze_expression_alignment(analysis, expression->children[index], locals, reachable);
+    branch_alignment_to(analysis, expression->name, locals);
+    if (expression->kind == WASM_EXPR_BR)
+      *reachable = false;
+    break;
+  case WASM_EXPR_BR_TABLE:
+    for (index = 0; index < expression->child_count; ++index)
+      analyze_expression_alignment(analysis, expression->children[index], locals, reachable);
+    for (index = 0; index < expression->branch_target_count; ++index)
+      branch_alignment_to(analysis, expression->branch_targets[index], locals);
+    *reachable = false;
+    break;
+  case WASM_EXPR_RETURN:
+    for (index = 0; index < expression->child_count; ++index)
+      analyze_expression_alignment(analysis, expression->children[index], locals, reachable);
+    *reachable = false;
+    break;
+  case WASM_EXPR_UNREACHABLE:
+    *reachable = false;
+    break;
+  default:
+    for (index = 0; index < expression->child_count; ++index)
+      analyze_expression_alignment(analysis, expression->children[index], locals, reachable);
+    break;
+  }
+  expression->guaranteed_alignment = result;
+  return result;
+}
+
+/* Initializes flow-sensitive alignment facts for one function. Parameters are
+ * unconstrained, while Wasm's zero-initialized locals begin word-aligned. */
+static bool initialize_local_alignments(Context *context) {
+  AlignmentAnalysis analysis = {.context = context};
+  size_t count = context->function->param_count + context->function->local_count;
+  size_t index;
+  bool reachable = true;
+
+  context->local_alignments = malloc(count == 0 ? 1 : count);
+  context->local_address_bases = malloc((count == 0 ? 1 : count) * sizeof(*context->local_address_bases));
+  context->local_address_offsets = malloc((count == 0 ? 1 : count) * sizeof(*context->local_address_offsets));
+  if (context->local_alignments == NULL || context->local_address_bases == NULL ||
+      context->local_address_offsets == NULL) {
+    diagnostics_error(context->diagnostics, "out of memory analyzing local alignment");
+    return false;
+  }
+  context->local_alignment_count = count;
+  for (index = 0; index < count; ++index) {
+    context->local_alignments[index] = index < context->function->param_count ? 1 : 4;
+    context->local_address_bases[index] = (uint32_t)index;
+    context->local_address_offsets[index] = 0;
+  }
+  analyze_expression_alignment(&analysis, (WasmExpr *)context->function->body,
+                               context->local_alignments, &reachable);
+  if (analysis.failed)
+    diagnostics_error(context->diagnostics, "out of memory analyzing structured alignment");
+  free(analysis.targets);
+  return !analysis.failed;
+}
+
+/* Returns whether adding the static memarg offset always yields a word-aligned
+ * Wasm byte address. The align immediate is only an optimization hint. */
+static bool word_access_is_proven_aligned(const Context *context, const WasmExpr *pointer, uint32_t offset) {
+  (void)context;
+  return pointer->guaranteed_alignment >= 4 && (offset & 3u) == 0;
 }
 
 /* Returns the high target word of a validated two-word i64 local. */
@@ -451,19 +865,77 @@ static bool lower_br_table(Context *context, const WasmExpr *expression, Value *
 /* Checks a Wasm byte address against the current dynamic length and leaves
  * its effective byte address in R2. Valid target sizes are below 2^31 bytes,
  * so a negative signed value identifies every out-of-range unsigned address. */
+static bool checked_address_is_reusable(const Context *context, Value pointer, uint32_t offset, uint32_t width) {
+  size_t index;
+  uint32_t identity_offset;
+  if (!pointer.has_address_identity)
+    return false;
+  identity_offset = pointer.address_offset + offset;
+  for (index = 0; index < context->checked_address_count; ++index) {
+    const CheckedAddress *checked = &context->checked_addresses[index];
+    if (checked->base_local == pointer.address_base_local && checked->offset == identity_offset &&
+        checked->width >= width)
+      return true;
+  }
+  return false;
+}
+
+/* Remembers an exact checked address without changing Wasm pointer meaning. */
+static void record_checked_address(Context *context, Value pointer, uint32_t offset, uint32_t width) {
+  CheckedAddress *checked;
+  if (!pointer.has_address_identity)
+    return;
+  if (context->checked_address_count == sizeof(context->checked_addresses) / sizeof(context->checked_addresses[0]))
+    context->checked_address_count = 0;
+  checked = &context->checked_addresses[context->checked_address_count++];
+  checked->base_local = pointer.address_base_local;
+  checked->offset = pointer.address_offset + offset;
+  checked->width = width;
+}
+
+/* Emits or reuses a Wasm bounds check and leaves the effective byte address
+ * in R2. Cache entries never cross labels or assignments to their base local. */
 static bool effective_address(Context *context, Value pointer, uint32_t offset, uint32_t width) {
   uint64_t required = (uint64_t)offset + width;
+  bool success;
   if (required > VIRCON_LINEAR_MEMORY_BYTES)
     return emit(context, "  jmp __wasm_trap");
-  return load_value(context, 2, pointer) && emit(context, "  mov R1, R2") && emit(context, "  ilt R1, 0") &&
-         emit(context, "  jt R1, __wasm_trap") && emit(context, "  mov R1, [%u]", VIRCON_WASM_MEMORY_PAGES_WORD) &&
-         emit(context, "  imul R1, 65536") && emit(context, "  mov R3, 0x%08X", (uint32_t)required) &&
-         emit(context, "  igt R3, R1") && emit(context, "  jt R3, __wasm_trap") && emit(context, "  isub R1, R3") &&
-         /* Comparisons write their result into the first operand on
-          * Vircon32. Keep R2 intact: it is the checked effective address
-          * consumed immediately by the packed-memory load/store helpers. */
-         emit(context, "  mov R3, R2") && emit(context, "  igt R3, R1") && emit(context, "  jt R3, __wasm_trap") &&
-         (offset == 0 || emit(context, "  iadd R2, 0x%08X", offset));
+  if (pointer.is_immediate) {
+    uint64_t address = (uint64_t)pointer.immediate + offset;
+    if (address > context->memory_bytes || width > (uint64_t)context->memory_bytes - address)
+      return emit(context, "  jmp __wasm_trap");
+    return emit(context, "  mov R2, 0x%08X", (uint32_t)address);
+  }
+  if (checked_address_is_reusable(context, pointer, offset, width))
+    return load_value(context, 2, pointer) &&
+           (offset == 0 || emit(context, "  iadd R2, 0x%08X", offset));
+  if (!context->memory_can_grow) {
+    if (required > context->memory_bytes)
+      return emit(context, "  jmp __wasm_trap");
+    uint32_t maximum = context->memory_bytes - (uint32_t)required;
+    /* Biasing both sides maps unsigned i32 order onto Vircon's signed
+     * comparison, including addresses with bit 31 set. */
+    success = load_value(context, 2, pointer) && emit(context, "  mov R1, R2") &&
+              emit(context, "  xor R1, 0x80000000") &&
+              emit(context, "  igt R1, 0x%08X", maximum ^ 0x80000000u) &&
+              emit(context, "  jt R1, __wasm_trap") &&
+              (offset == 0 || emit(context, "  iadd R2, 0x%08X", offset));
+    if (success)
+      record_checked_address(context, pointer, offset, width);
+    return success;
+  }
+  success = load_value(context, 2, pointer) && emit(context, "  mov R1, R2") && emit(context, "  ilt R1, 0") &&
+            emit(context, "  jt R1, __wasm_trap") &&
+            emit(context, "  mov R1, [%u]", VIRCON_WASM_MEMORY_PAGES_WORD) && emit(context, "  imul R1, 65536") &&
+            emit(context, "  mov R3, 0x%08X", (uint32_t)required) && emit(context, "  igt R3, R1") &&
+            emit(context, "  jt R3, __wasm_trap") && emit(context, "  isub R1, R3") &&
+            /* Comparisons write their result into the first operand on
+             * Vircon32. Keep R2 intact for the following packed access. */
+            emit(context, "  mov R3, R2") && emit(context, "  igt R3, R1") && emit(context, "  jt R3, __wasm_trap") &&
+            (offset == 0 || emit(context, "  iadd R2, 0x%08X", offset));
+  if (success)
+    record_checked_address(context, pointer, offset, width);
+  return success;
 }
 /* Extracts one little-endian Wasm byte at the checked byte address in R2. */
 static bool load_byte_at_r2(Context *context, int result) {
@@ -486,8 +958,11 @@ static bool store_byte_at_r2(Context *context, int value_register) {
 }
 
 /* Loads an i32 at the already checked Wasm byte address in R2. */
-static bool load_i32_at_r2(Context *context, int result_register) {
+static bool load_i32_at_r2(Context *context, int result_register, bool proven_aligned) {
   char aligned[64], done[64];
+  if (proven_aligned)
+    return emit(context, "  shl R2, -2") && emit(context, "  iadd R2, %u", LINEAR_BASE) &&
+           emit(context, "  mov R%d, [R2]", result_register);
   if (!fresh_label(context, "load_aligned", aligned, sizeof(aligned)) ||
       !fresh_label(context, "load_done", done, sizeof(done)) || !emit(context, "  mov R1, R2") ||
       !emit(context, "  and R1, 3") || !emit(context, "  jf R1, %s", aligned) || !emit(context, "  mov R6, 0"))
@@ -506,8 +981,11 @@ static bool load_i32_at_r2(Context *context, int result_register) {
 }
 
 /* Stores an i32 at the already checked Wasm byte address in R2. */
-static bool store_i32_at_r2(Context *context, int value_register) {
+static bool store_i32_at_r2(Context *context, int value_register, bool proven_aligned) {
   char aligned[64], done[64];
+  if (proven_aligned)
+    return emit(context, "  shl R2, -2") && emit(context, "  iadd R2, %u", LINEAR_BASE) &&
+           emit(context, "  mov [R2], R%d", value_register);
   if (!fresh_label(context, "store_aligned", aligned, sizeof(aligned)) ||
       !fresh_label(context, "store_done", done, sizeof(done)) || !emit(context, "  mov R7, R2") ||
       !emit(context, "  and R7, 3") || !emit(context, "  jf R7, %s", aligned))
@@ -529,19 +1007,23 @@ static bool store_i32_at_r2(Context *context, int value_register) {
 /* Lowers a validated byte or i32 Wasm load into packed-memory operations. */
 static bool lower_load(Context *context, const WasmExpr *expression, Value *value) {
   Value pointer = {0}, result = {0};
+  bool proven_aligned;
   int slot;
   if (!lower_expression(context, expression->children[0], &pointer) || !pointer.present)
     return false;
   result = pointer;
-  if (!reserve_value_slot(context, &result) || !effective_address(context, pointer, expression->offset, expression->bytes))
+  if (!reserve_value_slot(context, &result) ||
+      !effective_address(context, pointer, expression->offset, expression->bytes))
     return false;
+  result.has_address_identity = false;
   if (expression->bytes == 1) {
     if (!load_byte_at_r2(context, 1) || !store_slot(context, result.slot, 1))
       return false;
     *value = result;
     return true;
   }
-  if (!load_i32_at_r2(context, 1))
+  proven_aligned = word_access_is_proven_aligned(context, expression->children[0], expression->offset);
+  if (!load_i32_at_r2(context, 1, proven_aligned))
     return false;
   slot = result.slot;
   if (!store_slot(context, slot, 1))
@@ -552,7 +1034,8 @@ static bool lower_load(Context *context, const WasmExpr *expression, Value *valu
 /* Lowers a validated byte or i32 Wasm store into packed-memory operations. */
 static bool lower_store(Context *context, const WasmExpr *expression, Value *value) {
   Value pointer = {0}, input = {0};
-  if (!lower_expression(context, expression->children[0], &pointer) ||
+  bool proven_aligned;
+  if (!lower_expression(context, expression->children[0], &pointer) || !materialize_borrowed(context, &pointer) ||
       !lower_expression(context, expression->children[1], &input) || !pointer.present || !input.present ||
       !effective_address(context, pointer, expression->offset, expression->bytes) || !load_value(context, 1, input))
     return false;
@@ -564,7 +1047,8 @@ static bool lower_store(Context *context, const WasmExpr *expression, Value *val
     value->present = false;
     return true;
   }
-  if (!store_i32_at_r2(context, 1))
+  proven_aligned = word_access_is_proven_aligned(context, expression->children[0], expression->offset);
+  if (!store_i32_at_r2(context, 1, proven_aligned))
     return false;
   release(context, input);
   release(context, pointer);
@@ -595,9 +1079,9 @@ static bool lower_i64_load(Context *context, const WasmExpr *expression, Value *
   if (!reserve_value_slot(context, &result) || !effective_address(context, pointer, expression->offset, 8))
     return false;
   high_slot = temp_slot(context);
-  if (high_slot == 0 || !store_slot(context, high_slot, 2) || !load_i32_at_r2(context, 1) ||
+  if (high_slot == 0 || !store_slot(context, high_slot, 2) || !load_i32_at_r2(context, 1, false) ||
       !store_slot(context, result.slot, 1) || !load_slot(context, 2, high_slot) || !emit(context, "  iadd R2, 4") ||
-      !load_i32_at_r2(context, 1) || !store_slot(context, high_slot, 1))
+      !load_i32_at_r2(context, 1, false) || !store_slot(context, high_slot, 1))
     return false;
   result.high_slot = high_slot;
   result.type = WASM_VALUE_I64;
@@ -610,14 +1094,14 @@ static bool lower_i64_store(Context *context, const WasmExpr *expression, Value 
   Value pointer = {0}, input = {0};
   int address_slot;
 
-  if (!lower_expression(context, expression->children[0], &pointer) ||
+  if (!lower_expression(context, expression->children[0], &pointer) || !materialize_borrowed(context, &pointer) ||
       !lower_expression(context, expression->children[1], &input) || !pointer.present || !input.present ||
       input.type != WASM_VALUE_I64 || !effective_address(context, pointer, expression->offset, 8))
     return false;
   address_slot = temp_slot(context);
   if (address_slot == 0 || !store_slot(context, address_slot, 2) || !load_slot(context, 1, input.slot) ||
-      !store_i32_at_r2(context, 1) || !load_slot(context, 2, address_slot) || !emit(context, "  iadd R2, 4") ||
-      !load_slot(context, 1, input.high_slot) || !store_i32_at_r2(context, 1))
+      !store_i32_at_r2(context, 1, false) || !load_slot(context, 2, address_slot) || !emit(context, "  iadd R2, 4") ||
+      !load_slot(context, 1, input.high_slot) || !store_i32_at_r2(context, 1, false))
     return false;
 
   release(context, (Value){.slot = address_slot, .type = WASM_VALUE_I32, .present = true});
@@ -961,15 +1445,15 @@ static bool lower_i64_load_store(Context *context, const WasmExpr *expression, V
 
   /* A Wasm store evaluates its destination address before its value. */
   if (!lower_expression(context, expression->children[0], &destination) ||
-      !lower_expression(context, expression->children[1], &source) || !destination.present || !source.present ||
-      !materialize_value(context, &destination) || !materialize_value(context, &source) ||
+      !materialize_value(context, &destination) || !lower_expression(context, expression->children[1], &source) ||
+      !source.present || !materialize_value(context, &source) ||
       !effective_address(context, source, expression->source_offset, 8))
     return false;
 
   high_word.slot = temp_slot(context);
-  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) || !load_i32_at_r2(context, 1) ||
+  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) || !load_i32_at_r2(context, 1, false) ||
       !store_slot(context, source.slot, 1) || !load_slot(context, 2, high_word.slot) ||
-      !emit(context, "  iadd R2, 4") || !load_i32_at_r2(context, 1) || !store_slot(context, high_word.slot, 1))
+      !emit(context, "  iadd R2, 4") || !load_i32_at_r2(context, 1, false) || !store_slot(context, high_word.slot, 1))
     return false;
   high_word.present = true;
 
@@ -978,8 +1462,8 @@ static bool lower_i64_load_store(Context *context, const WasmExpr *expression, V
   destination_address.slot = temp_slot(context);
   if (destination_address.slot == 0 || !store_slot(context, destination_address.slot, 2) ||
       !load_slot(context, 2, destination_address.slot) || !load_slot(context, 1, source.slot) ||
-      !store_i32_at_r2(context, 1) || !load_slot(context, 2, destination_address.slot) ||
-      !emit(context, "  iadd R2, 4") || !load_slot(context, 1, high_word.slot) || !store_i32_at_r2(context, 1))
+      !store_i32_at_r2(context, 1, false) || !load_slot(context, 2, destination_address.slot) ||
+      !emit(context, "  iadd R2, 4") || !load_slot(context, 1, high_word.slot) || !store_i32_at_r2(context, 1, false))
     return false;
 
   destination_address.present = true;
@@ -998,14 +1482,14 @@ static bool lower_i64_load_store_local_tee(Context *context, const WasmExpr *exp
   int local_high = i64_local_high_slot(context->function, expression->index);
 
   if (!lower_expression(context, expression->children[0], &destination) ||
-      !lower_expression(context, expression->children[1], &source) || !destination.present || !source.present ||
-      !materialize_value(context, &destination) || !materialize_value(context, &source) ||
+      !materialize_value(context, &destination) || !lower_expression(context, expression->children[1], &source) ||
+      !source.present || !materialize_value(context, &source) ||
       !effective_address(context, source, expression->source_offset, 8))
     return false;
   high_word.slot = temp_slot(context);
-  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) || !load_i32_at_r2(context, 1) ||
+  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) || !load_i32_at_r2(context, 1, false) ||
       !store_slot(context, source.slot, 1) || !load_slot(context, 2, high_word.slot) ||
-      !emit(context, "  iadd R2, 4") || !load_i32_at_r2(context, 1) || !store_slot(context, high_word.slot, 1))
+      !emit(context, "  iadd R2, 4") || !load_i32_at_r2(context, 1, false) || !store_slot(context, high_word.slot, 1))
     return false;
   high_word.present = true;
 
@@ -1017,8 +1501,8 @@ static bool lower_i64_load_store_local_tee(Context *context, const WasmExpr *exp
   destination_address.slot = temp_slot(context);
   if (destination_address.slot == 0 || !store_slot(context, destination_address.slot, 2) ||
       !load_slot(context, 2, destination_address.slot) || !load_slot(context, 1, source.slot) ||
-      !store_i32_at_r2(context, 1) || !load_slot(context, 2, destination_address.slot) ||
-      !emit(context, "  iadd R2, 4") || !load_slot(context, 1, high_word.slot) || !store_i32_at_r2(context, 1))
+      !store_i32_at_r2(context, 1, false) || !load_slot(context, 2, destination_address.slot) ||
+      !emit(context, "  iadd R2, 4") || !load_slot(context, 1, high_word.slot) || !store_i32_at_r2(context, 1, false))
     return false;
   destination_address.present = true;
   release(context, destination_address);
@@ -1036,12 +1520,13 @@ static bool lower_i64_packed_i32_store(Context *context, const WasmExpr *express
 
   /* Wasm evaluates the store address, high expression, then low expression. */
   if (!lower_expression(context, expression->children[0], &destination) ||
-      !lower_expression(context, expression->children[1], &high_word) ||
+      !materialize_borrowed(context, &destination) ||
+      !lower_expression(context, expression->children[1], &high_word) || !materialize_borrowed(context, &high_word) ||
       !lower_expression(context, expression->children[2], &low_word) || !destination.present || !high_word.present ||
       !low_word.present || !effective_address(context, destination, expression->offset, 8) ||
-      !load_value(context, 1, low_word) || !store_i32_at_r2(context, 1) ||
+      !load_value(context, 1, low_word) || !store_i32_at_r2(context, 1, false) ||
       !load_value(context, 2, destination) || !emit(context, "  iadd R2, 4") ||
-      !load_value(context, 1, high_word) || !store_i32_at_r2(context, 1))
+      !load_value(context, 1, high_word) || !store_i32_at_r2(context, 1, false))
     return false;
 
   release(context, low_word);
@@ -1066,9 +1551,9 @@ static bool lower_i64_word_extract(Context *context, const WasmExpr *expression,
   if (!reserve_value_slot(context, &low_word) || !effective_address(context, pointer, expression->source_offset, 8))
     return false;
   high_word.slot = temp_slot(context);
-  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) || !load_i32_at_r2(context, 1) ||
+  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) || !load_i32_at_r2(context, 1, false) ||
       !store_slot(context, low_word.slot, 1) || !load_slot(context, 2, high_word.slot) ||
-      !emit(context, "  iadd R2, 4") || !load_i32_at_r2(context, 1) || !store_slot(context, high_word.slot, 1))
+      !emit(context, "  iadd R2, 4") || !load_i32_at_r2(context, 1, false) || !store_slot(context, high_word.slot, 1))
     return false;
   high_word.present = true;
 
@@ -1106,9 +1591,9 @@ static bool lower_i64_local_tee_word_extract(Context *context, const WasmExpr *e
       !effective_address(context, pointer, expression->source_offset, 8))
     return false;
   high_word.slot = temp_slot(context);
-  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) || !load_i32_at_r2(context, 1) ||
+  if (high_word.slot == 0 || !store_slot(context, high_word.slot, 2) || !load_i32_at_r2(context, 1, false) ||
       !store_slot(context, local_low, 1) || !load_slot(context, 2, high_word.slot) || !emit(context, "  iadd R2, 4") ||
-      !load_i32_at_r2(context, 1) || !store_slot(context, local_high, 1) ||
+      !load_i32_at_r2(context, 1, false) || !store_slot(context, local_high, 1) ||
       !extract_i64_word(context, local_low, local_high, expression->i64_value) || !store_slot(context, result_slot, 1))
     return false;
 
@@ -1129,7 +1614,8 @@ static bool lower_bulk_memory(Context *context, const WasmExpr *expression, Valu
 
   /* Wasm evaluates destination, source/value, then length exactly once. */
   for (index = 0; index < 3; ++index)
-    if (!lower_expression(context, expression->children[index], &arguments[index]) || !arguments[index].present)
+    if (!lower_expression(context, expression->children[index], &arguments[index]) || !arguments[index].present ||
+        (index != 2 && !materialize_borrowed(context, &arguments[index])))
       return false;
   for (index = 0; index < 3; ++index)
     if (!load_value(context, 1, arguments[index]) || !emit(context, "  mov [SP+%zu], R1", index))
@@ -1334,7 +1820,8 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
     heap_arguments = true;
   }
   for (index = 0; index < expression->child_count; ++index)
-    if (!lower_expression(context, expression->children[index], &arguments[index]) || !arguments[index].present) {
+    if (!lower_expression(context, expression->children[index], &arguments[index]) || !arguments[index].present ||
+        (index + 1 < expression->child_count && !materialize_borrowed(context, &arguments[index]))) {
       if (heap_arguments)
         free(arguments);
       return false;
@@ -1657,6 +2144,24 @@ static const char *binary_immediate_opcode(WasmBinaryOp operation) {
   }
 }
 
+/* Retains only affine pointer identities that ordinary i32 arithmetic proves
+ * exactly under Wasm's wrapping arithmetic. */
+static void set_binary_address_identity(Value *result, const Value *left, const Value *right,
+                                        WasmBinaryOp operation) {
+  result->has_address_identity = false;
+  if (left->has_address_identity && right->is_immediate &&
+      (operation == WASM_BINARY_ADD || operation == WASM_BINARY_SUB)) {
+    result->has_address_identity = true;
+    result->address_base_local = left->address_base_local;
+    result->address_offset = operation == WASM_BINARY_ADD ? left->address_offset + right->immediate
+                                                          : left->address_offset - right->immediate;
+  } else if (operation == WASM_BINARY_ADD && left->is_immediate && right->has_address_identity) {
+    result->has_address_identity = true;
+    result->address_base_local = right->address_base_local;
+    result->address_offset = right->address_offset + left->immediate;
+  }
+}
+
 /* Lowers one supported typed binary operation through the compiler value model,
  * retaining a right-hand integer constant as a target immediate when legal. */
 static bool lower_binary(Context *context, const WasmExpr *expression, Value *value) {
@@ -1664,6 +2169,12 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
   char normal[64], done[64];
   const char *immediate_opcode;
   if (!lower_expression(context, expression->children[0], &left) || !left.present)
+    return false;
+  /* A constant right operand cannot mutate a borrowed local. Other right
+   * expressions may contain local.set/calls, so preserve Wasm's left-first
+   * value before lowering them. */
+  if (expression->children[1]->kind != WASM_EXPR_I32_CONST &&
+      expression->children[1]->kind != WASM_EXPR_F32_CONST && !materialize_borrowed(context, &left))
     return false;
   left_source = left;
   if (!reserve_value_slot(context, &left) || !lower_expression(context, expression->children[1], &right) ||
@@ -1673,6 +2184,7 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
   if (immediate_opcode != NULL) {
     if (!emit(context, "  %s R1, 0x%08X", immediate_opcode, right.immediate) || !store_slot(context, left.slot, 1))
       return false;
+    set_binary_address_identity(&left, &left_source, &right, expression->binary_op);
     *value = left;
     return true;
   }
@@ -1823,6 +2335,7 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
   case WASM_BINARY_DIV_U:
     if (!emit(context, "  call __wasm_i32_div_u") || !store_slot(context, left.slot, 0))
       return false;
+    left.has_address_identity = false;
     release(context, right);
     *value = left;
     return true;
@@ -1866,6 +2379,7 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
   }
   if (!store_slot(context, left.slot, 1))
     return false;
+  set_binary_address_identity(&left, &left_source, &right, expression->binary_op);
   release(context, right);
   *value = left;
   return true;
@@ -2049,12 +2563,13 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
       *value = result;
       return true;
     }
-    int slot = temp_slot(context);
-    if (slot == 0 || !load_slot(context, 1, local_slot(context->function, expression->index)) ||
-        !store_slot(context, slot, 1))
-      return false;
-    value->slot = slot;
+    value->slot = local_slot(context->function, expression->index);
     value->present = true;
+    value->is_borrowed = true;
+    value->type = local_value_type(context->function, expression->index);
+    value->has_address_identity = true;
+    value->address_base_local = context->local_address_bases[expression->index];
+    value->address_offset = context->local_address_offsets[expression->index];
     return true;
   }
   case WASM_EXPR_LOCAL_SET:
@@ -2067,7 +2582,11 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
         return false;
     } else if (!load_value(context, 1, left) || !store_slot(context, local_slot(context->function, expression->index), 1))
       return false;
+    if (local_value_type(context->function, expression->index) == WASM_VALUE_I32)
+      assign_local_address_identity(context, expression->index, &left);
     if (expression->is_tee) {
+      if (!materialize_borrowed(context, &left))
+        return false;
       *value = left;
       return true;
     }
@@ -2100,6 +2619,7 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
     if (expression->unary_op == WASM_UNARY_REINTERPRET_F32_TO_I32 ||
         expression->unary_op == WASM_UNARY_REINTERPRET_I32_TO_F32) {
       left.type = expression->value_type;
+      left.has_address_identity = false;
       *value = left;
       return true;
     }
@@ -2122,19 +2642,19 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
       if (!emit_f32_convert_i32_u(context))
         return false;
     } else if (expression->unary_op == WASM_UNARY_TRUNC_SAT_F32_TO_I32) {
-      char nan[64], minimum[64], maximum[64], done[64];
-      if (!fresh_label(context, "trunc_nan", nan, sizeof(nan)) ||
-          !fresh_label(context, "trunc_min", minimum, sizeof(minimum)) ||
-          !fresh_label(context, "trunc_max", maximum, sizeof(maximum)) ||
-          !fresh_label(context, "trunc_done", done, sizeof(done)) || !emit(context, "  mov R3, R1") ||
-          !emit(context, "  feq R3, R1") || !emit(context, "  jf R3, %s", nan) ||
-          !emit(context, "  mov R2, 0xCF000000") || !emit(context, "  mov R3, R1") || !emit(context, "  fle R3, R2") ||
-          !emit(context, "  jt R3, %s", minimum) || !emit(context, "  mov R2, 0x4F000000") ||
-          !emit(context, "  mov R3, R2") || !emit(context, "  fle R3, R1") || !emit(context, "  jt R3, %s", maximum) ||
-          !emit(context, "  cfi R1") || !emit(context, "  jmp %s", done) || !emit_label(context, nan) ||
-          !emit(context, "  mov R1, 0") || !emit(context, "  jmp %s", done) || !emit_label(context, minimum) ||
-          !emit(context, "  mov R1, 0x80000000") || !emit(context, "  jmp %s", done) || !emit_label(context, maximum) ||
-          !emit(context, "  mov R1, 0x7FFFFFFF") || !emit_label(context, done))
+      char special[64], nan[64], done[64];
+      /* Values below +2^31 can be clamped at -2^31 and converted directly.
+       * The false comparison path combines the upper saturation and NaN
+       * cases; NaN is the only value unequal to itself. */
+      if (!fresh_label(context, "trunc_special", special, sizeof(special)) ||
+          !fresh_label(context, "trunc_nan", nan, sizeof(nan)) ||
+          !fresh_label(context, "trunc_done", done, sizeof(done)) || !emit(context, "  mov R2, 0x4F000000") ||
+          !emit(context, "  fgt R2, R1") || !emit(context, "  jf R2, %s", special) ||
+          !emit(context, "  fmax R1, 0xCF000000") || !emit(context, "  cfi R1") ||
+          !emit(context, "  jmp %s", done) || !emit_label(context, special) || !emit(context, "  mov R2, R1") ||
+          !emit(context, "  feq R2, R1") || !emit(context, "  jf R2, %s", nan) ||
+          !emit(context, "  mov R1, 0x7FFFFFFF") || !emit(context, "  jmp %s", done) || !emit_label(context, nan) ||
+          !emit(context, "  mov R1, 0") || !emit_label(context, done))
         return false;
     } else if (expression->unary_op == WASM_UNARY_F32_NEG) {
       if (!emit(context, "  fsgn R1"))
@@ -2152,6 +2672,7 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
       return false;
     if (!store_slot(context, left.slot, 1))
       return false;
+    left.has_address_identity = false;
     *value = left;
     return true;
   case WASM_EXPR_BINARY:
@@ -2161,7 +2682,7 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
   case WASM_EXPR_SELECT:
     /* Children retain Wasm's evaluation order: first, second, condition. */
     if (!lower_expression(context, expression->children[0], &left) || !materialize_value(context, &left) ||
-        !lower_expression(context, expression->children[1], &right) ||
+        !lower_expression(context, expression->children[1], &right) || !materialize_borrowed(context, &right) ||
         !lower_expression(context, expression->children[2], &condition) || !left.present || !right.present ||
         !condition.present || !fresh_label(context, "select_false", false_label, sizeof(false_label)) ||
         !fresh_label(context, "select_done", end, sizeof(end)) || !load_value(context, 1, condition))
@@ -2179,6 +2700,9 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
       return false;
     release(context, condition);
     release(context, right);
+    if (!left.has_address_identity || !right.has_address_identity ||
+        left.address_base_local != right.address_base_local || left.address_offset != right.address_offset)
+      left.has_address_identity = false;
     *value = left;
     return true;
   case WASM_EXPR_LOAD:
@@ -2285,6 +2809,7 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
       int result_slot = branch_target == NULL ? 0 : branch_target->result_slot;
       if (target == NULL || result_slot == 0 ||
           !lower_expression(context, expression->children[0], &left) || !left.present ||
+          !materialize_borrowed(context, &left) ||
           !lower_expression(context, expression->children[1], &condition) || !condition.present ||
           !fresh_label(context, "br_if_fallthrough", end, sizeof(end)) || !load_value(context, 1, condition) ||
           !emit(context, "  jf R1, %s", end) || !load_value(context, 1, left) ||
@@ -2381,7 +2906,7 @@ static bool initialize_data(const ValidatedModule *validated, Context *context) 
 
 /* Emits one reachable Wasm function and its compiler-defined frame. */
 static bool lower_function(const ValidatedModule *validated, const WasmFunction *function, VirconIrProgram *program,
-                           Diagnostics *diagnostics, uint32_t memory_bytes) {
+                           Diagnostics *diagnostics, uint32_t memory_bytes, bool memory_can_grow) {
   Context context = {0};
   Value result = {0};
   char label[64];
@@ -2393,6 +2918,9 @@ static bool lower_function(const ValidatedModule *validated, const WasmFunction 
   context.program = program;
   context.diagnostics = diagnostics;
   context.memory_bytes = memory_bytes;
+  context.memory_can_grow = memory_can_grow;
+  if (!initialize_local_alignments(&context))
+    goto done;
   outgoing_slots = outgoing_call_slots(validated->module, function->body);
   frame_slots = local_storage_words(function);
   if (frame_slots > SIZE_MAX - TEMP_SLOTS || outgoing_slots > SIZE_MAX - frame_slots - TEMP_SLOTS) {
@@ -2465,6 +2993,9 @@ done:
   }
   dispose_targets(&context);
   dispose_jump_tables(&context);
+  free(context.local_alignments);
+  free(context.local_address_bases);
+  free(context.local_address_offsets);
   return success;
 }
 
@@ -2475,9 +3006,19 @@ bool lower_module_to_vircon_ir(const ValidatedModule *validated, VirconIrProgram
   size_t index;
   char entry_label[64];
   bool needs_unsigned_division = false, needs_memory_copy = false, needs_memory_fill = false;
+  bool memory_can_grow = false;
   startup.program = program;
   startup.diagnostics = diagnostics;
   startup.memory_bytes = memory_bytes;
+  for (index = 0; index < validated->module->function_count; ++index) {
+    const WasmFunction *function = &validated->module->functions[index];
+    if (validated->reachable[index] && !function->is_import &&
+        expression_uses_kind(function->body, WASM_EXPR_MEMORY_GROW)) {
+      memory_can_grow = true;
+      break;
+    }
+  }
+  startup.memory_can_grow = memory_can_grow;
   function_label(validated->module, validated->entry, entry_label, sizeof(entry_label));
   if (!emit_label(&startup, "__wasm_entry") || !initialize_data(validated, &startup) ||
       !emit(&startup, "  mov R1, %u", validated->module->memory_initial_pages) ||
@@ -2501,7 +3042,7 @@ bool lower_module_to_vircon_ir(const ValidatedModule *validated, VirconIrProgram
         expression_uses_kind(function->body, WASM_EXPR_MEMORY_FILL))
       needs_memory_fill = true;
     if (validated->reachable[index] && !function->is_import &&
-        !lower_function(validated, function, program, diagnostics, memory_bytes))
+        !lower_function(validated, function, program, diagnostics, memory_bytes, memory_can_grow))
       return false;
   }
   if (needs_unsigned_division && !emit_unsigned_division_helper(&startup))
