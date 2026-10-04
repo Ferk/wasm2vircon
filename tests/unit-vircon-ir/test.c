@@ -114,11 +114,36 @@ int main(void) {
       !vircon_ir_append_label(&program, "__copy_join", &diagnostics) ||
       !append_instruction(&program, &diagnostics, "  mov R1, [BP-1]"))
     return fail(&program, diagnostic_stream, 12);
-  vircon_ir_optimize_copies(&program);
+  vircon_ir_optimize_local(&program);
   if (program.count != 5 || program.nodes[0].opcode != VIRCON_IR_OPCODE_MOV ||
       program.nodes[1].opcode != VIRCON_IR_OPCODE_IADD || program.nodes[2].opcode != VIRCON_IR_OPCODE_MOV ||
       program.nodes[3].kind != VIRCON_IR_NODE_LABEL || program.nodes[4].opcode != VIRCON_IR_OPCODE_MOV)
     return fail(&program, diagnostic_stream, 13);
+
+  vircon_ir_dispose(&program);
+  vircon_ir_init(&program);
+  if (!append_instruction(&program, &diagnostics, "  mov R1, 40") ||
+      !append_instruction(&program, &diagnostics, "  iadd R1, 2") ||
+      !append_instruction(&program, &diagnostics, "  imul R1, 3") ||
+      !append_instruction(&program, &diagnostics, "  ieq R1, 126") ||
+      !append_instruction(&program, &diagnostics, "  mov R2, -1") ||
+      !append_instruction(&program, &diagnostics, "  ilt R2, 0") ||
+      !append_instruction(&program, &diagnostics, "  mov R3, 8") ||
+      !append_instruction(&program, &diagnostics, "  and R3, 0") ||
+      !append_instruction(&program, &diagnostics, "  imul R3, 4") ||
+      !vircon_ir_append_label(&program, "__constant_join", &diagnostics) ||
+      !append_instruction(&program, &diagnostics, "  iadd R1, 1"))
+    return fail(&program, diagnostic_stream, 14);
+  vircon_ir_optimize_local(&program);
+  if (program.count != 5 || program.nodes[0].opcode != VIRCON_IR_OPCODE_MOV ||
+      program.nodes[0].operands[1].kind != VIRCON_IR_OPERAND_IMMEDIATE ||
+      program.nodes[0].operands[1].immediate != 1 || program.nodes[1].opcode != VIRCON_IR_OPCODE_MOV ||
+      program.nodes[1].operands[1].kind != VIRCON_IR_OPERAND_IMMEDIATE ||
+      program.nodes[1].operands[1].immediate != 1 || program.nodes[2].opcode != VIRCON_IR_OPCODE_MOV ||
+      program.nodes[2].operands[1].kind != VIRCON_IR_OPERAND_IMMEDIATE ||
+      program.nodes[2].operands[1].immediate != 0 || program.nodes[3].kind != VIRCON_IR_NODE_LABEL ||
+      program.nodes[4].opcode != VIRCON_IR_OPCODE_IADD)
+    return fail(&program, diagnostic_stream, 15);
 
   vircon_ir_dispose(&program);
   fclose(diagnostic_stream);

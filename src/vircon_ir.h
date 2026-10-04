@@ -156,7 +156,7 @@ bool vircon_ir_append_label(VirconIrProgram *program, const char *name, Diagnost
 bool vircon_ir_append_pointer(VirconIrProgram *program, const char *target, Diagnostics *diagnostics);
 /* Strictly decodes one compiler-generated instruction line into structured V32 IR and frees text. */
 bool vircon_ir_append_generated_instruction(VirconIrProgram *program, char *text, Diagnostics *diagnostics);
-/* Removes redundant target-register/frame-slot copies within straight-line regions. */
-void vircon_ir_optimize_copies(VirconIrProgram *program);
+/* Simplifies constants and redundant copies within straight-line regions. */
+void vircon_ir_optimize_local(VirconIrProgram *program);
 
 #endif

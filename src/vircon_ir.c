@@ -400,6 +400,8 @@ static bool opcode_writes_first_register(VirconIrOpcode opcode) {
 typedef struct FrameValueFact {
   int32_t slot;
   uint64_t value;
+  bool constant_known;
+  uint32_t constant;
 } FrameValueFact;
 
 /* Finds or creates the symbolic-value entry for one BP-relative frame word. */
@@ -414,17 +416,115 @@ static FrameValueFact *frame_value_fact(FrameValueFact *facts, size_t *count, in
   return &facts[(*count)++];
 }
 
-/* Invalidates symbolic values at a control-flow join or unknown store. */
-static void clear_frame_value_facts(uint64_t *register_values, size_t *frame_value_count) {
+/* Invalidates symbolic and constant values at a control-flow join or unknown store. */
+static void clear_value_facts(uint64_t *register_values, bool *register_constant_known,
+                              size_t *frame_value_count) {
   memset(register_values, 0, sizeof(uint64_t) * (VIRCON_IR_REGISTER_BP + 1));
+  memset(register_constant_known, 0, sizeof(bool) * (VIRCON_IR_REGISTER_BP + 1));
   *frame_value_count = 0;
 }
 
-/* Removes frame reloads/stores that are provably redundant in one straight
- * line region. Labels and calls deliberately end the region; this pass is not
- * a register allocator and never carries facts across a control-flow join. */
-void vircon_ir_optimize_copies(VirconIrProgram *program) {
+/* Returns whether a register is one of the sixteen general target registers. */
+static bool is_general_register(VirconIrRegister reg) {
+  return reg >= VIRCON_IR_REGISTER_R0 && reg <= VIRCON_IR_REGISTER_R15;
+}
+
+/* Interprets one target word as signed two's-complement without relying on an
+ * implementation-defined unsigned-to-signed conversion. */
+static int32_t signed_word(uint32_t value) {
+  int32_t result;
+  memcpy(&result, &value, sizeof(result));
+  return result;
+}
+
+/* Returns a known immediate or register value for local constant folding. */
+static bool constant_operand_value(const VirconIrOperand *operand, const bool *register_constant_known,
+                                   const uint32_t *register_constants, uint32_t *value) {
+  if (operand->kind == VIRCON_IR_OPERAND_IMMEDIATE) {
+    *value = operand->immediate;
+    return true;
+  }
+  if (operand->kind == VIRCON_IR_OPERAND_REGISTER && is_general_register(operand->reg) &&
+      register_constant_known[operand->reg]) {
+    *value = register_constants[operand->reg];
+    return true;
+  }
+  return false;
+}
+
+/* Evaluates target integer operations whose 32-bit behavior is independent
+ * of traps, floating-point state, and source-language undefined behavior. */
+static bool fold_integer_operation(VirconIrOpcode opcode, uint32_t left, uint32_t right, uint32_t *result,
+                                   bool *comparison) {
+  *comparison = false;
+  switch (opcode) {
+  case VIRCON_IR_OPCODE_IADD:
+    *result = left + right;
+    return true;
+  case VIRCON_IR_OPCODE_ISUB:
+    *result = left - right;
+    return true;
+  case VIRCON_IR_OPCODE_IMUL:
+    *result = left * right;
+    return true;
+  case VIRCON_IR_OPCODE_AND:
+    *result = left & right;
+    return true;
+  case VIRCON_IR_OPCODE_OR:
+    *result = left | right;
+    return true;
+  case VIRCON_IR_OPCODE_XOR:
+    *result = left ^ right;
+    return true;
+  case VIRCON_IR_OPCODE_IEQ:
+    *result = left == right;
+    *comparison = true;
+    return true;
+  case VIRCON_IR_OPCODE_INE:
+    *result = left != right;
+    *comparison = true;
+    return true;
+  case VIRCON_IR_OPCODE_ILT:
+    *result = signed_word(left) < signed_word(right);
+    *comparison = true;
+    return true;
+  case VIRCON_IR_OPCODE_ILE:
+    *result = signed_word(left) <= signed_word(right);
+    *comparison = true;
+    return true;
+  case VIRCON_IR_OPCODE_IGT:
+    *result = signed_word(left) > signed_word(right);
+    *comparison = true;
+    return true;
+  case VIRCON_IR_OPCODE_IGE:
+    *result = signed_word(left) >= signed_word(right);
+    *comparison = true;
+    return true;
+  default:
+    return false;
+  }
+}
+
+/* Replaces one folded operation with a typed constant move. */
+static void rewrite_as_constant_move(VirconIrNode *node, uint32_t value, bool comparison) {
+  VirconIrOperand *source = &node->operands[1];
+  free(source->symbol);
+  memset(source, 0, sizeof(*source));
+  source->kind = VIRCON_IR_OPERAND_IMMEDIATE;
+  source->immediate = value;
+  source->integer_format = comparison ? VIRCON_IR_INTEGER_UNSIGNED_DECIMAL : VIRCON_IR_INTEGER_HEXADECIMAL;
+  source->hexadecimal_digits = comparison ? 0 : 8;
+  node->opcode = VIRCON_IR_OPCODE_MOV;
+}
+
+/* Simplifies frame copies and constant integer expressions that are provably
+ * local to one straight-line region. Labels and calls deliberately end the
+ * region; this pass is not a register allocator and never carries facts across
+ * a control-flow join. */
+void vircon_ir_optimize_local(VirconIrProgram *program) {
   uint64_t register_values[VIRCON_IR_REGISTER_BP + 1] = {0};
+  bool register_constant_known[VIRCON_IR_REGISTER_BP + 1] = {0};
+  uint32_t register_constants[VIRCON_IR_REGISTER_BP + 1] = {0};
   FrameValueFact frame_values[128] = {{0}};
   size_t frame_value_count = 0;
   uint64_t next_value = 1;
@@ -435,7 +535,37 @@ void vircon_ir_optimize_copies(VirconIrProgram *program) {
     bool remove = false;
 
     if (node->kind != VIRCON_IR_NODE_INSTRUCTION) {
-      clear_frame_value_facts(register_values, &frame_value_count);
+      clear_value_facts(register_values, register_constant_known, &frame_value_count);
+    } else if (node->operand_count == 2 && node->operands[0].kind == VIRCON_IR_OPERAND_REGISTER &&
+               is_general_register(node->operands[0].reg) &&
+               register_constant_known[node->operands[0].reg]) {
+      VirconIrRegister destination_reg = node->operands[0].reg;
+      uint32_t right, result;
+      bool comparison;
+
+      if (constant_operand_value(&node->operands[1], register_constant_known, register_constants, &right) &&
+          fold_integer_operation(node->opcode, register_constants[destination_reg], right, &result,
+                                 &comparison)) {
+        VirconIrNode *previous = write_index == 0 ? NULL : &program->nodes[write_index - 1];
+        rewrite_as_constant_move(node, result, comparison);
+
+        /* The common lowering shape materializes a constant immediately before
+         * mutating it. Replace that pair with one move instead of retaining a
+         * dead initial value. */
+        if (previous != NULL && previous->kind == VIRCON_IR_NODE_INSTRUCTION &&
+            previous->opcode == VIRCON_IR_OPCODE_MOV && previous->operand_count == 2 &&
+            previous->comment == NULL && previous->operands[0].kind == VIRCON_IR_OPERAND_REGISTER &&
+            previous->operands[0].reg == destination_reg) {
+          dispose_node(previous);
+          --write_index;
+          register_values[destination_reg] = 0;
+          register_constant_known[destination_reg] = false;
+        }
+      }
+    }
+
+    if (node->kind != VIRCON_IR_NODE_INSTRUCTION) {
+      /* The control-flow boundary above has already invalidated all facts. */
     } else if (node->opcode == VIRCON_IR_OPCODE_MOV && node->operand_count == 2) {
       VirconIrOperand *destination = &node->operands[0];
       VirconIrOperand *source = &node->operands[1];
@@ -454,6 +584,8 @@ void vircon_ir_optimize_copies(VirconIrProgram *program) {
           remove = true;
         else
           register_values[reg] = fact->value;
+        register_constant_known[reg] = is_general_register(reg) && fact->constant_known;
+        register_constants[reg] = fact->constant;
       } else if (frame_slot_operand(destination, &slot) && source->kind == VIRCON_IR_OPERAND_REGISTER) {
         VirconIrRegister reg = source->reg;
         FrameValueFact *fact = frame_value_fact(frame_values, &frame_value_count, slot);
@@ -467,6 +599,8 @@ void vircon_ir_optimize_copies(VirconIrProgram *program) {
           remove = true;
         else
           fact->value = register_values[reg];
+        fact->constant_known = register_constant_known[reg];
+        fact->constant = register_constants[reg];
       } else if (destination->kind == VIRCON_IR_OPERAND_REGISTER && source->kind == VIRCON_IR_OPERAND_REGISTER) {
         VirconIrRegister destination_reg = destination->reg;
         VirconIrRegister source_reg = source->reg;
@@ -477,22 +611,37 @@ void vircon_ir_optimize_copies(VirconIrProgram *program) {
             register_values[source_reg] = next_value++;
           register_values[destination_reg] = register_values[source_reg];
         }
+        register_constant_known[destination_reg] = is_general_register(destination_reg) &&
+                                                   is_general_register(source_reg) &&
+                                                   register_constant_known[source_reg];
+        register_constants[destination_reg] = register_constants[source_reg];
+      } else if (destination->kind == VIRCON_IR_OPERAND_REGISTER &&
+                 source->kind == VIRCON_IR_OPERAND_IMMEDIATE) {
+        if (register_constant_known[destination->reg] && register_constants[destination->reg] == source->immediate)
+          remove = true;
+        else
+          register_values[destination->reg] = next_value++;
+        register_constant_known[destination->reg] = is_general_register(destination->reg);
+        register_constants[destination->reg] = source->immediate;
       } else if (destination->kind == VIRCON_IR_OPERAND_REGISTER) {
         register_values[destination->reg] = next_value++;
+        register_constant_known[destination->reg] = false;
       } else if (destination->kind == VIRCON_IR_OPERAND_MEMORY_REGISTER ||
                  destination->kind == VIRCON_IR_OPERAND_MEMORY_ABSOLUTE) {
         /* An indirect store could alias a compiler frame word. */
-        clear_frame_value_facts(register_values, &frame_value_count);
+        clear_value_facts(register_values, register_constant_known, &frame_value_count);
       }
     } else {
       if (node->operand_count != 0 && node->operands[0].kind == VIRCON_IR_OPERAND_REGISTER &&
-          opcode_writes_first_register(node->opcode))
+          opcode_writes_first_register(node->opcode)) {
         register_values[node->operands[0].reg] = next_value++;
+        register_constant_known[node->operands[0].reg] = false;
+      }
       if (node->opcode == VIRCON_IR_OPCODE_SETS)
-        clear_frame_value_facts(register_values, &frame_value_count);
+        clear_value_facts(register_values, register_constant_known, &frame_value_count);
       if (node->opcode == VIRCON_IR_OPCODE_CALL || node->opcode == VIRCON_IR_OPCODE_JMP ||
           node->opcode == VIRCON_IR_OPCODE_RET || node->opcode == VIRCON_IR_OPCODE_HLT)
-        clear_frame_value_facts(register_values, &frame_value_count);
+        clear_value_facts(register_values, register_constant_known, &frame_value_count);
     }
 
     if (remove) {
