@@ -891,6 +891,7 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
     expression = new_expression(WASM_EXPR_STORE,
                                 BinaryenStoreGetBytes(source) == 8                           ? "i64.store"
                                 : BinaryenStoreGetBytes(source) == 1                         ? "i32.store8"
+                                : BinaryenStoreGetBytes(source) == 2                         ? "i32.store16"
                                 : BinaryenStoreGetValueType(source) == BinaryenTypeFloat32() ? "f32.store"
                                                                                              : "i32.store",
                                 path, diagnostics);

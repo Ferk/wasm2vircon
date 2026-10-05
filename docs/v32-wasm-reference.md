@@ -362,7 +362,11 @@ checks the selector, loads the selected address, and transfers with Vircon32
 | Instruction | Meaning in this profile |
 | --- | --- |
 | `i32.load8_u` | Reads one byte at the calculated byte address and returns an `i32` from `0` through `255`. The `_u` means the byte is zero-extended, never treated as a negative signed byte. |
+| `i32.load8_s` | Reads one byte and sign-extends bit 7 through the upper 24 result bits. Values from `0x80` through `0xFF` therefore produce negative `i32` values. |
 | `i32.store8` | Stores the low eight bits of its value at the calculated byte address. It preserves the neighboring three byte lanes in the containing Vircon RAM word. |
+| `i32.load16_u` | Reads two consecutive little-endian bytes and returns their unsigned value from `0` through `65535`. Every byte alignment is supported. |
+| `i32.load16_s` | Reads two consecutive little-endian bytes and sign-extends bit 15 through the upper result bits. Every byte alignment is supported. |
+| `i32.store16` | Stores the low 16 bits as two consecutive little-endian bytes while preserving neighboring bytes. This also works when the halfword crosses a Vircon32 word boundary. |
 | `i32.load` | Reads four consecutive bytes at the calculated byte address and forms a 32-bit little-endian `i32`. The address may be aligned or unaligned. |
 | `i32.store` | Splits an `i32` into four little-endian bytes and stores them at consecutive byte addresses. The address may be aligned or unaligned. |
 | `f32.load` | Reads four consecutive bytes at the calculated byte address and uses their unchanged 32-bit pattern as an `f32`. The address may be aligned or unaligned. |
@@ -497,21 +501,6 @@ control-transfer rules. VirconWasm deliberately does not try to act as a full
 Wasm virtual machine, so they are out of scope.
 
 ### Memories, globals, and bulk features
-
-**`i32.load8_s`**
-
-The signed-byte load is not yet accepted even though the current profile has
-the needed sign-extension operation. It is a small **candidate**: load one byte through
-the existing packed-memory path, then sign-extend it. It has not been added
-yet because no normalized supported application has emitted it.
-
-**`i32.load16_s`, `i32.load16_u`, and `i32.store16`**
-
-Wasm permits these accesses at every byte address, including odd addresses.
-On packed word-addressed Vircon RAM, an unaligned 16-bit access can span two
-target words and needs correct byte combination or read-modify-write behavior.
-This is a plausible next memory **candidate**, but it deserves focused lane and
-bounds tests instead of being assumed equivalent to a target halfword access.
 
 **Multiple memories, memory imports, `memory64`, shared memory, and atomics**
 

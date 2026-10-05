@@ -1,0 +1,5 @@
+source=narrow-memory.wat
+entry=main
+expectations=expected.asm
+ordered_expectations=ordered.asm
+skip_input_optimization=true

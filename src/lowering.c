@@ -871,6 +871,7 @@ static void function_label(const WasmModule *module, const WasmFunction *functio
 static bool lower_expression(Context *context, const WasmExpr *expression, Value *value);
 static bool lower_expression_impl(Context *context, const WasmExpr *expression, Value *value);
 static bool emit_i32_shr_s(Context *context);
+static bool emit_i32_extend_s(Context *context, unsigned bits);
 
 #define LOOP_ACCESS_GROUP_LIMIT 8u
 
@@ -1862,7 +1863,9 @@ static bool store_i32_at_r2(Context *context, int value_register, bool proven_al
          emit_label(context, done);
 }
 
-/* Lowers a validated byte or i32 Wasm load into packed-memory operations. */
+/* Lowers a validated byte, halfword, or word Wasm load into packed-memory
+ * operations. Narrow values are reconstructed in little-endian order and
+ * sign-extended only when requested by the Wasm opcode. */
 static bool lower_load(Context *context, const WasmExpr *expression, Value *value) {
   Value pointer = {0}, result = {0};
   bool proven_aligned, cached_word_address;
@@ -1879,7 +1882,16 @@ static bool lower_load(Context *context, const WasmExpr *expression, Value *valu
     return false;
   result.has_address_identity = false;
   if (expression->bytes == 1) {
-    if (!load_byte_at_r2(context, 1) || !store_slot(context, result.slot, 1))
+    if (!load_byte_at_r2(context, 1) || (expression->is_signed && !emit_i32_extend_s(context, 8)) ||
+        !store_slot(context, result.slot, 1))
+      return false;
+    *value = result;
+    return true;
+  }
+  if (expression->bytes == 2) {
+    if (!load_byte_at_r2(context, 1) || !emit(context, "  iadd R2, 1") || !load_byte_at_r2(context, 5) ||
+        !emit(context, "  shl R5, 8") || !emit(context, "  or R1, R5") ||
+        (expression->is_signed && !emit_i32_extend_s(context, 16)) || !store_slot(context, result.slot, 1))
       return false;
     *value = result;
     return true;
@@ -1892,7 +1904,9 @@ static bool lower_load(Context *context, const WasmExpr *expression, Value *valu
   *value = result;
   return true;
 }
-/* Lowers a validated byte or i32 Wasm store into packed-memory operations. */
+/* Lowers a validated byte, halfword, or word Wasm store into packed-memory
+ * operations. Halfword stores preserve every neighboring byte even when the
+ * two-byte range crosses a Vircon32 word boundary. */
 static bool lower_store(Context *context, const WasmExpr *expression, Value *value) {
   Value pointer = {0}, input = {0};
   bool proven_aligned, cached_word_address, pointer_is_fast = false;
@@ -1912,6 +1926,15 @@ static bool lower_store(Context *context, const WasmExpr *expression, Value *val
     return false;
   if (expression->bytes == 1) {
     if (!store_byte_at_r2(context, 1))
+      return false;
+    release(context, input);
+    release(context, pointer);
+    value->present = false;
+    return true;
+  }
+  if (expression->bytes == 2) {
+    if (!store_byte_at_r2(context, 1) || !emit(context, "  iadd R2, 1") || !emit(context, "  mov R7, R1") ||
+        !emit(context, "  shl R7, -8") || !store_byte_at_r2(context, 7))
       return false;
     release(context, input);
     release(context, pointer);

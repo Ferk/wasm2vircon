@@ -318,7 +318,7 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
     return expression->child_count == 1 &&
            validate_expression(module, function, expression->children[0], reachable, diagnostics);
   case WASM_EXPR_LOAD:
-    if (!((expression->bytes == 1 && !expression->is_signed && expression->value_type == WASM_VALUE_I32) ||
+    if (!(((expression->bytes == 1 || expression->bytes == 2) && expression->value_type == WASM_VALUE_I32) ||
           (expression->bytes == 4 &&
            (expression->value_type == WASM_VALUE_I32 || expression->value_type == WASM_VALUE_F32)) ||
           (expression->bytes == 8 && expression->value_type == WASM_VALUE_I64))) {
@@ -329,7 +329,7 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
     }
     return validate_expression(module, function, expression->children[0], reachable, diagnostics);
   case WASM_EXPR_STORE:
-    if (!((expression->bytes == 1 && expression->value_type == WASM_VALUE_I32) ||
+    if (!(((expression->bytes == 1 || expression->bytes == 2) && expression->value_type == WASM_VALUE_I32) ||
           (expression->bytes == 4 &&
            (expression->value_type == WASM_VALUE_I32 || expression->value_type == WASM_VALUE_F32)) ||
           (expression->bytes == 8 && expression->value_type == WASM_VALUE_I64))) {
