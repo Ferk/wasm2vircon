@@ -1,0 +1,1 @@
+unsupported function-table initialization: passive element segments are unsupported

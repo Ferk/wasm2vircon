@@ -192,6 +192,18 @@ static bool matches_signature(const WasmFunction *function, const ImportSpec *sp
   return true;
 }
 
+/* Checks one statically resolved table target against a call_indirect site's
+ * exact Wasm function type. A mismatch is a runtime trap for that slot. */
+static bool matches_indirect_signature(const WasmFunction *function, const WasmExpr *call) {
+  size_t index;
+  if (function->param_count != call->signature_param_count || function->result != call->signature_result)
+    return false;
+  for (index = 0; index < function->param_count; ++index)
+    if (function->params[index] != call->signature_params[index])
+      return false;
+  return true;
+}
+
 /* Checks the profile's scalar parameter, local, and result restrictions. */
 static bool function_has_i32_signature(const WasmFunction *function) {
   size_t index;
@@ -462,6 +474,56 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
       return true;
     }
     return validate_function(module, callee, reachable, diagnostics);
+  case WASM_EXPR_CALL_INDIRECT: {
+    const WasmTable *table = wasm_module_find_table(module, expression->name);
+    if (table == NULL) {
+      validation_expression_error(diagnostics, function, expression, "table '%s' is not declared",
+                                  expression->name == NULL ? "" : expression->name);
+      return false;
+    }
+    if (expression->child_count != expression->signature_param_count + 1) {
+      validation_expression_error(diagnostics, function, expression, "malformed indirect-call operands");
+      return false;
+    }
+    if (expression->signature_result != WASM_VALUE_NONE && expression->signature_result != WASM_VALUE_I32 &&
+        expression->signature_result != WASM_VALUE_F32) {
+      validation_expression_error(diagnostics, function, expression, "unsupported indirect-call result type");
+      return false;
+    }
+    for (index = 0; index < expression->signature_param_count; ++index)
+      if (expression->signature_params[index] != WASM_VALUE_I32 &&
+          expression->signature_params[index] != WASM_VALUE_F32) {
+        validation_expression_error(diagnostics, function, expression,
+                                    "indirect-call parameters must use supported scalar types");
+        return false;
+      }
+    for (index = 0; index < expression->child_count; ++index)
+      if (!validate_expression(module, function, expression->children[index], reachable, diagnostics))
+        return false;
+    for (index = 0; index < table->initial; ++index) {
+      if (table->slots[index] == NULL)
+        continue;
+      callee = wasm_module_find_function(module, table->slots[index]);
+      if (callee == NULL) {
+        validation_expression_error(diagnostics, function, expression,
+                                    "table slot %zu names unknown function '%s'", index, table->slots[index]);
+        return false;
+      }
+      /* Null and mismatched slots trap if selected, as required by Wasm. They
+       * are deliberately not marked reachable from this typed call site. */
+      if (!matches_indirect_signature(callee, expression))
+        continue;
+      if (callee->is_import) {
+        validation_expression_error(diagnostics, function, expression,
+                                    "matching table slot %zu targets an import; indirect platform calls are unsupported",
+                                    index);
+        return false;
+      }
+      if (!validate_function(module, callee, reachable, diagnostics))
+        return false;
+    }
+    return true;
+  }
   }
   validation_expression_error(diagnostics, function, expression, "unknown compiler-owned expression");
   return false;
@@ -497,9 +559,22 @@ bool validate_virconwasm_v1(const WasmModule *module, const char *entry_name, Va
     diagnostics_error(diagnostics, "memory imports, shared memory, and memory64 are unsupported");
     return false;
   }
-  if (module->table_count != 0 || module->element_segment_count != 0) {
-    diagnostics_error(diagnostics, "tables and element segments are unsupported in VirconWasm v1");
+  if (module->table_count > 1 || (module->table_count == 0 && module->element_segment_count != 0)) {
+    diagnostics_error(diagnostics, "VirconWasm supports at most one statically initialized function table");
     return false;
+  }
+  if (module->table_count == 1) {
+    const WasmTable *table = &module->tables[0];
+    if (!module->table_initialization_supported) {
+      diagnostics_error(diagnostics, "unsupported function-table initialization: %s",
+                        module->table_initialization_error != NULL ? module->table_initialization_error
+                                                                   : "unknown table form");
+      return false;
+    }
+    if (table->is_imported || !table->is_funcref) {
+      diagnostics_error(diagnostics, "only one defined funcref table is supported");
+      return false;
+    }
   }
   memory_bytes = (uint64_t)module->memory_initial_pages * 65536u;
   available_bytes = VIRCON_LINEAR_MEMORY_BYTES;
@@ -549,6 +624,11 @@ bool validate_virconwasm_v1(const WasmModule *module, const char *entry_name, Va
       return false;
     }
   }
+  for (index = 0; index < module->export_count; ++index)
+    if (module->exports[index].is_table) {
+      diagnostics_error(diagnostics, "exported function tables are unsupported");
+      return false;
+    }
   for (index = 0; index < module->export_count; ++index)
     if (strcmp(module->exports[index].name, entry_name) == 0) {
       entry_export = &module->exports[index];

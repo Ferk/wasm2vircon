@@ -217,6 +217,7 @@ static void free_expression(WasmExpr *expression) {
   for (index = 0; index < expression->branch_target_count; ++index)
     free(expression->branch_targets[index]);
   free(expression->branch_targets);
+  free(expression->signature_params);
   free(expression->path);
   free(expression->name);
   free(expression);
@@ -714,6 +715,51 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
       if (expression->children[index] == NULL)
         goto fail;
     }
+    return expression;
+  }
+  if (id == BinaryenCallIndirectId()) {
+    BinaryenExpressionRef target = BinaryenCallIndirectGetTarget(source);
+    BinaryenType results = BinaryenCallIndirectGetResults(source);
+    size_t operand_count = BinaryenCallIndirectGetNumOperands(source);
+    expression = new_expression(WASM_EXPR_CALL_INDIRECT, "call_indirect", path, diagnostics);
+    if (expression == NULL)
+      return NULL;
+    if (BinaryenCallIndirectIsReturn(source)) {
+      expression_error(diagnostics, context, expression->opcode, path, "tail call_indirect is unsupported");
+      goto fail;
+    }
+    expression->name = copy_string(BinaryenCallIndirectGetTable(source));
+    if (expression->name == NULL ||
+        !convert_tuple_type(BinaryenCallIndirectGetParams(source), &expression->signature_params,
+                            &expression->signature_param_count, diagnostics, context))
+      goto fail;
+    expression->signature_result = convert_type(results);
+    expression->value_type = expression->signature_result;
+    if (expression->signature_result == WASM_VALUE_OTHER) {
+      expression_error(diagnostics, context, expression->opcode, path, "unsupported indirect-call result type %s",
+                       binaryen_type_name(results));
+      goto fail;
+    }
+    if (operand_count != expression->signature_param_count) {
+      expression_error(diagnostics, context, expression->opcode, path,
+                       "indirect-call operand count does not match its declared type");
+      goto fail;
+    }
+    if (BinaryenExpressionGetType(target) != BinaryenTypeInt32()) {
+      expression_error(diagnostics, context, expression->opcode, path, "table index must be i32");
+      goto fail;
+    }
+    if (!allocate_children(expression, operand_count + 1, diagnostics))
+      goto fail;
+    for (index = 0; index < operand_count; ++index) {
+      expression->children[index] =
+          convert_child(BinaryenCallIndirectGetOperandAt(source, index), diagnostics, context, path, index);
+      if (expression->children[index] == NULL)
+        goto fail;
+    }
+    expression->children[operand_count] = convert_child(target, diagnostics, context, path, operand_count);
+    if (expression->children[operand_count] == NULL)
+      goto fail;
     return expression;
   }
   if (id == BinaryenConstId()) {
@@ -1422,6 +1468,107 @@ static bool read_memory_metadata(BinaryenModuleRef source, uint32_t memory_count
   return true;
 }
 
+/* Records the first reason a table cannot use the immutable static-table
+ * profile. Validation reports it after the complete compiler-owned module has
+ * been decoded, keeping Binaryen details out of later stages. */
+static bool record_table_initialization_error(WasmModule *module, const char *message) {
+  if (!module->table_initialization_supported)
+    return true;
+  module->table_initialization_supported = false;
+  module->table_initialization_error = copy_string(message);
+  return module->table_initialization_error != NULL;
+}
+
+/* Finds one decoded table by its internal Wasm name. */
+static WasmTable *find_mutable_table(WasmModule *module, const char *name) {
+  size_t index;
+  for (index = 0; index < module->table_count; ++index)
+    if (name != NULL && strcmp(module->tables[index].name, name) == 0)
+      return &module->tables[index];
+  return NULL;
+}
+
+/* Decodes immutable table declarations and applies active constant-offset
+ * element segments in instantiation order. Later overlapping segments replace
+ * earlier slots exactly as Wasm initialization does. */
+static bool read_tables(BinaryenModuleRef source, WasmModule *module, Diagnostics *diagnostics) {
+  BinaryenIndex index;
+  module->table_initialization_supported = true;
+  module->table_count = BinaryenGetNumTables(source);
+  module->element_segment_count = BinaryenGetNumElementSegments(source);
+  if (module->table_count == 0)
+    return module->element_segment_count == 0 ||
+           record_table_initialization_error(module, "element segments exist without a declared table");
+  module->tables = calloc(module->table_count, sizeof(*module->tables));
+  if (module->tables == NULL) {
+    diagnostics_error(diagnostics, "out of memory decoding Wasm tables");
+    return false;
+  }
+  for (index = 0; index < module->table_count; ++index) {
+    BinaryenTableRef source_table = BinaryenGetTableByIndex(source, index);
+    WasmTable *table = &module->tables[index];
+    const char *import_module = BinaryenTableImportGetModule(source_table);
+    BinaryenIndex initial = BinaryenTableGetInitial(source_table);
+    BinaryenIndex maximum = BinaryenTableGetMax(source_table);
+    if (initial > UINT32_MAX || maximum > UINT32_MAX) {
+      diagnostics_error(diagnostics, "Wasm table size exceeds VirconWasm's 32-bit limit");
+      return false;
+    }
+    table->name = copy_string(BinaryenTableGetName(source_table));
+    table->initial = (uint32_t)initial;
+    table->has_max = BinaryenTableHasMax(source_table);
+    table->maximum = table->has_max ? (uint32_t)maximum : 0;
+    table->is_imported = import_module != NULL && import_module[0] != '\0';
+    table->is_funcref = BinaryenTableGetType(source_table) == BinaryenTypeFuncref();
+    table->slots = calloc(table->initial == 0 ? 1 : table->initial, sizeof(*table->slots));
+    if (table->name == NULL || table->slots == NULL) {
+      diagnostics_error(diagnostics, "out of memory decoding Wasm table contents");
+      return false;
+    }
+  }
+  for (index = 0; index < module->element_segment_count; ++index) {
+    BinaryenElementSegmentRef segment = BinaryenGetElementSegmentByIndex(source, index);
+    BinaryenExpressionRef offset_expression;
+    WasmTable *table;
+    int32_t signed_offset;
+    uint64_t end;
+    BinaryenIndex item;
+    if (BinaryenElementSegmentIsPassive(segment)) {
+      if (!record_table_initialization_error(module, "passive element segments are unsupported"))
+        return false;
+      continue;
+    }
+    table = find_mutable_table(module, BinaryenElementSegmentGetTable(segment));
+    offset_expression = BinaryenElementSegmentGetOffset(segment);
+    if (table == NULL || offset_expression == NULL || BinaryenExpressionGetId(offset_expression) != BinaryenConstId() ||
+        BinaryenExpressionGetType(offset_expression) != BinaryenTypeInt32()) {
+      if (!record_table_initialization_error(
+              module, "active element segments require one known table and a constant i32 offset"))
+        return false;
+      continue;
+    }
+    signed_offset = BinaryenConstGetValueI32(offset_expression);
+    end = signed_offset < 0 ? UINT64_MAX
+                            : (uint64_t)(uint32_t)signed_offset + BinaryenElementSegmentGetLength(segment);
+    if (end > table->initial) {
+      if (!record_table_initialization_error(module, "active element segment lies outside the initial table"))
+        return false;
+      continue;
+    }
+    for (item = 0; item < BinaryenElementSegmentGetLength(segment); ++item) {
+      size_t slot = (size_t)(uint32_t)signed_offset + item;
+      const char *function_name = BinaryenElementSegmentGetData(segment, item);
+      free(table->slots[slot]);
+      table->slots[slot] = function_name == NULL || function_name[0] == '\0' ? NULL : copy_string(function_name);
+      if (function_name != NULL && function_name[0] != '\0' && table->slots[slot] == NULL) {
+        diagnostics_error(diagnostics, "out of memory decoding Wasm element segment");
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 /* Finds the public export name when Binaryen has no retained name-section name.
  */
 /* Finds the public export name associated with one internal function name. */
@@ -1723,9 +1870,9 @@ bool wasm_module_load(const char *path, const char *entry_name, bool optimize_in
   }
   if (!read_memory_metadata(source, metadata.memory_count, module, diagnostics))
     goto fail;
-  module->table_count = BinaryenGetNumTables(source);
+  if (!read_tables(source, module, diagnostics))
+    goto fail;
   module->global_count = BinaryenGetNumGlobals(source);
-  module->element_segment_count = BinaryenGetNumElementSegments(source);
   module->data_segment_count = BinaryenGetNumDataSegments(source);
   if (!read_stack_pointer_global(source, module, diagnostics))
     goto fail;
@@ -1825,7 +1972,7 @@ fail:
 
 /* Releases all function, expression, export, and data-segment storage. */
 void wasm_module_dispose(WasmModule *module) {
-  size_t index;
+  size_t index, slot;
   if (module->functions != NULL)
     for (index = 0; index < module->function_count; ++index) {
       WasmFunction *f = &module->functions[index];
@@ -1846,11 +1993,30 @@ void wasm_module_dispose(WasmModule *module) {
   if (module->data_segments != NULL)
     for (index = 0; index < module->data_segment_count; ++index)
       free(module->data_segments[index].bytes);
+  if (module->tables != NULL)
+    for (index = 0; index < module->table_count; ++index) {
+      free(module->tables[index].name);
+      if (module->tables[index].slots != NULL)
+        for (slot = 0; slot < module->tables[index].initial; ++slot)
+          free(module->tables[index].slots[slot]);
+      free(module->tables[index].slots);
+    }
   free(module->functions);
   free(module->exports);
   free(module->stack_pointer_name);
   free(module->data_segments);
+  free(module->tables);
+  free(module->table_initialization_error);
   memset(module, 0, sizeof(*module));
+}
+
+/* Finds a statically decoded table by its internal Wasm name. */
+const WasmTable *wasm_module_find_table(const WasmModule *module, const char *name) {
+  size_t index;
+  for (index = 0; index < module->table_count; ++index)
+    if (name != NULL && strcmp(module->tables[index].name, name) == 0)
+      return &module->tables[index];
+  return NULL;
 }
 
 /* Searches compiler-owned functions by their internal Wasm name. */

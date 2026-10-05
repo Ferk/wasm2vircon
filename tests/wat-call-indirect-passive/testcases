@@ -1,0 +1,6 @@
+source=call-indirect-passive.wat
+entry=main
+outcome=reject
+error_expectations=error.txt
+wasm_as_options=--enable-bulk-memory --enable-reference-types
+skip_input_optimization=true

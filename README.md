@@ -143,11 +143,11 @@ compiler-owned legalization, validation, lowering, and emission still run.
 
 After Binaryen cleanup, wasm2vircon performs a small conservative legalization
 pass. It removes
-unreferenced globals and inert table/element scaffolding, and accepts an
+unreferenced globals and unobserved table/element scaffolding, and accepts an
 `i32`-typed loop only when its direct fallthrough tail is an unconditional
 branch back to the same loop. This covers common raw `wasm-ld` frame-loop
 shapes without implementing general Wasm optimization. Referenced globals,
-exported globals/tables, table operations, indirect calls, ordinary
+exported globals/tables, mutable table operations, ordinary
 value-producing loops, and unused defined functions remain outside this cleanup
 and are still validated normally.
 
@@ -209,8 +209,8 @@ configuration rules. Heap-using linked modules are accepted directly through
 the same compiler invocation as other supported applications.
 
 The current VirconWasm profile supports only the instructions demonstrated by
-the included ports. It rejects, among other things, application Wasm globals and tables,
-indirect calls, general i64 use, most floating-point operations,
+the included ports. It rejects, among other things, application Wasm globals, mutable/imported tables,
+general i64 use, most floating-point operations,
 bulk memory other than default-memory `memory.copy` and `memory.fill`, and
 general libc-generated code. The sole i64 exception is a
 statically addressed, four-byte-aligned `i64.store` fed directly by

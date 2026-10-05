@@ -26,6 +26,7 @@ typedef enum WasmExprKind {
   WASM_EXPR_BR_IF,
   WASM_EXPR_BR_TABLE,
   WASM_EXPR_CALL,
+  WASM_EXPR_CALL_INDIRECT,
   WASM_EXPR_I32_CONST,
   WASM_EXPR_I64_CONST,
   WASM_EXPR_F32_CONST,
@@ -146,6 +147,11 @@ typedef struct WasmExpr {
   /* Case target labels for br_table; name stores its required default label. */
   char **branch_targets;
   size_t branch_target_count;
+  /* Declared call_indirect signature. Its final child is the table index;
+   * preceding children are arguments in source evaluation order. */
+  WasmValueType *signature_params;
+  size_t signature_param_count;
+  WasmValueType signature_result;
   int32_t i32_value;
   uint64_t i64_value;
   float f32_value;
@@ -193,6 +199,14 @@ typedef struct WasmDataSegment {
   bool is_passive, offset_is_i32_const;
 } WasmDataSegment;
 
+/* One statically initialized funcref table. Null entries have NULL slots. */
+typedef struct WasmTable {
+  char *name;
+  uint32_t initial, maximum;
+  bool has_max, is_imported, is_funcref;
+  char **slots;
+} WasmTable;
+
 /* Decoded module state required by validation and lowering. */
 typedef struct WasmModule {
   WasmFunction *functions;
@@ -202,6 +216,9 @@ typedef struct WasmModule {
   bool has_memory, has_imported_memory, memory_is_shared, memory_is_64, memory_has_max;
   uint32_t memory_initial_pages, memory_max_pages;
   size_t memory_count, table_count, global_count, element_segment_count;
+  WasmTable *tables;
+  bool table_initialization_supported;
+  char *table_initialization_error;
   /* The only global that can be accepted by the restricted opt-in ABI. */
   bool has_stack_pointer_global, stack_pointer_global_is_valid;
   uint32_t stack_pointer_initial;
@@ -220,5 +237,7 @@ bool wasm_module_report_profile(const char *path, FILE *stream, Diagnostics *dia
 void wasm_module_dispose(WasmModule *module);
 /* Finds a function by its internal Wasm name. */
 const WasmFunction *wasm_module_find_function(const WasmModule *module, const char *name);
+/* Finds one statically decoded table by its internal Wasm name. */
+const WasmTable *wasm_module_find_table(const WasmModule *module, const char *name);
 
 #endif

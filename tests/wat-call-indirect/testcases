@@ -1,0 +1,4 @@
+source=call-indirect.wat
+entry=main
+expectations=expected.asm
+ordered_expectations=ordered.asm

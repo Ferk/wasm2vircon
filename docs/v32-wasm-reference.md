@@ -84,13 +84,12 @@ After decoding, wasm2vircon always performs a separate conservative cleanup of
 proven-unobservable linker artifacts. It can discard globals only when no
 decoded function reads or writes any global and the module does not export one.
 It can discard declared tables and element segments only when the module does
-not export a table, because the frontend rejects table operations and indirect
-calls before this pass. It also legalizes an `i32`-typed loop only if the final
+not export a table and no decoded `call_indirect` observes the table. It also legalizes an `i32`-typed loop only if the final
 direct fallthrough expression is an unconditional branch to that same loop,
 which proves the loop cannot normally yield a value.
 
 This is not a general optimizer: it does not remove unused functions, preserve
-arbitrary globals, implement tables, or accept ordinary value-producing loops.
+arbitrary globals, mutate tables, or accept ordinary value-producing loops.
 It runs whether or not optional input optimization was requested.
 
 ### Stack-machine expressions
@@ -342,7 +341,8 @@ portable behavior for NaN, infinity, or signed zero.
 | `br_if` | Evaluates an `i32` condition and performs the same structured branch as `br` only when that condition is nonzero. A value-carrying form preserves its value on the non-branching path. |
 | `br_table` | Selects one active enclosing resultless `block` or `loop` target from an `i32` selector. See the explanation below. |
 | `return` | Leaves the current defined function. A void function returns no value; an `i32` or `f32` function returns one value. |
-| `call` | Calls a directly named defined function or one allowlisted `env` platform import. Function pointers and indirect calls are not supported. |
+| `call` | Calls a directly named defined function or one allowlisted `env` platform import. |
+| `call_indirect` | Evaluates ordinary arguments followed by an `i32` table index and calls the selected function when that immutable table slot has the exact declared signature. Out-of-range, null, and signature-mismatched slots trap. |
 | `unreachable` | Immediately takes the shared `__wasm_trap` path, which halts the target. It is not an ignored marker or a no-op. |
 
 Wasm branches use structured nesting, not arbitrary assembly labels. The
@@ -480,12 +480,15 @@ An `if` can produce one `i32` or `f32` result; but value-producing loops,
 i64 structured results, and value-carrying `br_table` remain unsupported,
 they need additional loop-carried or multiword value-flow rules.
 
-**Tables, element segments, `call_indirect`, function pointers, and reference calls**
+**Mutable tables and general reference calls**
 
-These require a function-table representation, table initialization, indirect
-call validation, and an ABI for dynamically selected callees. They are not
-needed by the current direct-call profile and are deliberately excluded until a
-source-language use case justifies that runtime machinery.
+The supported `call_indirect` form uses one defined `funcref` table populated
+by active element segments at constant `i32` offsets. The compiler resolves
+that immutable mapping ahead of time and emits checked direct-call cases. It
+does not expose a writable target table in Vircon32 memory. Table imports,
+exports, passive/declarative element segments, tail calls, imported indirect
+targets, and dynamic reference values remain unsupported because they need
+runtime table state or a broader foreign-call ABI.
 
 **Exceptions, tail calls, continuations, and stack switching**
 
@@ -526,10 +529,12 @@ Passive segments and their bulk-memory instructions require retaining
 ROM-resident initialization data plus dynamic segment-lifetime state. That is
 more runtime machinery than the current static-data model needs.
 
-**Table bulk operations**
+**Table mutation and bulk operations**
 
-`table.init`, `elem.drop`, `table.copy`, `table.fill`, and related operations
-remain unavailable because tables themselves are unavailable.
+`table.get`, `table.set`, `table.grow`, `table.init`, `elem.drop`,
+`table.copy`, `table.fill`, and related operations remain unavailable. They
+would turn the currently immutable compile-time function mapping into runtime
+state and require another lowering strategy.
 
 **Arbitrary globals**
 

@@ -53,11 +53,13 @@ static bool loop_has_direct_back_edge(const WasmExpr *loop) {
 
 /* Walks an expression tree, recording global use and legalizing typed loops. */
 static bool legalize_expression(WasmExpr *expression, const WasmFunction *function, bool *uses_global,
-                                Diagnostics *diagnostics) {
+                                bool *uses_table, Diagnostics *diagnostics) {
   size_t index;
   if (expression->kind == WASM_EXPR_GLOBAL_GET || expression->kind == WASM_EXPR_GLOBAL_SET ||
       expression->kind == WASM_EXPR_STACK_POINTER_GET || expression->kind == WASM_EXPR_STACK_POINTER_SET)
     *uses_global = true;
+  if (expression->kind == WASM_EXPR_CALL_INDIRECT)
+    *uses_table = true;
   if (expression->kind == WASM_EXPR_LOOP && expression->value_type != WASM_VALUE_NONE &&
       (expression->value_type != WASM_VALUE_I32 || !loop_has_direct_back_edge(expression))) {
     legalization_error(diagnostics, function, expression,
@@ -66,7 +68,7 @@ static bool legalize_expression(WasmExpr *expression, const WasmFunction *functi
     return false;
   }
   for (index = 0; index < expression->child_count; ++index)
-    if (!legalize_expression(expression->children[index], function, uses_global, diagnostics))
+    if (!legalize_expression(expression->children[index], function, uses_global, uses_table, diagnostics))
       return false;
   if (expression->kind == WASM_EXPR_LOOP && expression->value_type == WASM_VALUE_I32 &&
       loop_has_direct_back_edge(expression))
@@ -85,12 +87,13 @@ static bool has_exported_kind(const WasmModule *module, bool global) {
 
 /* Legalizes raw linker artifacts without expanding the VirconWasm feature set. */
 bool wasm_module_legalize_linker_artifacts(WasmModule *module, Diagnostics *diagnostics) {
-  bool uses_global = false;
+  bool uses_global = false, uses_table = false;
   size_t index;
 
   for (index = 0; index < module->function_count; ++index) {
     WasmFunction *function = &module->functions[index];
-    if (!function->is_import && !legalize_expression(function->body, function, &uses_global, diagnostics))
+    if (!function->is_import &&
+        !legalize_expression(function->body, function, &uses_global, &uses_table, diagnostics))
       return false;
   }
 
@@ -103,9 +106,19 @@ bool wasm_module_legalize_linker_artifacts(WasmModule *module, Diagnostics *diag
     module->stack_pointer_name = NULL;
   }
 
-  /* Decode rejects every table operation and indirect call before this point.
-   * An unexported table/its elements are therefore inert linker scaffolding. */
-  if (!has_exported_kind(module, false)) {
+  /* An unexported table remains removable linker scaffolding only when no
+   * decoded call_indirect observes it. */
+  if (!uses_table && !has_exported_kind(module, false)) {
+    size_t table_index, slot;
+    for (table_index = 0; table_index < module->table_count; ++table_index) {
+      WasmTable *table = &module->tables[table_index];
+      free(table->name);
+      for (slot = 0; slot < table->initial; ++slot)
+        free(table->slots[slot]);
+      free(table->slots);
+    }
+    free(module->tables);
+    module->tables = NULL;
     module->table_count = 0;
     module->element_segment_count = 0;
   }

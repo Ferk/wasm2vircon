@@ -379,6 +379,8 @@ static size_t outgoing_call_slots(const WasmModule *module, const WasmExpr *expr
     const WasmFunction *callee = wasm_module_find_function(module, expression->name);
     if (callee != NULL && !callee->is_import)
       slots = expression->child_count;
+  } else if (expression->kind == WASM_EXPR_CALL_INDIRECT) {
+    slots = expression->signature_param_count;
   } else if (expression->kind == WASM_EXPR_MEMORY_COPY || expression->kind == WASM_EXPR_MEMORY_FILL) {
     slots = 3;
   }
@@ -1109,6 +1111,10 @@ static void scan_versionable_loop(LoopScan *scan, const WasmExpr *expression) {
     scan->rejected = true;
     return;
   }
+  if (expression->kind == WASM_EXPR_CALL_INDIRECT) {
+    scan->rejected = true;
+    return;
+  }
   if (expression->kind == WASM_EXPR_CALL) {
     const WasmFunction *callee = wasm_module_find_function(scan->context->validated->module, expression->name);
     if (callee == NULL || !callee->is_import) {
@@ -1164,6 +1170,108 @@ static void scan_versionable_loop(LoopScan *scan, const WasmExpr *expression) {
   }
   for (index = 0; index < expression->child_count; ++index)
     scan_versionable_loop(scan, expression->children[index]);
+}
+
+/* Returns whether one table target has the exact signature declared by an
+ * indirect call site. Validation has already checked supported scalar types. */
+static bool indirect_target_matches(const WasmFunction *function, const WasmExpr *call) {
+  size_t index;
+  if (function->param_count != call->signature_param_count || function->result != call->signature_result)
+    return false;
+  for (index = 0; index < function->param_count; ++index)
+    if (function->params[index] != call->signature_params[index])
+      return false;
+  return true;
+}
+
+/* Lowers an immutable Wasm function-table call into checked direct-call
+ * cases. Arguments and the selector are each evaluated exactly once in Wasm
+ * order. Out-of-range, null, and signature-mismatched slots share the normal
+ * trap path; matching slots retain the ordinary VirconWasm stack ABI. */
+static bool lower_call_indirect(Context *context, const WasmExpr *expression, Value *value) {
+  const WasmTable *table = wasm_module_find_table(context->validated->module, expression->name);
+  Value inline_arguments[INLINE_CALL_ARGUMENTS] = {{0}};
+  Value *arguments = inline_arguments;
+  Value selector = {0};
+  bool heap_arguments = false;
+  char done[64];
+  size_t index;
+
+  if (table == NULL)
+    return false;
+  if (expression->signature_param_count > INLINE_CALL_ARGUMENTS) {
+    arguments = calloc(expression->signature_param_count, sizeof(*arguments));
+    if (arguments == NULL) {
+      diagnostics_error(context->diagnostics, "out of memory lowering %zu indirect-call arguments",
+                        expression->signature_param_count);
+      return false;
+    }
+    heap_arguments = true;
+  }
+  for (index = 0; index < expression->signature_param_count; ++index)
+    if (!lower_expression(context, expression->children[index], &arguments[index]) || !arguments[index].present ||
+        !materialize_value(context, &arguments[index]))
+      goto fail;
+  if (!lower_expression(context, expression->children[expression->signature_param_count], &selector) ||
+      !selector.present || !materialize_value(context, &selector))
+    goto fail;
+
+  for (index = 0; index < expression->signature_param_count; ++index)
+    if (!load_value(context, 1, arguments[index]) || !emit(context, "  mov [SP+%zu], R1", index))
+      goto fail;
+  if (!load_value(context, 3, selector))
+    goto fail;
+  release(context, selector);
+  for (index = expression->signature_param_count; index != 0; --index)
+    release(context, arguments[index - 1]);
+
+  /* Bias both operands so Vircon32's signed comparison implements Wasm's
+   * unsigned table-index range check without wraparound. */
+  if (!emit(context, "  mov R1, R3") || !emit(context, "  xor R1, 0x80000000") ||
+      !emit(context, "  ilt R1, 0x%08X", table->initial ^ UINT32_C(0x80000000)) ||
+      !emit(context, "  jf R1, __wasm_trap") || !fresh_label(context, "call_indirect_done", done, sizeof(done)))
+    goto fail_released;
+
+  for (index = 0; index < table->initial; ++index) {
+    const WasmFunction *callee;
+    char next_case[64], callee_label[64];
+    if (table->slots[index] == NULL)
+      continue;
+    callee = wasm_module_find_function(context->validated->module, table->slots[index]);
+    if (callee == NULL || !indirect_target_matches(callee, expression))
+      continue;
+    function_label(context->validated->module, callee, callee_label, sizeof(callee_label));
+    if (!fresh_label(context, "call_indirect_next", next_case, sizeof(next_case)) ||
+        !emit(context, "  mov R1, R3") || !emit(context, "  ieq R1, %zu", index) ||
+        !emit(context, "  jf R1, %s", next_case) || !emit(context, "  call %s", callee_label) ||
+        !emit(context, "  jmp %s", done) || !emit_label(context, next_case))
+      goto fail_released;
+  }
+  if (!emit(context, "  jmp __wasm_trap") || !emit_label(context, done))
+    goto fail_released;
+  context->target_word_address_cached = false;
+  if (expression->signature_result == WASM_VALUE_I32 || expression->signature_result == WASM_VALUE_F32) {
+    int slot = temp_slot(context);
+    if (slot == 0 || !store_slot(context, slot, 0))
+      goto fail_released;
+    value->slot = slot;
+    value->type = expression->signature_result;
+    value->present = true;
+  } else {
+    value->present = false;
+  }
+  if (heap_arguments)
+    free(arguments);
+  return true;
+
+fail:
+  release(context, selector);
+  for (index = expression->signature_param_count; index != 0; --index)
+    release(context, arguments[index - 1]);
+fail_released:
+  if (heap_arguments)
+    free(arguments);
+  return false;
 }
 
 /* Builds the narrow affine-loop plan used by the guarded fast/checked copies. */
@@ -3576,6 +3684,8 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
     return lower_memory_grow(context, expression, value);
   case WASM_EXPR_CALL:
     return lower_call(context, expression, value);
+  case WASM_EXPR_CALL_INDIRECT:
+    return lower_call_indirect(context, expression, value);
   case WASM_EXPR_NOP:
     value->present = false;
     return true;

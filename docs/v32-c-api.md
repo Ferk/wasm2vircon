@@ -483,9 +483,9 @@ locals, active static data, direct defined calls, byte and i32 memory
 operations, structured loops/branches, and resultless conditionals. It also
 accepts the single canonical mutable `i32` `__stack_pointer` linker global
 used by automatic aggregates. It accepts resultless structured `br_table`
-branches, including ordinary C jump
-tables that lower to that form, but deliberately rejects application globals
-and Wasm tables, indirect calls/function pointers, f64, SIMD,
+branches, including ordinary C jump tables that lower to that form. It also accepts calls through one immutable,
+statically initialized Wasm function table, with runtime trapping for invalid
+or type-mismatched slots. It still rejects application globals, mutable or imported tables, f64, SIMD,
 atomics, multiple/imported memories, bulk memory other than
 `memory.copy`/`memory.fill`, general i64 values other than the documented
 literal initializer, direct eight-byte aggregate-transfer, i32 word-extraction,
