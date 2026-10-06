@@ -19,6 +19,43 @@
  * it does not supply hardware implementations.
  */
 
+/* Basic source compatibility ------------------------------------------------
+ *
+ * Vircon C treats bool/true/false and NULL as language conveniences. Clang's
+ * freestanding C mode does not provide them unless a standard header is
+ * included, so provide the small vocabulary expected by Vircon source. The
+ * original compiler's word-addressed NULL is -1; normal Wasm C pointers use
+ * the standard zero null pointer instead. In C++ these are keywords and the
+ * typedef/macros must not be introduced. */
+#if !defined(__cplusplus) && (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L)
+#ifndef bool
+typedef int bool;
+#endif
+#ifndef false
+#define false 0
+#endif
+#ifndef true
+#define true 1
+#endif
+#endif
+
+#ifndef NULL
+#define NULL 0
+#endif
+
+/* These public Vircon constants are useful without a hosted <math.h> or
+ * <limits.h>. Use an f32 pi literal so ordinary calculations stay within the
+ * supported Wasm float profile. */
+#ifndef pi
+#define pi 3.1415926f
+#endif
+#ifndef INT_MIN
+#define INT_MIN (-2147483647 - 1)
+#endif
+#ifndef INT_MAX
+#define INT_MAX 2147483647
+#endif
+
 #if defined(__wasm__)
 #define VIRCON__IMPORT(name) __attribute__((import_module("env"), import_name(name)))
 #else
@@ -153,6 +190,11 @@ static inline void end_frame(void) { vircon__end_frame(); }
 #define color_orange 0xFF0080FF
 #define color_brown 0xFF204080
 
+/* Official GPU blend-mode command values. */
+#define blending_alpha 0x20
+#define blending_add 0x21
+#define blending_subtract 0x22
+
 /* Packs an opaque grey RGB value in Vircon's written ABGR word order. */
 static inline int make_gray(int brightness) { return 0xFF000000 | (brightness << 16) | (brightness << 8) | brightness; }
 
@@ -171,6 +213,10 @@ static inline int get_color_red(int color) { return color & 255; }
 static inline int get_color_green(int color) { return (color >> 8) & 255; }
 static inline int get_color_blue(int color) { return (color >> 16) & 255; }
 static inline int get_color_alpha(int color) { return (color >> 24) & 255; }
+
+/* The fixed BIOS font has one 10x20 region for each CP-1252 byte value. */
+#define bios_character_width 10
+#define bios_character_height 20
 
 /* Draw a NUL-terminated CP-1252 byte string using the 10x20 BIOS font.
  * Text is software, not a compiler intrinsic or a hardware command.  Each

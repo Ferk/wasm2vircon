@@ -62,6 +62,26 @@ for its role. This requires
 assembly, binary, ROM XML, and final `.v32` in the target output directory.
 `wasm-opt` is not required.
 
+## Basic language compatibility
+
+`vircon.h` supplies the small vocabulary that the official Vircon C compiler
+normally treats as built-in:
+
+| Name | Wasm-side definition |
+| --- | --- |
+| `bool` | `typedef int bool` in pre-C23 C; values use ordinary 32-bit `i32` storage. C++ uses its built-in `bool`. |
+| `true`, `false` | `1` and `0` in C. C++ uses its built-in keywords. |
+| `NULL` | `0`, the normal C/Wasm null pointer. |
+| `pi` | Single-precision `3.1415926f`, intentionally avoiding unsupported accidental f64 arithmetic. |
+| `INT_MIN`, `INT_MAX` | Signed 32-bit integer limits. |
+| `blending_alpha`, `blending_add`, `blending_subtract` | GPU blend-mode values `0x20`, `0x21`, and `0x22`. |
+| `bios_character_width`, `bios_character_height` | Fixed BIOS font dimensions: `10` and `20` pixels. |
+
+The official Vircon C compiler uses `NULL` as `-1` because its source pointers
+are word addresses. This toolchain uses standard byte-addressed C/Wasm
+pointers, so `NULL` is deliberately zero. Do not port pointer-sentinel logic
+from official C source mechanically; use `NULL` through this header instead.
+
 ## Public runtime functions
 
 All integer parameters and results below are Wasm/Vircon `i32` values. `float`
