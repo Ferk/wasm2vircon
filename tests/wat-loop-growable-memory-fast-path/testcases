@@ -1,0 +1,3 @@
+source=growable-memory-fast-path.wat
+entry=main
+expectations=expected.asm

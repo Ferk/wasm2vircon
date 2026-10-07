@@ -81,6 +81,7 @@ typedef enum LoopTripKind {
 typedef struct LoopFastPath {
   bool valid;
   bool use_word_pointer;
+  bool needs_alignment_guard;
   uint32_t base_local, counter_local, stride;
   uint32_t minimum_offset, maximum_end;
   LoopTripKind trip_kind;
@@ -850,11 +851,29 @@ static bool initialize_local_alignments(Context *context) {
   return !analysis.failed;
 }
 
+static bool syntactic_pure_affine_local(const WasmExpr *expression, uint32_t *local, uint32_t *offset);
+
 /* Returns whether adding the static memarg offset always yields a word-aligned
- * Wasm byte address. The align immediate is only an optimization hint. */
-static bool word_access_is_proven_aligned(const Context *context, const WasmExpr *pointer, uint32_t offset) {
-  (void)context;
-  return pointer->guaranteed_alignment >= 4 && (offset & 3u) == 0;
+ * Wasm byte address. A versioned fast loop may establish the same fact with a
+ * runtime guard for a dynamic pointer. The align immediate remains only an
+ * optimization hint and is never used as proof. */
+static bool word_access_is_proven_aligned(const Context *context, const WasmExpr *pointer,
+                                          uint32_t offset) {
+  const WasmExpr *affine = pointer;
+  uint32_t local, affine_offset, base;
+
+  if (pointer->guaranteed_alignment >= 4 && (offset & 3u) == 0)
+    return true;
+  if (pointer->kind == WASM_EXPR_LOCAL_SET && pointer->is_tee && pointer->child_count == 1)
+    affine = pointer->children[0];
+  if (!context->fast_word_pointer_active ||
+      !syntactic_pure_affine_local(affine, &local, &affine_offset) ||
+      local >= context->local_alignment_count)
+    return false;
+  base = context->local_address_bases[local];
+  affine_offset += context->local_address_offsets[local];
+  return base == context->fast_word_pointer_base_local &&
+         ((affine_offset + offset) & 3u) == 0;
 }
 
 /* Returns the high target word of a validated two-word i64 local. */
@@ -1281,7 +1300,7 @@ static LoopFastPath analyze_loop_fast_path(const Context *context, const WasmExp
   LoopScan scan = {.context = context, .loop_name = loop->name};
   size_t index, best = SIZE_MAX;
 
-  if (context->memory_can_grow || loop->name == NULL || loop->child_count != 1)
+  if (loop->name == NULL || loop->child_count != 1)
     return plan;
   scan.local_count = context->function->param_count + context->function->local_count;
   scan.assignment_counts = calloc(scan.local_count == 0 ? 1 : scan.local_count,
@@ -1327,8 +1346,12 @@ static LoopFastPath analyze_loop_fast_path(const Context *context, const WasmExp
     plan.trip_kind = scan.trip_kind;
     plan.bound_kind = scan.bound_kind;
     plan.bound_value = scan.bound_value;
-    plan.use_word_pointer = group->all_word_aligned && (plan.stride & 3u) == 0 &&
-                            context->local_alignments[plan.base_local] >= 4;
+    plan.use_word_pointer = group->all_word_aligned && (plan.stride & 3u) == 0;
+    /* The loop scan identifies a local by syntax, while flow-sensitive facts
+     * stored after whole-function analysis do not necessarily describe that
+     * local at this exact loop entry. A single runtime test is both safe and
+     * negligible compared with the checks removed from every iteration. */
+    plan.needs_alignment_guard = plan.use_word_pointer;
   }
 done:
   free(scan.assignment_counts);
@@ -1356,7 +1379,6 @@ static bool emit_loop_bound(Context *context, const LoopFastPath *plan, int reg)
  * checked loop; success proves every planned affine access in every iteration.
  * Keeping the checked fallback is what preserves Wasm's exact trap order. */
 static bool emit_loop_fast_guard(Context *context, const LoopFastPath *plan, const char *checked_label) {
-  uint32_t maximum_base = context->memory_bytes - plan->maximum_end;
   int counter_slot = local_slot(context->function, plan->counter_local);
   int base_slot = local_slot(context->function, plan->base_local);
 
@@ -1376,11 +1398,32 @@ static bool emit_loop_fast_guard(Context *context, const LoopFastPath *plan, con
   } else
     return false;
 
-  return load_slot(context, 2, base_slot) && emit(context, "  mov R4, R2") &&
-         emit(context, "  xor R4, 0x80000000") &&
-         emit(context, "  igt R4, 0x%08X", maximum_base ^ 0x80000000u) &&
-         emit(context, "  jt R4, %s", checked_label) && emit(context, "  mov R4, %u", maximum_base) &&
-         emit(context, "  isub R4, R2") && emit(context, "  idiv R4, %u", plan->stride) &&
+  if (!load_slot(context, 2, base_slot))
+    return false;
+  if (plan->needs_alignment_guard &&
+      (!emit(context, "  mov R1, R2") || !emit(context, "  and R1, 3") ||
+       !emit(context, "  jt R1, %s", checked_label)))
+    return false;
+
+  if (context->memory_can_grow) {
+    /* No accepted loop contains memory.grow or a defined call, so the current
+     * byte size is stable for the duration of either generated loop copy. */
+    if (!emit(context, "  mov R4, [%u]", VIRCON_WASM_MEMORY_PAGES_WORD) ||
+        !emit(context, "  imul R4, 65536") || !emit(context, "  mov R1, %u", plan->maximum_end) ||
+        !emit(context, "  igt R1, R4") || !emit(context, "  jt R1, %s", checked_label) ||
+        !emit(context, "  isub R4, %u", plan->maximum_end) || !emit(context, "  mov R1, R2") ||
+        !emit(context, "  ilt R1, 0") || !emit(context, "  jt R1, %s", checked_label) ||
+        !emit(context, "  mov R1, R2") || !emit(context, "  igt R1, R4") ||
+        !emit(context, "  jt R1, %s", checked_label))
+      return false;
+  } else {
+    uint32_t maximum_base = context->memory_bytes - plan->maximum_end;
+    if (!emit(context, "  mov R4, R2") || !emit(context, "  xor R4, 0x80000000") ||
+        !emit(context, "  igt R4, 0x%08X", maximum_base ^ 0x80000000u) ||
+        !emit(context, "  jt R4, %s", checked_label) || !emit(context, "  mov R4, %u", maximum_base))
+      return false;
+  }
+  return emit(context, "  isub R4, R2") && emit(context, "  idiv R4, %u", plan->stride) &&
          emit(context, "  isub R3, 1") && emit(context, "  igt R3, R4") &&
          emit(context, "  jt R3, %s", checked_label);
 }
@@ -1764,21 +1807,35 @@ static bool has_cached_word_operand(Context *context, Value pointer, uint32_t of
  * word pointer. Wasm pointer values remain byte offsets everywhere else. */
 static bool make_fast_word_pointer(Context *context, const WasmExpr *expression,
                                    uint32_t memory_offset, Value *pointer) {
+  const WasmExpr *affine = expression;
+  bool preserve_tee = expression->kind == WASM_EXPR_LOCAL_SET && expression->is_tee &&
+                      expression->child_count == 1;
   uint32_t local, offset, base;
 
+  if (preserve_tee)
+    affine = expression->children[0];
   if (!context->fast_word_pointer_active ||
-      !syntactic_pure_affine_local(expression, &local, &offset) ||
+      !syntactic_pure_affine_local(affine, &local, &offset) ||
       local >= context->local_alignment_count)
     return false;
   base = context->local_address_bases[local];
   offset += context->local_address_offsets[local];
-  *pointer = (Value){.slot = local_slot(context->function, local),
-                     .type = WASM_VALUE_I32,
-                     .present = true,
-                     .is_borrowed = true,
-                     .has_address_identity = true,
-                     .address_base_local = base,
-                     .address_offset = offset};
+  if (preserve_tee) {
+    /* The address expression also assigns a Wasm local. Execute that
+     * assignment exactly once, but still use the guarded R13 word pointer for
+     * the memory operation which consumes its result. */
+    if (!lower_expression(context, expression, pointer) || !pointer->present ||
+        !pointer->has_address_identity)
+      return false;
+  } else {
+    *pointer = (Value){.slot = local_slot(context->function, local),
+                       .type = WASM_VALUE_I32,
+                       .present = true,
+                       .is_borrowed = true,
+                       .has_address_identity = true,
+                       .address_base_local = base,
+                       .address_offset = offset};
+  }
   return fast_loop_covers_access(context, *pointer, memory_offset, 4) &&
          has_cached_word_operand(context, *pointer, memory_offset);
 }
