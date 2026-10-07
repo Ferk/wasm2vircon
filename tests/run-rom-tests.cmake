@@ -1,4 +1,4 @@
-# Cross-platform C-to-ROM integration runner driven by per-case testcases metadata.
+# Cross-platform C/C++-to-ROM integration runner driven by per-case testcases metadata.
 #
 # This deliberately mirrors the supported frontend contract without invoking
 # the public CMake ROM driver. Keeping the test harness in CMake makes CTest
@@ -135,7 +135,7 @@ file(MAKE_DIRECTORY "${work_dir}")
 if(DEFINED CASE_DIRECTORY)
   set(case_directories "${CASE_DIRECTORY}")
 else()
-  file(GLOB case_directories LIST_DIRECTORIES true "${TESTS_DIR}/c-*")
+  file(GLOB case_directories LIST_DIRECTORIES true "${TESTS_DIR}/*")
 endif()
 list(SORT case_directories)
 set(found_c_case OFF)
@@ -158,7 +158,7 @@ foreach(case_directory IN LISTS case_directories)
   set(case_normalize false)
   read_case_metadata("${metadata_file}" case)
 
-  if(NOT case_source MATCHES "\\.c$")
+  if(NOT case_source MATCHES "\\.(c|cc|cpp|cxx)$")
     continue()
   endif()
   if(TEST_MODE STREQUAL "simulator" AND case_sim_commands STREQUAL "")
@@ -189,6 +189,10 @@ foreach(case_directory IN LISTS case_directories)
   set(rom_file "${case_output}/${program_name}.v32")
 
   set(clang_flags --target=wasm32-unknown-unknown -O2 -ffreestanding -fno-builtin -nostdlib)
+  set(cxx_flags --target=wasm32-wasi -O2 -ffreestanding -fno-builtin -fno-exceptions -fno-rtti -std=c++20)
+  if(DEFINED CXX_SYSROOT AND NOT CXX_SYSROOT STREQUAL "")
+    list(APPEND cxx_flags "--sysroot=${CXX_SYSROOT}")
+  endif()
   separate_arguments(include_directories NATIVE_COMMAND "${case_include_dirs}")
   foreach(include_directory IN LISTS include_directories)
     set(include_path "${case_directory}/${include_directory}")
@@ -196,6 +200,7 @@ foreach(case_directory IN LISTS case_directories)
       message(FATAL_ERROR "${case_name}: include directory not found: ${include_path}")
     endif()
     list(APPEND clang_flags -I "${include_path}")
+    list(APPEND cxx_flags -I "${include_path}")
   endforeach()
 
   # Convert tile-map output into another embedded little-endian word asset.
@@ -261,14 +266,28 @@ foreach(case_directory IN LISTS case_directories)
   # normal linked-module shape.  Do not run wasm-opt here: the integration
   # suite intentionally verifies compiler-owned linker-artifact legalization.
   if(case_normalize STREQUAL "false" AND source_count EQUAL 1)
-    run_required("${case_name}: clang direct Wasm link" "${CLANG}" ${clang_flags} "${source_path}"
+    set(direct_source_flags "${clang_flags}")
+    if(source_path MATCHES "\\.(cc|cpp|cxx)$")
+      message(FATAL_ERROR "${case_name}: C++ cases must use normalize=true and the explicit wasm-ld path")
+    endif()
+    run_required("${case_name}: clang direct Wasm link" "${CLANG}" ${direct_source_flags} "${source_path}"
       "-Wl,--no-entry" "-Wl,--export=${case_entry}" "-Wl,--allow-undefined" -o "${wasm_file}")
   else()
     set(objects "")
     foreach(source IN LISTS sources)
       list(LENGTH objects object_index)
       set(object_file "${case_output}/${program_name}.part-${object_index}.o")
-      run_required("${case_name}: clang compile" "${CLANG}" ${clang_flags} -c "${source}" -o "${object_file}")
+      set(source_flags "${clang_flags}")
+      set(source_compiler "${CLANG}")
+      if(source MATCHES "\\.(cc|cpp|cxx)$")
+        if(NOT DEFINED CXX OR CXX STREQUAL "")
+          message(FATAL_ERROR "${case_name}: C++ case requires -DCXX=path-to-WASI-clang++")
+        endif()
+        set(source_flags "${cxx_flags}")
+        set(source_compiler "${CXX}")
+      endif()
+      run_required("${case_name}: frontend compile" "${source_compiler}" ${source_flags}
+        -c "${source}" -o "${object_file}")
       list(APPEND objects "${object_file}")
     endforeach()
     run_required("${case_name}: wasm-ld" "${WASM_LD}" --no-entry "--export=${case_entry}" --allow-undefined
@@ -358,10 +377,10 @@ foreach(case_directory IN LISTS case_directories)
 endforeach()
 
 if(TEST_MODE STREQUAL "all" AND NOT found_c_case)
-  message(FATAL_ERROR "no C testcases files found under ${TESTS_DIR}/c-*")
+  message(FATAL_ERROR "no C or C++ testcases files found under ${TESTS_DIR}")
 endif()
 if(TEST_MODE STREQUAL "simulator" AND NOT found_simulator_case)
-  message(FATAL_ERROR "no simulator testcases files found under ${TESTS_DIR}/c-*")
+  message(FATAL_ERROR "no C or C++ simulator testcases files found under ${TESTS_DIR}")
 endif()
 
 file(REMOVE_RECURSE "${work_dir}")

@@ -2575,7 +2575,11 @@ static bool lower_memory_grow(Context *context, const WasmExpr *expression, Valu
   if (!emit(context, "  mov R6, [%u]", VIRCON_WASM_MEMORY_PAGES_WORD) || !emit(context, "  mov R1, R2") ||
       !emit(context, "  ilt R1, 0") || !emit(context, "  jt R1, %s", failed) ||
       !emit(context, "  mov R1, 0x%08X", maximum) || !emit(context, "  isub R1, R6") ||
-      !emit(context, "  igt R2, R1") || !emit(context, "  jt R2, %s", failed) || !emit(context, "  mov R5, R6") ||
+      /* Vircon comparisons write their boolean result into their first
+       * operand. Keep R2 intact: it is the requested page count used below
+       * for both the new page count and the zero-initialization span. */
+      !emit(context, "  mov R3, R2") || !emit(context, "  igt R3, R1") || !emit(context, "  jt R3, %s", failed) ||
+      !emit(context, "  mov R5, R6") ||
       !emit(context, "  iadd R5, R2") || !emit(context, "  mov R3, R6") || !emit(context, "  imul R3, 16384") ||
       !emit(context, "  iadd R3, %u", LINEAR_BASE) || !emit(context, "  mov R4, R2") ||
       !emit(context, "  imul R4, 16384") || !emit(context, "  mov R1, 0") || !emit_label(context, clear) ||

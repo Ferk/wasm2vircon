@@ -17,6 +17,8 @@ int main(void)
 
     memset(byte_copy, 0, 8);
     memcpy(byte_copy, bytes, 8);
+    memmove(byte_copy + 1, byte_copy, 7);
+    memmove(byte_copy, byte_copy + 1, 7);
     result += memcmp(bytes, byte_copy, 8);
     strcpy(copied, text);
     strcat(copied, " world");

@@ -82,6 +82,62 @@ are word addresses. This toolchain uses standard byte-addressed C/Wasm
 pointers, so `NULL` is deliberately zero. Do not port pointer-sentinel logic
 from official C source mechanically; use `NULL` through this header instead.
 
+## Freestanding C++ subset
+
+The supported C++ profile uses the official LLVM libc++ headers supplied by a
+Wasm C++ SDK, such as wasi-sdk. wasm2vircon does not provide or replace the C++
+standard library. Native host C++ headers are unsuitable because their target
+configuration and ABI do not describe wasm32.
+
+Compile with a WASI-capable Clang/libc++ installation, but link the resulting
+objects with the same freestanding `wasm-ld` path used by other frontends:
+
+```sh
+wasi-sdk/bin/clang++ --target=wasm32-wasi -std=c++20 -O2 \
+  -ffreestanding -fno-builtin -fno-exceptions -fno-rtti \
+  -I/path/to/wasm2vircon/include -c game.cpp -o game.o
+
+wasm-ld --no-entry --export=vircon_main --allow-undefined \
+  game.o -o game.wasm
+```
+
+Define `VIRCON_IMPLEMENTATION` before including `vircon.h` in exactly one C++
+source file when the program allocates. Besides emitting the existing bounded
+Wasm heap, that source then supplies `new`, `new[]`, `delete`, and `delete[]`.
+Allocation failure halts the Vircon CPU; it never throws `std::bad_alloc`.
+It also supplies libc++'s retained no-exceptions abort hook. Cartridge exit
+destructors registered through `__cxa_atexit` are intentionally ignored because
+a ROM does not return to a hosted process. Ordinary automatic objects and
+`vector` elements still have their destructors run normally.
+
+The verified subset is official `std::vector<int>` and vectors of simple game
+data using construction/destruction, `reserve`, `push_back`, `clear`, `size`,
+`capacity`, `empty`, `data`, iterators, and indexing. libc++ remains responsible
+for these APIs. Its header-only template code and referenced archive members
+are subject to normal compiler/linker dead stripping; unused parts of the
+standard library do not become part of the ROM. This does not imply that every
+remaining `std` facility is supported: exceptions, RTTI, threads, locale,
+iostreams, filesystem, and hosted OS services remain outside the profile.
+
+Use an explicit C ABI entry for C++ rather than a source-level `main`, which
+Clang may wrap in a hosted-style `(argc, argv)` adapter:
+
+```cpp
+#define VIRCON_IMPLEMENTATION
+#include <vircon.h>
+#include <vector>
+
+extern "C" void vircon_main()
+{
+    std::vector<int> values;
+    values.push_back(42);
+    for (;;) end_frame();
+}
+```
+
+Export and pass `--entry vircon_main` in the ROM build. The C++ BunnyMark
+example follows this shape.
+
 ## Public runtime functions
 
 All integer parameters and results below are Wasm/Vircon `i32` values. `float`
@@ -371,17 +427,18 @@ memory. They are intentionally small and do not imply a hosted libc.
 | --- | --- |
 | Character predicates | `isdigit`, `isxdigit`, `isalpha`, `isascii`, `isalphanum`, `islower`, `isupper`, `isspace` |
 | Character conversion | `tolower`, `toupper` |
-| Byte memory | `memset`, `memcpy`, `memcmp` |
+| Byte memory | `memset`, `memcpy`, `memmove`, `memcmp` |
 | Byte strings | `strlen`, `strcmp`, `strncmp`, `strcpy`, `strncpy`, `strcat`, `strncat` |
 | Number text | `itoa(int, char *, int)`, `ftoa(float, char *)` |
 | Page memory | `vircon_memory_size_pages()`, `vircon_memory_grow_pages(unsigned)` |
-| Allocation | `malloc(int)`, `free(void *)`, `calloc(int, int)`, `realloc(void *, int)` |
+| Allocation | `malloc(vircon_size_t)`, `free(void *)`, `calloc(vircon_size_t, vircon_size_t)`, `realloc(void *, vircon_size_t)` |
 | Termination | `exit(void)` |
 
 Character and string functions use NUL-terminated `char *` byte strings;
 byte comparisons use unsigned CP-1252-compatible byte values. `islower`,
 `isupper`, `tolower`, and `toupper` include the Windows-1252 Latin ranges
 implemented by the official header. `memcpy` requires non-overlapping regions;
+`memmove` preserves overlapping byte ranges;
 `strncpy` has normal C zero-padding semantics, and `strncat` always appends a
 NUL terminator. Buffer capacity is always the caller's responsibility.
 

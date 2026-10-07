@@ -4,7 +4,8 @@
 /*
  * Vircon32 C API for wasm2vircon.
  *
- * Include this one header from a freestanding C program compiled for wasm32.
+ * Include this one header from a freestanding C program, or from the supported
+ * Clang/libc++ C++ subset, compiled for wasm32.
  * It is header-only: the public helpers below are ordinary `static` C code,
  * and their `vircon__*` calls are private hardware-like Wasm imports.  No
  * runtime .c files need to be carried, compiled, or linked by applications.
@@ -54,6 +55,19 @@ typedef int bool;
 #endif
 #ifndef INT_MAX
 #define INT_MAX 2147483647
+#endif
+
+/* Match the target C/C++ implementation's standard size type without
+ * requiring hosted standard headers. */
+typedef __SIZE_TYPE__ vircon_size_t;
+
+#ifdef __cplusplus
+extern "C" {
+#define VIRCON__LIBC_INLINE inline
+#define VIRCON__NOEXCEPT noexcept
+#else
+#define VIRCON__LIBC_INLINE static inline
+#define VIRCON__NOEXCEPT
 #endif
 
 #if defined(__wasm__)
@@ -710,7 +724,8 @@ static inline int tolower(int character) { return isupper(character) ? character
 static inline int toupper(int character) { return islower(character) ? character - 32 : character; }
 
 /* Writes count copies of the low byte of value and returns destination. */
-static VIRCON__NOINLINE inline void *memset(void *destination, int value, unsigned count) {
+VIRCON__NOINLINE VIRCON__LIBC_INLINE void *memset(void *destination, int value,
+                                                  vircon_size_t count) VIRCON__NOEXCEPT {
   unsigned char *output = (unsigned char *)destination;
   while (count != 0) {
     *output++ = (unsigned char)value;
@@ -719,12 +734,34 @@ static VIRCON__NOINLINE inline void *memset(void *destination, int value, unsign
   return destination;
 }
 /* Copies non-overlapping byte regions and returns destination. */
-static VIRCON__NOINLINE inline void *memcpy(void *destination, const void *source, unsigned count) {
+VIRCON__NOINLINE VIRCON__LIBC_INLINE void *memcpy(void *destination, const void *source,
+                                                  vircon_size_t count) VIRCON__NOEXCEPT {
   unsigned char *output = (unsigned char *)destination;
   const unsigned char *input = (const unsigned char *)source;
   while (count != 0) {
     *output++ = *input++;
     --count;
+  }
+  return destination;
+}
+
+/* Moves a possibly overlapping byte range and returns destination. */
+VIRCON__NOINLINE VIRCON__LIBC_INLINE void *memmove(void *destination, const void *source,
+                                                   vircon_size_t count) VIRCON__NOEXCEPT {
+  unsigned char *output = (unsigned char *)destination;
+  const unsigned char *input = (const unsigned char *)source;
+  if (output < input) {
+    while (count != 0) {
+      *output++ = *input++;
+      --count;
+    }
+  } else if (output > input) {
+    output += count;
+    input += count;
+    while (count != 0) {
+      *--output = *--input;
+      --count;
+    }
   }
   return destination;
 }
@@ -775,12 +812,13 @@ extern void *malloc_start_address;
 extern void *malloc_end_address;
 extern malloc_block *malloc_first_block;
 
-void *malloc(int size);
+void *malloc(vircon_size_t size);
 void free(void *memory);
-void *calloc(int count, int size);
-void *realloc(void *memory, int size);
+void *calloc(vircon_size_t count, vircon_size_t size);
+void *realloc(void *memory, vircon_size_t size);
 /* Compares byte regions as unsigned bytes, like the standard C routine. */
-static VIRCON__NOINLINE inline int memcmp(const void *first, const void *second, unsigned count) {
+VIRCON__NOINLINE VIRCON__LIBC_INLINE int memcmp(const void *first, const void *second,
+                                                vircon_size_t count) {
   const unsigned char *left = (const unsigned char *)first;
   const unsigned char *right = (const unsigned char *)second;
   while (count != 0) {
@@ -793,14 +831,15 @@ static VIRCON__NOINLINE inline int memcmp(const void *first, const void *second,
   return 0;
 }
 /* Returns the count of bytes before a string's NUL terminator. */
-static VIRCON__NOINLINE inline unsigned strlen(const char *text) {
-  unsigned length = 0;
+VIRCON__NOINLINE VIRCON__LIBC_INLINE vircon_size_t strlen(const char *text) VIRCON__NOEXCEPT {
+  vircon_size_t length = 0;
   while (text[length] != 0)
     ++length;
   return length;
 }
 /* Compares NUL-terminated strings as unsigned CP-1252-compatible bytes. */
-static VIRCON__NOINLINE inline int strcmp(const char *first, const char *second) {
+VIRCON__NOINLINE VIRCON__LIBC_INLINE int strcmp(const char *first,
+                                                const char *second) VIRCON__NOEXCEPT {
   while (*(const unsigned char *)first == *(const unsigned char *)second) {
     if (*first == 0)
       return 0;
@@ -810,7 +849,8 @@ static VIRCON__NOINLINE inline int strcmp(const char *first, const char *second)
   return (int)*(const unsigned char *)first - (int)*(const unsigned char *)second;
 }
 /* Compares at most count string bytes as unsigned bytes. */
-static VIRCON__NOINLINE inline int strncmp(const char *first, const char *second, unsigned count) {
+VIRCON__NOINLINE VIRCON__LIBC_INLINE int strncmp(const char *first, const char *second,
+                                                 vircon_size_t count) {
   while (count != 0 && *(const unsigned char *)first == *(const unsigned char *)second) {
     if (*first == 0)
       return 0;
@@ -823,7 +863,8 @@ static VIRCON__NOINLINE inline int strncmp(const char *first, const char *second
   return (int)*(const unsigned char *)first - (int)*(const unsigned char *)second;
 }
 /* Copies a NUL-terminated string and returns destination. */
-static VIRCON__NOINLINE inline char *strcpy(char *destination, const char *source) {
+VIRCON__NOINLINE VIRCON__LIBC_INLINE char *strcpy(char *destination,
+                                                  const char *source) {
   char *result = destination;
   while (*source != 0)
     *destination++ = *source++;
@@ -831,7 +872,8 @@ static VIRCON__NOINLINE inline char *strcpy(char *destination, const char *sourc
   return result;
 }
 /* Copies at most count bytes, padding remaining destination bytes with NUL. */
-static VIRCON__NOINLINE inline char *strncpy(char *destination, const char *source, unsigned count) {
+VIRCON__NOINLINE VIRCON__LIBC_INLINE char *strncpy(char *destination, const char *source,
+                                                   vircon_size_t count) {
   char *result = destination;
   while (count != 0 && *source != 0) {
     *destination++ = *source++;
@@ -846,7 +888,8 @@ static VIRCON__NOINLINE inline char *strncpy(char *destination, const char *sour
   return result;
 }
 /* Appends a NUL-terminated source string and returns destination. */
-static VIRCON__NOINLINE inline char *strcat(char *destination, const char *source) {
+VIRCON__NOINLINE VIRCON__LIBC_INLINE char *strcat(char *destination,
+                                                  const char *source) {
   char *result = destination;
   while (*destination != 0)
     ++destination;
@@ -854,7 +897,8 @@ static VIRCON__NOINLINE inline char *strcat(char *destination, const char *sourc
   return result;
 }
 /* Appends at most count source bytes and always writes a terminator. */
-static VIRCON__NOINLINE inline char *strncat(char *destination, const char *source, unsigned count) {
+VIRCON__NOINLINE VIRCON__LIBC_INLINE char *strncat(char *destination, const char *source,
+                                                   vircon_size_t count) {
   char *result = destination;
   volatile char *output;
   while (*destination != 0)
@@ -933,13 +977,31 @@ static VIRCON__NOINLINE inline void ftoa(float value, char *result) {
   vircon__utoa(fraction_part, fraction_start, 10u);
 }
 
-/* Stops the Vircon CPU. There are no hosted exit-status semantics. */
+/* The official C API uses exit() without a hosted status. C++ standard
+ * headers reserve exit(int) and abort(), so provide ABI-compatible stopping
+ * forms there. A cartridge has no host process to receive an exit status. */
+#ifndef __cplusplus
 static inline void exit(void) { vircon__cpu_halt(); }
+#else
+[[noreturn]] VIRCON__LIBC_INLINE void abort(void) {
+  vircon__cpu_halt();
+  for (;;) {
+  }
+}
+[[noreturn]] VIRCON__LIBC_INLINE void exit(int) {
+  vircon__cpu_halt();
+  for (;;) {
+  }
+}
+#endif
 
 /* Finite f32 math ----------------------------------------------------------
  * A narrow ordinary-C math layer over Vircon CPU operations. It is not libm:
  * use finite inputs in the target instruction domains; NaN/infinity and all
- * edge cases are intentionally not promised. */
+ * edge cases are intentionally not promised. The unsuffixed official Vircon
+ * C names overlap the C++ standard math overload set, so C++ uses its selected
+ * standard library declarations instead. */
+#ifndef __cplusplus
 static inline float sinf(float x) { return vircon__cpu_sin(x); }
 static inline float cosf(float x) { return vircon__cpu_sin(x + 1.57079632679f); }
 static inline float tanf(float x) { return sinf(x) / cosf(x); }
@@ -973,6 +1035,7 @@ static inline float acos(float value) { return acosf(value); }
 static inline float exp(float value) { return expf(value); }
 static inline float log(float value) { return logf(value); }
 static inline float pow(float x, float y) { return powf(x, y); }
+#endif
 
 /* Heap implementation ------------------------------------------------------
  * Keep this implementation at the end of the public header so declarations
@@ -1103,10 +1166,10 @@ static volatile malloc_block *vircon__heap_append(unsigned size) {
 }
 
 /* Allocates a positive byte count from the configured global heap. */
-void *malloc(int size) {
+void *malloc(vircon_size_t size) {
   unsigned requested;
   volatile malloc_block *block;
-  if (size <= 0 || !vircon__heap_initialize())
+  if (size == 0 || size > (vircon_size_t)INT_MAX || !vircon__heap_initialize())
     return (void *)0;
   requested = vircon__heap_align((unsigned)size);
   for (block = (volatile malloc_block *)malloc_first_block; block != (volatile malloc_block *)0;
@@ -1132,12 +1195,13 @@ void free(void *memory) {
 }
 
 /* Allocates and explicitly clears count positive elements, checking overflow. */
-void *calloc(int count, int size) {
+void *calloc(vircon_size_t count, vircon_size_t size) {
   unsigned total;
   unsigned index;
   volatile unsigned char *bytes;
   void *memory;
-  if (count <= 0 || size <= 0 || count > 0x7FFFFFFF / size)
+  if (count == 0 || size == 0 || size > (vircon_size_t)INT_MAX ||
+      count > (vircon_size_t)INT_MAX / size)
     return (void *)0;
   total = (unsigned)(count * size);
   memory = malloc((int)total);
@@ -1150,7 +1214,7 @@ void *calloc(int count, int size) {
 }
 
 /* Resizes a block in place when possible, otherwise moves its existing data. */
-void *realloc(void *memory, int size) {
+void *realloc(void *memory, vircon_size_t size) {
   unsigned requested;
   unsigned previous_size;
   volatile malloc_block *block;
@@ -1158,10 +1222,12 @@ void *realloc(void *memory, int size) {
   void *replacement;
   if (memory == (void *)0)
     return malloc(size);
-  if (size <= 0) {
+  if (size == 0) {
     free(memory);
     return (void *)0;
   }
+  if (size > (vircon_size_t)INT_MAX)
+    return (void *)0;
   requested = vircon__heap_align((unsigned)size);
   block = (volatile malloc_block *)memory - 1;
   previous_size = block->size;
@@ -1193,5 +1259,71 @@ void *realloc(void *memory, int size) {
 #undef VIRCON__WASM_MAX_MEMORY_BYTES
 #endif
 
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
+/* Freestanding C++ allocation ABI -----------------------------------------
+ * C++ programs define VIRCON_IMPLEMENTATION in exactly one source just as C
+ * programs do. These replacement operators route ordinary `new` expressions
+ * through the same bounded Wasm heap. Exceptions are outside the supported
+ * C++ profile, so exhaustion halts the CPU instead of throwing bad_alloc. */
+#if defined(__cplusplus) && defined(VIRCON_IMPLEMENTATION)
+static void vircon__cpp_allocation_failure(void) {
+  vircon__cpu_halt();
+  for (;;) {
+  }
+}
+
+void *operator new(__SIZE_TYPE__ size) {
+  void *memory = size > (unsigned long)INT_MAX ? (void *)0 : malloc(size);
+  if (memory == (void *)0)
+    vircon__cpp_allocation_failure();
+  return memory;
+}
+
+void *operator new[](__SIZE_TYPE__ size) {
+  return ::operator new(size);
+}
+
+void operator delete(void *memory) noexcept { free(memory); }
+void operator delete[](void *memory) noexcept { free(memory); }
+void operator delete(void *memory, __SIZE_TYPE__) noexcept { free(memory); }
+void operator delete[](void *memory, __SIZE_TYPE__) noexcept { free(memory); }
+
+/* Cartridges do not return to a hosted process. Registering a destructor for
+ * process exit therefore has no observable target effect; ordinary automatic
+ * and vector-owned objects still run their destructors normally. */
+extern "C" int __cxa_atexit(void (*)(void *), void *, void *) { return 0; }
+
+/* libc++ keeps its checked length/allocation failure paths even when
+ * exceptions are disabled. Supply the retained ABI hooks without formatting:
+ * cartridges have no stderr, so a verbose abort deterministically halts.
+ *
+ * libc++ deliberately versions its inline namespace. wasi-sdk releases have
+ * used `std::__1`, while current Arch packages use `std::__2`. The C++ name
+ * below is private to this header; the asm name is the actual ABI contract.
+ * Supplying both costs only two tiny, dead-strippable halt functions and lets
+ * applications use either supported libc++ release without a toolchain-
+ * specific project source change. */
+extern "C" [[noreturn]] void vircon__libcpp_verbose_abort(const char *, ...)
+    __asm__("_ZNSt3__122__libcpp_verbose_abortEPKcz");
+extern "C" [[noreturn]] void vircon__libcpp_verbose_abort(const char *, ...) {
+  vircon__cpu_halt();
+  for (;;) {
+  }
+}
+
+extern "C" [[noreturn]] void vircon__libcpp_verbose_abort_v2(const char *, ...)
+    __asm__("_ZNSt3__222__libcpp_verbose_abortEPKcz");
+extern "C" [[noreturn]] void vircon__libcpp_verbose_abort_v2(const char *, ...) {
+  vircon__cpu_halt();
+  for (;;) {
+  }
+}
+#endif
+
+#undef VIRCON__NOEXCEPT
+#undef VIRCON__LIBC_INLINE
 #undef VIRCON__NOINLINE
 #endif

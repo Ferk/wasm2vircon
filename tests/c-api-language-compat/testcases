@@ -1,0 +1,4 @@
+source=language-compat.c
+entry=__original_main
+include_dirs=../../include
+expectations=expected.asm

@@ -38,6 +38,12 @@ Each supplied example names its exact frontend and build-driver requirements
 in its own README. The C/C++, TinyGo, and Rust examples use CMake; the Zig
 example uses `zig build` directly.
 
+C++ projects that use the standard library additionally need a Wasm-targeting
+Clang/libc++ SDK such as wasi-sdk. Native host libc++/libstdc++ headers are not
+a compatible substitute. The currently verified freestanding subset includes
+official libc++ `std::vector` with exceptions and RTTI disabled; see the C API
+reference and the C++ BunnyMark example for the exact profile.
+
 You do **not** need Binaryen headers, `libbinaryen`, or an external `wasm-opt`
 program merely to use a prebuilt compiler. A dynamically linked prebuilt
 binary can additionally require the Binaryen shared library supplied with that

@@ -262,25 +262,34 @@ if(BUILD_TESTING)
   endforeach()
 
   find_program(CLANG_EXECUTABLE clang REQUIRED)
+  set(WASM2VIRCON_CXX_COMPILER "" CACHE FILEPATH
+    "WASI-capable clang++ used for optional official-libc++ integration tests")
+  set(WASM2VIRCON_CXX_SYSROOT "" CACHE PATH
+    "Optional WASI sysroot passed to the C++ integration compiler")
   find_program(WASM_LD_EXECUTABLE wasm-ld REQUIRED)
   find_program(VIRCON_PACKROM_EXECUTABLE packrom REQUIRED)
   find_program(VIRCON_PNG2VIRCON_EXECUTABLE png2vircon REQUIRED)
   find_program(VIRCON_WAV2VIRCON_EXECUTABLE wav2vircon REQUIRED)
   find_program(VIRCON_TILED2VIRCON_EXECUTABLE tiled2vircon REQUIRED)
 
-  # Likewise, compile/package each C fixture independently so CTest reports
-  # the exact application or API case that fails.
-  file(GLOB rom_case_metadata CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/c-*/testcases")
+  # Likewise, compile/package each C or freestanding-C++ fixture independently
+  # so CTest reports the exact application or API case that fails.
+  file(GLOB rom_case_metadata CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/*/testcases")
   foreach(metadata_file IN LISTS rom_case_metadata)
     get_filename_component(case_directory "${metadata_file}" DIRECTORY)
     get_filename_component(case_name "${case_directory}" NAME)
     wasm2vircon_test_metadata("${metadata_file}" source case_source)
-    if(case_source MATCHES "\\.c$")
+    if(case_source MATCHES "\\.(cc|cpp|cxx)$" AND NOT WASM2VIRCON_CXX_COMPILER)
+      message(STATUS
+        "Skipping ${case_name}; set WASM2VIRCON_CXX_COMPILER to a WASI-capable clang++ to test libc++")
+    elseif(case_source MATCHES "\\.(c|cc|cpp|cxx)$")
       add_test(
         NAME ${case_name}
         COMMAND ${CMAKE_COMMAND}
           -DTOOL=$<TARGET_FILE:wasm2vircon>
           -DCLANG=${CLANG_EXECUTABLE}
+          -DCXX=${WASM2VIRCON_CXX_COMPILER}
+          -DCXX_SYSROOT=${WASM2VIRCON_CXX_SYSROOT}
           -DWASM_LD=${WASM_LD_EXECUTABLE}
           -DASSEMBLE=${VIRCON_ASSEMBLE_EXECUTABLE}
           -DPACKROM=${VIRCON_PACKROM_EXECUTABLE}
@@ -311,6 +320,8 @@ if(BUILD_TESTING)
           COMMAND ${CMAKE_COMMAND}
             -DTOOL=$<TARGET_FILE:wasm2vircon>
             -DCLANG=${CLANG_EXECUTABLE}
+            -DCXX=${WASM2VIRCON_CXX_COMPILER}
+            -DCXX_SYSROOT=${WASM2VIRCON_CXX_SYSROOT}
             -DWASM_LD=${WASM_LD_EXECUTABLE}
             -DASSEMBLE=${VIRCON_ASSEMBLE_EXECUTABLE}
             -DPACKROM=${VIRCON_PACKROM_EXECUTABLE}
