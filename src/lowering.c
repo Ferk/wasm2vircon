@@ -82,8 +82,14 @@ typedef struct LoopFastPath {
   bool valid;
   bool use_word_pointer;
   bool needs_alignment_guard;
+  bool has_invariant_loaded_base;
   uint32_t base_local, counter_local, stride;
   uint32_t minimum_offset, maximum_end;
+  uint32_t invariant_base_address;
+  int32_t invariant_origin_offset;
+  bool has_invariant_alias;
+  uint32_t invariant_alias_local;
+  int32_t invariant_alias_offset;
   LoopTripKind trip_kind;
   LoopBoundKind bound_kind;
   uint32_t bound_value;
@@ -140,6 +146,12 @@ typedef struct Context {
   bool fast_word_pointer_active;
   uint32_t fast_word_pointer_base_local;
   uint32_t fast_word_pointer_stride;
+  bool fast_invariant_base_active;
+  uint32_t fast_invariant_base_address;
+  int32_t fast_invariant_origin_offset;
+  bool fast_has_invariant_alias;
+  uint32_t fast_invariant_alias_local;
+  int32_t fast_invariant_alias_offset;
   bool fast_bound_active;
   LoopBoundKind fast_bound_kind;
   uint32_t fast_bound_value;
@@ -852,6 +864,85 @@ static bool initialize_local_alignments(Context *context) {
 }
 
 static bool syntactic_pure_affine_local(const WasmExpr *expression, uint32_t *local, uint32_t *offset);
+static bool constant_i32_load_address(const Context *context, const WasmExpr *expression,
+                                      uint32_t *address);
+
+/* One fast-path match for an invariant loaded base plus the loop induction
+ * local. Offsets are relative to the native word address retained in R13. */
+typedef struct FastInvariantPointer {
+  int32_t offset;
+  bool has_tee;
+  uint32_t tee_local;
+  int32_t tee_offset;
+} FastInvariantPointer;
+
+/* Matches the invariant-base pointer form selected by the active loop plan.
+ * Local aliases are compiler facts established by an earlier local.tee in the
+ * same iteration; the induction local alone is not itself a complete pointer. */
+static bool parse_fast_invariant_pointer(const Context *context, const WasmExpr *expression,
+                                         FastInvariantPointer *pointer) {
+  const WasmExpr *left, *right, *nested;
+  FastInvariantPointer child = {0};
+  uint32_t address;
+  int64_t sum;
+
+  if (!context->fast_invariant_base_active)
+    return false;
+  if (expression->kind == WASM_EXPR_LOCAL_GET && context->fast_has_invariant_alias &&
+      expression->index == context->fast_invariant_alias_local) {
+    pointer->offset = context->fast_invariant_alias_offset;
+    return true;
+  }
+  if (expression->kind == WASM_EXPR_LOCAL_GET &&
+      expression->index != context->fast_word_pointer_base_local &&
+      expression->index < context->local_alignment_count &&
+      context->local_address_bases[expression->index] == context->fast_word_pointer_base_local) {
+    pointer->offset = (int32_t)context->local_address_offsets[expression->index];
+    return true;
+  }
+  if (expression->kind == WASM_EXPR_LOCAL_SET && expression->is_tee && expression->child_count == 1 &&
+      parse_fast_invariant_pointer(context, expression->children[0], &child)) {
+    *pointer = child;
+    pointer->has_tee = true;
+    pointer->tee_local = expression->index;
+    pointer->tee_offset = child.offset;
+    return true;
+  }
+  if (expression->kind != WASM_EXPR_BINARY || expression->binary_op != WASM_BINARY_ADD ||
+      expression->child_count != 2)
+    return false;
+  left = expression->children[0];
+  right = expression->children[1];
+  if (right->kind == WASM_EXPR_I32_CONST) {
+    nested = left;
+  } else if (left->kind == WASM_EXPR_I32_CONST) {
+    nested = right;
+    right = left;
+  } else
+    nested = NULL;
+  if (nested != NULL && parse_fast_invariant_pointer(context, nested, &child)) {
+    sum = (int64_t)child.offset + right->i32_value;
+    if (sum < INT32_MIN || sum > INT32_MAX)
+      return false;
+    *pointer = child;
+    pointer->offset = (int32_t)sum;
+    return true;
+  }
+  if (constant_i32_load_address(context, left, &address) &&
+      address == context->fast_invariant_base_address &&
+      right->kind == WASM_EXPR_LOCAL_GET &&
+      right->index == context->fast_word_pointer_base_local) {
+    /* matched below */
+  } else if (constant_i32_load_address(context, right, &address) &&
+             address == context->fast_invariant_base_address &&
+             left->kind == WASM_EXPR_LOCAL_GET &&
+             left->index == context->fast_word_pointer_base_local) {
+    /* matched */
+  } else
+    return false;
+  pointer->offset = -context->fast_invariant_origin_offset;
+  return true;
+}
 
 /* Returns whether adding the static memarg offset always yields a word-aligned
  * Wasm byte address. A versioned fast loop may establish the same fact with a
@@ -864,6 +955,11 @@ static bool word_access_is_proven_aligned(const Context *context, const WasmExpr
 
   if (pointer->guaranteed_alignment >= 4 && (offset & 3u) == 0)
     return true;
+  if (context->fast_invariant_base_active && context->fast_word_pointer_active) {
+    FastInvariantPointer invariant = {0};
+    if (parse_fast_invariant_pointer(context, pointer, &invariant))
+      return (((uint32_t)invariant.offset + offset) & 3u) == 0;
+  }
   if (pointer->kind == WASM_EXPR_LOCAL_SET && pointer->is_tee && pointer->child_count == 1)
     affine = pointer->children[0];
   if (!context->fast_word_pointer_active ||
@@ -900,6 +996,24 @@ typedef struct LoopAccessGroup {
   bool all_word_aligned;
 } LoopAccessGroup;
 
+/* One pointer alias derived from a stable linear-memory word plus an induction
+ * local. Offsets are signed because optimized frontend output commonly forms
+ * the first field as `(loaded_base + index) - field_bias`. */
+typedef struct InvariantPointerAlias {
+  bool valid;
+  uint32_t invariant_address, induction_local;
+  int32_t offset;
+} InvariantPointerAlias;
+
+/* Candidate access group sharing one invariant loaded base and induction
+ * local. The final plan rebases its signed offsets to start at zero. */
+typedef struct InvariantAccessGroup {
+  bool valid;
+  uint32_t invariant_address, induction_local, access_count;
+  int64_t minimum_offset, maximum_end;
+  bool all_word_aligned;
+} InvariantAccessGroup;
+
 /* Conservative scratch state for recognizing a versionable affine loop. */
 typedef struct LoopScan {
   const Context *context;
@@ -907,9 +1021,11 @@ typedef struct LoopScan {
   uint32_t *assignment_counts;
   uint32_t *strides;
   bool *stride_assignments;
+  InvariantPointerAlias *invariant_aliases;
   size_t local_count;
   LoopAccessGroup groups[LOOP_ACCESS_GROUP_LIMIT];
   size_t group_count;
+  InvariantAccessGroup invariant_group;
   bool rejected;
   bool has_store;
   bool has_backedge;
@@ -1074,6 +1190,124 @@ static bool parse_counted_backedge(const LoopScan *scan, const WasmExpr *branch,
   return parse_loop_bound(scan->context, condition->children[1], bound_kind, bound_value);
 }
 
+/* Recognizes an aligned, non-trapping i32 load from a constant address. Such
+ * a word can provide an invariant byte-pointer base for a load-only loop. */
+static bool constant_i32_load_address(const Context *context, const WasmExpr *expression,
+                                      uint32_t *address) {
+  uint64_t effective;
+  if (expression->kind != WASM_EXPR_LOAD || expression->bytes != 4 || expression->child_count != 1 ||
+      expression->children[0]->kind != WASM_EXPR_I32_CONST)
+    return false;
+  effective = (uint64_t)(uint32_t)expression->children[0]->i32_value + expression->offset;
+  if (effective > UINT32_MAX || (effective & 3u) != 0 || effective > context->memory_bytes ||
+      4u > (uint64_t)context->memory_bytes - effective)
+    return false;
+  *address = (uint32_t)effective;
+  return true;
+}
+
+/* Recognizes a pointer formed from one stable memory-loaded base, one local,
+ * and signed constant additions. A local.tee records the derived alias so a
+ * following field access through that local belongs to the same group. */
+static bool parse_invariant_pointer(LoopScan *scan, const WasmExpr *expression,
+                                    uint32_t *invariant_address, uint32_t *induction_local,
+                                    int32_t *offset) {
+  const WasmExpr *left, *right, *pointer_expression;
+  uint32_t address, local;
+  int32_t child_offset;
+  int64_t sum;
+
+  if (expression->kind == WASM_EXPR_LOCAL_GET && expression->index < scan->local_count &&
+      scan->invariant_aliases[expression->index].valid) {
+    const InvariantPointerAlias *alias = &scan->invariant_aliases[expression->index];
+    *invariant_address = alias->invariant_address;
+    *induction_local = alias->induction_local;
+    *offset = alias->offset;
+    return true;
+  }
+  if (expression->kind == WASM_EXPR_LOCAL_SET && expression->is_tee && expression->child_count == 1 &&
+      expression->index < scan->local_count &&
+      parse_invariant_pointer(scan, expression->children[0], invariant_address,
+                              induction_local, offset)) {
+    scan->invariant_aliases[expression->index] =
+        (InvariantPointerAlias){.valid = true,
+                                .invariant_address = *invariant_address,
+                                .induction_local = *induction_local,
+                                .offset = *offset};
+    return true;
+  }
+  if (expression->kind != WASM_EXPR_BINARY || expression->binary_op != WASM_BINARY_ADD ||
+      expression->child_count != 2)
+    return false;
+  left = expression->children[0];
+  right = expression->children[1];
+
+  if (right->kind == WASM_EXPR_I32_CONST) {
+    pointer_expression = left;
+  } else if (left->kind == WASM_EXPR_I32_CONST) {
+    pointer_expression = right;
+    right = left;
+  } else {
+    pointer_expression = NULL;
+  }
+  if (pointer_expression != NULL &&
+      parse_invariant_pointer(scan, pointer_expression, invariant_address,
+                              induction_local, &child_offset)) {
+    sum = (int64_t)child_offset + right->i32_value;
+    if (sum < INT32_MIN || sum > INT32_MAX)
+      return false;
+    *offset = (int32_t)sum;
+    return true;
+  }
+
+  if (constant_i32_load_address(scan->context, left, &address) &&
+      right->kind == WASM_EXPR_LOCAL_GET) {
+    local = right->index;
+  } else if (constant_i32_load_address(scan->context, right, &address) &&
+             left->kind == WASM_EXPR_LOCAL_GET) {
+    local = left->index;
+  } else
+    return false;
+  if (local >= scan->local_count || local_value_type(scan->context->function, local) != WASM_VALUE_I32)
+    return false;
+  *invariant_address = address;
+  *induction_local = local;
+  *offset = 0;
+  return true;
+}
+
+/* Adds one access based on an invariant loaded pointer and a striding local. */
+static void record_invariant_loop_access(LoopScan *scan, const WasmExpr *expression) {
+  InvariantAccessGroup *group = &scan->invariant_group;
+  uint32_t invariant_address, induction_local;
+  int32_t pointer_offset;
+  int64_t start, end;
+
+  if (expression->child_count == 0 ||
+      !parse_invariant_pointer(scan, expression->children[0], &invariant_address,
+                               &induction_local, &pointer_offset))
+    return;
+  start = (int64_t)pointer_offset + expression->offset;
+  end = start + expression->bytes;
+  if (!group->valid) {
+    *group = (InvariantAccessGroup){.valid = true,
+                                    .invariant_address = invariant_address,
+                                    .induction_local = induction_local,
+                                    .minimum_offset = start,
+                                    .maximum_end = end,
+                                    .all_word_aligned = true};
+  } else if (group->invariant_address != invariant_address ||
+             group->induction_local != induction_local)
+    return;
+  if (start < group->minimum_offset)
+    group->minimum_offset = start;
+  if (end > group->maximum_end)
+    group->maximum_end = end;
+  if (expression->bytes != 4 || (start & 3) != 0)
+    group->all_word_aligned = false;
+  ++group->access_count;
+}
+
 /* Adds one direct affine load/store to a bounded set of candidate base locals. */
 static void record_loop_access(LoopScan *scan, const WasmExpr *expression) {
   uint32_t local, pointer_offset;
@@ -1081,6 +1315,7 @@ static void record_loop_access(LoopScan *scan, const WasmExpr *expression) {
   size_t index;
   LoopAccessGroup *group = NULL;
 
+  record_invariant_loop_access(scan, expression);
   if (expression->child_count == 0)
     return;
   if (!syntactic_affine_local(expression->children[0], &local, &pointer_offset)) {
@@ -1308,7 +1543,10 @@ static LoopFastPath analyze_loop_fast_path(const Context *context, const WasmExp
   scan.strides = calloc(scan.local_count == 0 ? 1 : scan.local_count, sizeof(*scan.strides));
   scan.stride_assignments = calloc(scan.local_count == 0 ? 1 : scan.local_count,
                                    sizeof(*scan.stride_assignments));
-  if (scan.assignment_counts == NULL || scan.strides == NULL || scan.stride_assignments == NULL)
+  scan.invariant_aliases = calloc(scan.local_count == 0 ? 1 : scan.local_count,
+                                  sizeof(*scan.invariant_aliases));
+  if (scan.assignment_counts == NULL || scan.strides == NULL || scan.stride_assignments == NULL ||
+      scan.invariant_aliases == NULL)
     goto done;
   scan_versionable_loop(&scan, loop->children[0]);
   if (scan.rejected || !scan.has_backedge || scan.counter_local >= scan.local_count ||
@@ -1335,7 +1573,56 @@ static LoopFastPath analyze_loop_fast_path(const Context *context, const WasmExp
     if (best == SIZE_MAX || group->access_count > scan.groups[best].access_count)
       best = index;
   }
-  if (best != SIZE_MAX) {
+  if (scan.invariant_group.valid && !scan.has_store && scan.invariant_group.access_count >= 2 &&
+      scan.invariant_group.all_word_aligned &&
+      scan.invariant_group.induction_local < scan.local_count &&
+      scan.invariant_group.induction_local != scan.counter_local &&
+      scan.assignment_counts[scan.invariant_group.induction_local] == 1 &&
+      scan.stride_assignments[scan.invariant_group.induction_local] &&
+      scan.strides[scan.invariant_group.induction_local] != 0 &&
+      (scan.strides[scan.invariant_group.induction_local] & 3u) == 0 &&
+      scan.strides[scan.invariant_group.induction_local] <= INT32_MAX &&
+      scan.invariant_group.minimum_offset >= INT32_MIN &&
+      scan.invariant_group.minimum_offset <= INT32_MAX &&
+      scan.invariant_group.maximum_end >= scan.invariant_group.minimum_offset &&
+      (uint64_t)(scan.invariant_group.maximum_end - scan.invariant_group.minimum_offset) <=
+          context->memory_bytes &&
+      (best == SIZE_MAX || scan.invariant_group.access_count > scan.groups[best].access_count)) {
+    bool aliases_are_single_assignment = true;
+    for (index = 0; index < scan.local_count; ++index)
+      if (scan.invariant_aliases[index].valid && scan.assignment_counts[index] != 1) {
+        aliases_are_single_assignment = false;
+        break;
+      }
+    if (aliases_are_single_assignment) {
+      const InvariantAccessGroup *group = &scan.invariant_group;
+      plan.valid = true;
+      plan.use_word_pointer = true;
+      plan.needs_alignment_guard = plan.use_word_pointer;
+      plan.has_invariant_loaded_base = true;
+      plan.base_local = group->induction_local;
+      plan.counter_local = scan.counter_local;
+      plan.stride = scan.strides[group->induction_local];
+      plan.minimum_offset = 0;
+      plan.maximum_end = (uint32_t)(group->maximum_end - group->minimum_offset);
+      plan.invariant_base_address = group->invariant_address;
+      plan.invariant_origin_offset = (int32_t)group->minimum_offset;
+      for (index = 0; index < scan.local_count; ++index)
+        if (scan.invariant_aliases[index].valid &&
+            scan.invariant_aliases[index].invariant_address == group->invariant_address &&
+            scan.invariant_aliases[index].induction_local == group->induction_local) {
+          plan.has_invariant_alias = true;
+          plan.invariant_alias_local = (uint32_t)index;
+          plan.invariant_alias_offset = (int32_t)((int64_t)scan.invariant_aliases[index].offset -
+                                                  plan.invariant_origin_offset);
+          break;
+        }
+      plan.trip_kind = scan.trip_kind;
+      plan.bound_kind = scan.bound_kind;
+      plan.bound_value = scan.bound_value;
+    }
+  }
+  if (!plan.valid && best != SIZE_MAX) {
     const LoopAccessGroup *group = &scan.groups[best];
     plan.valid = true;
     plan.base_local = group->base_local;
@@ -1357,6 +1644,7 @@ done:
   free(scan.assignment_counts);
   free(scan.strides);
   free(scan.stride_assignments);
+  free(scan.invariant_aliases);
   return plan;
 }
 
@@ -1399,6 +1687,12 @@ static bool emit_loop_fast_guard(Context *context, const LoopFastPath *plan, con
     return false;
 
   if (!load_slot(context, 2, base_slot))
+    return false;
+  if (plan->has_invariant_loaded_base &&
+      (!emit(context, "  mov R12, [%u]", LINEAR_BASE + plan->invariant_base_address / 4u) ||
+       !emit(context, "  iadd R2, R12") ||
+       (plan->invariant_origin_offset != 0 &&
+        !emit(context, "  iadd R2, 0x%08X", (uint32_t)plan->invariant_origin_offset))))
     return false;
   if (plan->needs_alignment_guard &&
       (!emit(context, "  mov R1, R2") || !emit(context, "  and R1, 3") ||
@@ -1451,6 +1745,12 @@ static bool lower_loop_copy(Context *context, const WasmExpr *loop, const LoopFa
     context->fast_word_pointer_active = plan->use_word_pointer;
     context->fast_word_pointer_base_local = plan->base_local;
     context->fast_word_pointer_stride = plan->stride / 4u;
+    context->fast_invariant_base_active = plan->has_invariant_loaded_base;
+    context->fast_invariant_base_address = plan->invariant_base_address;
+    context->fast_invariant_origin_offset = plan->invariant_origin_offset;
+    context->fast_has_invariant_alias = plan->has_invariant_alias;
+    context->fast_invariant_alias_local = plan->invariant_alias_local;
+    context->fast_invariant_alias_offset = plan->invariant_alias_offset;
     context->fast_bound_active = plan->trip_kind == LOOP_TRIP_INCREMENT_TO_LIMIT;
     context->fast_bound_kind = plan->bound_kind;
     context->fast_bound_value = plan->bound_value;
@@ -1458,6 +1758,8 @@ static bool lower_loop_copy(Context *context, const WasmExpr *loop, const LoopFa
   success = lower_expression(context, loop->children[0], &body_value);
   context->fast_memory_active = false;
   context->fast_word_pointer_active = false;
+  context->fast_invariant_base_active = false;
+  context->fast_has_invariant_alias = false;
   context->fast_bound_active = false;
   release(context, body_value);
   target = pop_target(context);
@@ -1811,6 +2113,43 @@ static bool make_fast_word_pointer(Context *context, const WasmExpr *expression,
   bool preserve_tee = expression->kind == WASM_EXPR_LOCAL_SET && expression->is_tee &&
                       expression->child_count == 1;
   uint32_t local, offset, base;
+
+  if (context->fast_invariant_base_active) {
+    FastInvariantPointer invariant = {0};
+    if (parse_fast_invariant_pointer(context, expression, &invariant)) {
+      if (invariant.has_tee) {
+        int64_t absolute_offset = (int64_t)invariant.tee_offset +
+                                  context->fast_invariant_origin_offset;
+        Value alias = {.slot = local_slot(context->function, invariant.tee_local),
+                       .type = WASM_VALUE_I32,
+                       .present = true,
+                       .is_borrowed = true,
+                       .has_address_identity = true,
+                       .address_base_local = context->fast_word_pointer_base_local,
+                       .address_offset = (uint32_t)invariant.tee_offset};
+        if (absolute_offset < INT32_MIN || absolute_offset > INT32_MAX ||
+            !load_slot(context, 1, local_slot(context->function,
+                                              context->fast_word_pointer_base_local)) ||
+            !emit(context, "  iadd R1, R12") ||
+            (absolute_offset != 0 &&
+             !emit(context, "  iadd R1, 0x%08X", (uint32_t)(int32_t)absolute_offset)) ||
+            !store_slot(context, alias.slot, 1))
+          return false;
+        assign_local_address_identity(context, invariant.tee_local, &alias);
+      }
+      *pointer = (Value){.slot = local_slot(context->function,
+                                           invariant.has_tee ? invariant.tee_local
+                                                             : context->fast_word_pointer_base_local),
+                         .type = WASM_VALUE_I32,
+                         .present = true,
+                         .is_borrowed = true,
+                         .has_address_identity = true,
+                         .address_base_local = context->fast_word_pointer_base_local,
+                         .address_offset = (uint32_t)invariant.offset};
+      return fast_loop_covers_access(context, *pointer, memory_offset, 4) &&
+             has_cached_word_operand(context, *pointer, memory_offset);
+    }
+  }
 
   if (preserve_tee)
     affine = expression->children[0];
