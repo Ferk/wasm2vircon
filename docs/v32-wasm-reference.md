@@ -318,6 +318,11 @@ portable behavior for NaN, infinity, or signed zero.
 | `f32.abs` | Produces the non-negative magnitude of a single-precision value. |
 | `f32.floor` | Rounds a finite float down toward negative infinity, such as `1.8` to `1.0` and `-1.2` to `-2.0`. |
 | `f32.ceil` | Rounds a finite float up toward positive infinity, such as `1.2` to `2.0` and `-1.8` to `-1.0`. |
+| `f32.trunc` | Rounds a finite float toward zero while keeping an `f32` result, such as `1.8` to `1.0` and `-1.8` to `-1.0`. It selects Vircon32 `FLR` for non-negative inputs and `CEIL` for negative inputs. |
+| `f32.nearest` | Rounds to the nearest integral `f32`, choosing the even integer when the input is exactly halfway between two integers. For example, both `1.5` and `2.5` produce `2.0`. |
+| `f32.min` | Returns the smaller `f32`. Equal zero operands are combined so either operand being `-0` produces `-0`, as required by Wasm. |
+| `f32.max` | Returns the larger `f32`. Equal zero operands are combined so either operand being `+0` produces `+0`, as required by Wasm. |
+| `f32.copysign` | Returns the first operand's magnitude bits with the second operand's sign bit. This is a bit operation and preserves all non-sign bits exactly. |
 | `f32.eq` | Returns `1` when the two floats compare equal, otherwise `0`. A NaN compares unequal to every value, including itself. |
 | `f32.ne` | Returns `1` when the two floats compare unequal, otherwise `0`. A NaN compares unequal to every value, including itself. |
 | `f32.lt` | Returns `1` when the first float is less than the second, otherwise `0`. |
@@ -329,6 +334,11 @@ portable behavior for NaN, infinity, or signed zero.
 | `i32.trunc_sat_f32_s` | Drops a float's fractional part and converts it to signed `i32`. Values outside the signed i32 range are clamped to the nearest endpoint instead of trapping. |
 | `i32.reinterpret_f32` | Keeps all 32 raw bits of a float but treats those bits as an i32. It performs no numeric conversion. |
 | `f32.reinterpret_i32` | Keeps all 32 raw bits of an i32 but treats those bits as a float. It performs no numeric conversion. |
+
+Vircon32's native floating-point operations do not define all of WebAssembly's
+NaN propagation and payload-selection details. In particular, `f32.min` and
+`f32.max` use the hardware `FMIN` and `FMAX` operations for unequal inputs.
+Programs targeting VirconWasm should avoid relying on particular NaN results.
 
 ### Structured control flow
 
@@ -414,16 +424,6 @@ could be added after a real normalized frontend module demonstrates the need.
 It is not a promise that the compiler already accepts it.
 
 ### Value types and operations
-
-**`f32.min`, `f32.max`, `f32.copysign`, `f32.trunc`, and `f32.nearest`**
-
-Some have superficially similar Vircon32 instructions: `FMIN`, `FMAX`, and
-`ROUND`. They do not automatically provide the exact WebAssembly rules for
-NaN propagation, signed zero, or ties-to-even rounding. `f32.copysign` needs
-precise bit-level signed-zero/NaN handling, while `f32.trunc` needs a float
-result rather than the target's integer conversion. These are not added merely
-because a similarly named target instruction exists. They are candidates only
-after their required edge-case contract is defined and tested.
 
 **`f64` and all 64-bit floating-point operations**
 

@@ -5,7 +5,9 @@
   (import "env" "vircon_gpu_set_drawing_scale"
     (func $set_drawing_scale (param f32 f32)))
   (memory 1)
-  (data (i32.const 0) "\00\00\A0\3F") ;; 1.25f, little-endian
+  ;; 1.25f, 1.25f, -2.5f, +0, and -0 in little-endian form. Dynamic
+  ;; operands keep the bit-sensitive backend paths visible after cleanup.
+  (data (i32.const 0) "\00\00\A0\3F\00\00\A0\3F\00\00\20\C0\00\00\00\00\00\00\00\80")
 
   (func (export "main") (result i32)
     (drop (f32.eq (f32.const 1) (f32.const 1)))
@@ -15,6 +17,21 @@
     (drop (f32.abs (f32.const -1.25)))
     (drop (f32.floor (f32.const 1.75)))
     (drop (f32.ceil (f32.const 1.25)))
+    (drop (f32.trunc (f32.const 1.75)))
+    (drop (f32.trunc (f32.const -1.75)))
+    (drop (f32.min
+      (f32.load (i32.const 12))
+      (f32.load (i32.const 16))))
+    (drop (f32.max
+      (f32.load (i32.const 12))
+      (f32.load (i32.const 16))))
+    (drop (f32.copysign
+      (f32.load (i32.const 4))
+      (f32.load (i32.const 8))))
+    (drop (f32.nearest (f32.const 1.5)))
+    (drop (f32.nearest (f32.const 2.5)))
+    (drop (f32.nearest (f32.const -1.5)))
+    (drop (f32.nearest (f32.const -2.5)))
 
     (call $set_background_color
       (i32.extend8_s (i32.const 128)))

@@ -3642,6 +3642,27 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     if (!emit(context, "  fge R1, R2"))
       return false;
     break;
+  case WASM_BINARY_F32_MIN:
+  case WASM_BINARY_F32_MAX:
+    /* Native FMIN/FMAX handle ordinary finite comparisons. When the inputs
+     * compare equal, combine their raw bits so min(+0,-0) is -0 and
+     * max(+0,-0) is +0 regardless of operand order. */
+    if (!fresh_label(context, "f32_minmax_normal", normal, sizeof(normal)) ||
+        !fresh_label(context, "f32_minmax_done", done, sizeof(done)) || !emit(context, "  mov R3, R1") ||
+        !emit(context, "  feq R3, R2") || !emit(context, "  jf R3, %s", normal) ||
+        !emit(context, expression->binary_op == WASM_BINARY_F32_MIN ? "  or R1, R2" : "  and R1, R2") ||
+        !emit(context, "  jmp %s", done) || !emit_label(context, normal) ||
+        !emit(context, expression->binary_op == WASM_BINARY_F32_MIN ? "  fmin R1, R2" : "  fmax R1, R2") ||
+        !emit_label(context, done))
+      return false;
+    break;
+  case WASM_BINARY_F32_COPYSIGN:
+    /* f32 values and i32 values share one 32-bit target word, so copying the
+     * sign is an exact mask operation and does not require float conversion. */
+    if (!emit(context, "  and R1, 0x7FFFFFFF") || !emit(context, "  and R2, 0x80000000") ||
+        !emit(context, "  or R1, R2"))
+      return false;
+    break;
   case WASM_BINARY_LT_U:
     if (!emit(context, "  xor R1, 0x80000000") || !emit(context, "  xor R2, 0x80000000") ||
         !emit(context, "  ilt R1, R2"))
@@ -4035,6 +4056,52 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
     } else if (expression->unary_op == WASM_UNARY_F32_CEIL) {
       if (!emit(context, "  ceil R1"))
         return false;
+    } else if (expression->unary_op == WASM_UNARY_F32_TRUNC) {
+      char negative[64], done[64];
+      bool address_was_cached = context->target_word_address_cached;
+      uint32_t cached_base_local = context->target_word_address_base_local;
+      uint32_t cached_offset = context->target_word_address_offset;
+
+      /* Vircon32 has floor and ceiling instructions but no direct truncation.
+       * Select floor for non-negative inputs and ceiling for negative inputs,
+       * which rounds finite values toward zero while keeping the result f32. */
+      if (!fresh_label(context, "f32_trunc_negative", negative, sizeof(negative)) ||
+          !fresh_label(context, "f32_trunc_done", done, sizeof(done)) || !emit(context, "  mov R2, R1") ||
+          !emit(context, "  fge R2, 0") || !emit(context, "  jf R2, %s", negative) || !emit(context, "  flr R1") ||
+          !emit(context, "  jmp %s", done) || !emit_label(context, negative) || !emit(context, "  ceil R1") ||
+          !emit_label(context, done))
+        return false;
+
+      /* The private control flow modifies only R1/R2, so an independently
+       * cached target word address in R13 remains valid at the merge. */
+      context->target_word_address_cached = address_was_cached;
+      context->target_word_address_base_local = cached_base_local;
+      context->target_word_address_offset = cached_offset;
+    } else if (expression->unary_op == WASM_UNARY_F32_NEAREST) {
+      char ordinary[64], even[64], done[64];
+      bool address_was_cached = context->target_word_address_cached;
+      uint32_t cached_base_local = context->target_word_address_base_local;
+      uint32_t cached_offset = context->target_word_address_offset;
+
+      /* Vircon32 ROUND agrees with Wasm except at exact halfway values, where
+       * it rounds away from zero. Detect those cases through x-floor(x), then
+       * select the even integer using the safely representable floor value. */
+      if (!fresh_label(context, "f32_nearest_ordinary", ordinary, sizeof(ordinary)) ||
+          !fresh_label(context, "f32_nearest_even", even, sizeof(even)) ||
+          !fresh_label(context, "f32_nearest_done", done, sizeof(done)) || !emit(context, "  mov R2, R1") ||
+          !emit(context, "  flr R2") || !emit(context, "  mov R3, R1") || !emit(context, "  fsub R3, R2") ||
+          !emit(context, "  feq R3, 0x3F000000") || !emit(context, "  jf R3, %s", ordinary) ||
+          !emit(context, "  mov R4, R2") || !emit(context, "  cfi R4") || !emit(context, "  and R4, 1") ||
+          !emit(context, "  jf R4, %s", even) || !emit(context, "  fadd R2, 0x3F800000") ||
+          !emit_label(context, even) || !emit(context, "  mov R1, R2") || !emit(context, "  jmp %s", done) ||
+          !emit_label(context, ordinary) || !emit(context, "  round R1") || !emit_label(context, done))
+        return false;
+
+      /* The private control flow modifies only R1-R4 and leaves a cached
+       * target word address in R13 valid at the merge. */
+      context->target_word_address_cached = address_was_cached;
+      context->target_word_address_base_local = cached_base_local;
+      context->target_word_address_offset = cached_offset;
     } else
       return false;
     if (retain_result_register(context, &left, expression->value_type)) {

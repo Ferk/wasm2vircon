@@ -405,6 +405,10 @@ static const char *unary_opcode(BinaryenOp op) {
     return "f32.floor";
   if (op == BinaryenCeilFloat32())
     return "f32.ceil";
+  if (op == BinaryenTruncFloat32())
+    return "f32.trunc";
+  if (op == BinaryenNearestFloat32())
+    return "f32.nearest";
   if (op == BinaryenClzInt32())
     return "i32.clz";
   if (op == BinaryenCtzInt32())
@@ -527,6 +531,12 @@ static const char *binary_opcode(BinaryenOp op) {
     return "f32.gt";
   if (op == BinaryenGeFloat32())
     return "f32.ge";
+  if (op == BinaryenMinFloat32())
+    return "f32.min";
+  if (op == BinaryenMaxFloat32())
+    return "f32.max";
+  if (op == BinaryenCopySignFloat32())
+    return "f32.copysign";
   return "unknown binary operation";
 }
 
@@ -1098,6 +1108,8 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
                            : op == BinaryenAbsFloat32()              ? WASM_UNARY_F32_ABS
                            : op == BinaryenFloorFloat32()            ? WASM_UNARY_F32_FLOOR
                            : op == BinaryenCeilFloat32()             ? WASM_UNARY_F32_CEIL
+                           : op == BinaryenTruncFloat32()            ? WASM_UNARY_F32_TRUNC
+                           : op == BinaryenNearestFloat32()          ? WASM_UNARY_F32_NEAREST
                                                                      : WASM_UNARY_OTHER;
     if (!allocate_children(expression, 1, diagnostics))
       goto fail;
@@ -1166,6 +1178,9 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
                             : op == BinaryenDivFloat32() ? WASM_BINARY_F32_DIV
                             : op == BinaryenGtFloat32()  ? WASM_BINARY_F32_GT
                             : op == BinaryenGeFloat32()  ? WASM_BINARY_F32_GE
+                            : op == BinaryenMinFloat32() ? WASM_BINARY_F32_MIN
+                            : op == BinaryenMaxFloat32() ? WASM_BINARY_F32_MAX
+                            : op == BinaryenCopySignFloat32() ? WASM_BINARY_F32_COPYSIGN
                                                          : WASM_BINARY_OTHER;
     if (!allocate_children(expression, 2, diagnostics))
       goto fail;

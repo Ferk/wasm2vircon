@@ -75,6 +75,8 @@ typedef enum WasmUnaryOp {
   WASM_UNARY_F32_ABS,
   WASM_UNARY_F32_FLOOR,
   WASM_UNARY_F32_CEIL,
+  WASM_UNARY_F32_TRUNC,
+  WASM_UNARY_F32_NEAREST,
   WASM_UNARY_OTHER
 } WasmUnaryOp;
 /* Supported binary operations; OTHER preserves a useful rejection diagnostic.
@@ -134,6 +136,9 @@ typedef enum WasmBinaryOp {
   WASM_BINARY_F32_LT,
   WASM_BINARY_F32_GT,
   WASM_BINARY_F32_GE,
+  WASM_BINARY_F32_MIN,
+  WASM_BINARY_F32_MAX,
+  WASM_BINARY_F32_COPYSIGN,
   WASM_BINARY_OTHER
 } WasmBinaryOp;
 
