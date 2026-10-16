@@ -3962,8 +3962,19 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
     if (context->fast_word_pointer_active && expression->index == context->fast_word_pointer_base_local &&
         !emit(context, "  iadd R13, %u", context->fast_word_pointer_stride))
       return false;
-    if (local_value_type(context->function, expression->index) == WASM_VALUE_I32)
+    if (local_value_type(context->function, expression->index) == WASM_VALUE_I32) {
       assign_local_address_identity(context, expression->index, &left);
+      if (expression->is_tee) {
+        /* local.tee returns the value after assigning it. Rebase that returned
+         * value to the local's new identity: a self-derived expression such
+         * as `local = static_base + local` no longer refers to the old local
+         * value. Keeping the pre-assignment offset here can seed R13 with a
+         * stale affine origin and corrupt neighboring field accesses. */
+        left.has_address_identity = true;
+        left.address_base_local = context->local_address_bases[expression->index];
+        left.address_offset = context->local_address_offsets[expression->index];
+      }
+    }
     if (expression->is_tee) {
       if (!materialize_borrowed(context, &left))
         return false;

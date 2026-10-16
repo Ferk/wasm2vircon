@@ -1,0 +1,4 @@
+source=derived-address-rebase.wat
+entry=main
+ordered_expectations=expected.asm
+forbidden_expectations=forbidden.asm
