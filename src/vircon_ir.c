@@ -416,7 +416,7 @@ static FrameValueFact *frame_value_fact(FrameValueFact *facts, size_t *count, in
   return &facts[(*count)++];
 }
 
-/* Invalidates symbolic and constant values at a control-flow join or unknown store. */
+/* Invalidates every local value fact at a control-flow join or register-clobbering operation. */
 static void clear_value_facts(uint64_t *register_values, bool *register_constant_known,
                               size_t *frame_value_count) {
   memset(register_values, 0, sizeof(uint64_t) * (VIRCON_IR_REGISTER_BP + 1));
@@ -424,9 +424,30 @@ static void clear_value_facts(uint64_t *register_values, bool *register_constant
   *frame_value_count = 0;
 }
 
+/* Invalidates only frame-memory facts after a store whose target could alias a frame word.
+ * A Vircon32 store never changes a general register, so its symbolic and constant register
+ * facts remain valid. Keeping them lets adjacent static-data stores reuse one immediate. */
+static void clear_frame_value_facts(size_t *frame_value_count) { *frame_value_count = 0; }
+
 /* Returns whether a register is one of the sixteen general target registers. */
 static bool is_general_register(VirconIrRegister reg) {
   return reg >= VIRCON_IR_REGISTER_R0 && reg <= VIRCON_IR_REGISTER_R15;
+}
+
+/* Finds a still-live general register containing one compiler-tracked symbolic value. */
+static bool find_register_holding_value(const uint64_t *register_values, uint64_t value,
+                                        VirconIrRegister excluded, VirconIrRegister *result) {
+  VirconIrRegister reg;
+
+  if (value == 0)
+    return false;
+  for (reg = VIRCON_IR_REGISTER_R0; reg <= VIRCON_IR_REGISTER_R15; ++reg) {
+    if (reg != excluded && register_values[reg] == value) {
+      *result = reg;
+      return true;
+    }
+  }
+  return false;
 }
 
 /* Interprets one target word as signed two's-complement without relying on an
@@ -574,6 +595,7 @@ void vircon_ir_optimize_local(VirconIrProgram *program) {
       if (destination->kind == VIRCON_IR_OPERAND_REGISTER && frame_slot_operand(source, &slot)) {
         VirconIrRegister reg = destination->reg;
         FrameValueFact *fact = frame_value_fact(frame_values, &frame_value_count, slot);
+        VirconIrRegister forwarding_reg;
         if (fact == NULL) {
           frame_value_count = 0;
           fact = frame_value_fact(frame_values, &frame_value_count, slot);
@@ -582,8 +604,19 @@ void vircon_ir_optimize_local(VirconIrProgram *program) {
           fact->value = next_value++;
         if (register_values[reg] == fact->value)
           remove = true;
-        else
+        else {
+          /* A just-stored frame value is often reloaded only to feed the next
+           * expression. Forward the still-live source register instead of
+           * performing an unnecessary BP-relative load. This is confined to
+           * tracked compiler frame words and cannot cross a cleared fact
+           * boundary such as a call, branch, or unknown memory store. */
+          if (find_register_holding_value(register_values, fact->value, reg, &forwarding_reg)) {
+            memset(source, 0, sizeof(*source));
+            source->kind = VIRCON_IR_OPERAND_REGISTER;
+            source->reg = forwarding_reg;
+          }
           register_values[reg] = fact->value;
+        }
         register_constant_known[reg] = is_general_register(reg) && fact->constant_known;
         register_constants[reg] = fact->constant;
       } else if (frame_slot_operand(destination, &slot) && source->kind == VIRCON_IR_OPERAND_REGISTER) {
@@ -604,7 +637,9 @@ void vircon_ir_optimize_local(VirconIrProgram *program) {
       } else if (destination->kind == VIRCON_IR_OPERAND_REGISTER && source->kind == VIRCON_IR_OPERAND_REGISTER) {
         VirconIrRegister destination_reg = destination->reg;
         VirconIrRegister source_reg = source->reg;
-        if (destination_reg == source_reg)
+        if (destination_reg == source_reg ||
+            (register_values[destination_reg] != 0 &&
+             register_values[destination_reg] == register_values[source_reg]))
           remove = true;
         else {
           if (register_values[source_reg] == 0)
@@ -629,7 +664,7 @@ void vircon_ir_optimize_local(VirconIrProgram *program) {
       } else if (destination->kind == VIRCON_IR_OPERAND_MEMORY_REGISTER ||
                  destination->kind == VIRCON_IR_OPERAND_MEMORY_ABSOLUTE) {
         /* An indirect store could alias a compiler frame word. */
-        clear_value_facts(register_values, register_constant_known, &frame_value_count);
+        clear_frame_value_facts(&frame_value_count);
       }
     } else {
       if (node->operand_count != 0 && node->operands[0].kind == VIRCON_IR_OPERAND_REGISTER &&
