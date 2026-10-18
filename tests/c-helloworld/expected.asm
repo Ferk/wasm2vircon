@@ -7,8 +7,8 @@ wait
 in R0, GPU_SelectedTexture
 out GPU_SelectedTexture, R1
 out GPU_SelectedRegion, R1
-out GPU_DrawingPointX, R1
-out GPU_DrawingPointY, R2
+out GPU_DrawingPointX, R8
+out GPU_DrawingPointY, R1
 out GPU_Command, GPUCommand_DrawRegion
 
 # The application's resultless conditional is lowered as structured br_if.

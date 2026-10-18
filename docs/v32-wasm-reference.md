@@ -331,6 +331,7 @@ portable behavior for NaN, infinity, or signed zero.
 | `f32.ge` | Returns `1` when the first float is greater than or equal to the second, otherwise `0`. |
 | `f32.convert_i32_s` | Reinterprets the input as a signed 32-bit integer and converts its numeric value to a float. For example, `0xFFFFFFFF` becomes `-1.0`. |
 | `f32.convert_i32_u` | Interprets the input as an unsigned 32-bit integer and converts its numeric value to a float. `0xFFFFFFFF` rounds to approximately `4294967296.0`. |
+| `i32.trunc_f32_s` | Drops an `f32` fractional part and converts the value to signed `i32`. It traps for NaN, values below `-2147483648`, and values at or above `2147483648`; valid inputs use Vircon32 `CFI` after explicit range checks. |
 | `i32.trunc_sat_f32_s` | Drops a float's fractional part and converts it to signed `i32`. Values outside the signed i32 range are clamped to the nearest endpoint instead of trapping. |
 | `i32.reinterpret_f32` | Keeps all 32 raw bits of a float but treats those bits as an i32. It performs no numeric conversion. |
 | `f32.reinterpret_i32` | Keeps all 32 raw bits of an i32 but treats those bits as a float. It performs no numeric conversion. |
@@ -452,8 +453,8 @@ have not yet been justified by a supported application.
 
 **Other missing i32 conversions**
 
-Non-saturating `i32.trunc_f32_s` and `i32.trunc_f32_u` must trap for NaN and
-out-of-range input, unlike the supported saturating conversion.
+Non-saturating `i32.trunc_f32_u` must trap for NaN and out-of-range input,
+unlike the supported signed trapping and saturating conversions.
 `i32.trunc_sat_f32_u` also needs correct unsigned handling between `2^31` and
 `2^32-1`. These are not direct target conversions and remain unimplemented
 until their full Wasm semantics are tested.

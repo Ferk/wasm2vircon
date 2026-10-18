@@ -2,5 +2,5 @@
 # platform ABI after the exact i64 packing-to-store frontend legalization.
 mov [BP-3], R1
 mov [BP-4], R1
-out GPU_DrawingPointX, R1
-out GPU_DrawingPointY, R2
+out GPU_DrawingPointX, R8
+out GPU_DrawingPointY, R1

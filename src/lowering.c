@@ -2278,7 +2278,9 @@ static bool lower_load(Context *context, const WasmExpr *expression, Value *valu
     return false;
   result.has_address_identity = false;
   if (expression->bytes == 1) {
-    if (!load_byte_at_r2(context, 1) || (expression->is_signed && !emit_i32_extend_s(context, 8)) ||
+    if (!load_byte_at_r2(context, 1) || (expression->is_signed && !emit_i32_extend_s(context, 8)))
+      return false;
+    if (!retain_result_register(context, &result, expression->value_type) &&
         !store_slot(context, result.slot, 1))
       return false;
     *value = result;
@@ -2287,13 +2289,20 @@ static bool lower_load(Context *context, const WasmExpr *expression, Value *valu
   if (expression->bytes == 2) {
     if (!load_byte_at_r2(context, 1) || !emit(context, "  iadd R2, 1") || !load_byte_at_r2(context, 5) ||
         !emit(context, "  shl R5, 8") || !emit(context, "  or R1, R5") ||
-        (expression->is_signed && !emit_i32_extend_s(context, 16)) || !store_slot(context, result.slot, 1))
+        (expression->is_signed && !emit_i32_extend_s(context, 16)))
+      return false;
+    if (!retain_result_register(context, &result, expression->value_type) &&
+        !store_slot(context, result.slot, 1))
       return false;
     *value = result;
     return true;
   }
   if (!load_i32_at_r2(context, 1, proven_aligned, pointer, expression->offset))
     return false;
+  if (retain_result_register(context, &result, expression->value_type)) {
+    *value = result;
+    return true;
+  }
   slot = result.slot;
   if (!store_slot(context, slot, 1))
     return false;
@@ -3063,6 +3072,12 @@ static bool emit_f32_convert_i32_u(Context *context) {
 
 /* Reads one hardware port into the normal single-word compiler value model. */
 static bool lower_port_read(Context *context, Value *value, const char *port) {
+  int preferred = context->preferred_result_register;
+  if (preferred >= 0) {
+    if (!emit(context, "  in R0, %s", port) || (preferred != 0 && !emit(context, "  mov R%d, R0", preferred)))
+      return false;
+    return retain_result_register(context, value, context->current_expression->value_type);
+  }
   int slot = temp_slot(context);
   if (slot == 0 || !emit(context, "  in R0, %s", port) || !store_slot(context, slot, 0))
     return false;
@@ -3108,6 +3123,80 @@ static bool lower_cpu_binary(Context *context, const Value *left, const Value *r
   return true;
 }
 
+/* Returns whether evaluating an expression may enter code which follows the
+ * caller-clobbered function ABI. Platform imports are emitted inline and the
+ * ordinary expression lowerers deliberately leave R8 unused. */
+static bool expression_clobbers_held_platform_argument(const WasmModule *module,
+                                                       const WasmExpr *expression) {
+  size_t index;
+
+  if (expression->kind == WASM_EXPR_CALL) {
+    const WasmFunction *callee = wasm_module_find_function(module, expression->name);
+    if (callee == NULL || !callee->is_import)
+      return true;
+  } else if (expression->kind == WASM_EXPR_CALL_INDIRECT ||
+             expression->kind == WASM_EXPR_MEMORY_COPY || expression->kind == WASM_EXPR_MEMORY_FILL)
+    return true;
+
+  for (index = 0; index < expression->child_count; ++index)
+    if (expression_clobbers_held_platform_argument(module, expression->children[index]))
+      return true;
+  return false;
+}
+
+/* Maps the two-argument hardware writes which can consume expression results
+ * directly. Keeping the first value briefly in otherwise-unused R8 avoids
+ * spilling both coordinates merely to reload them at the import boundary. */
+static bool two_port_import(const WasmFunction *callee, const char **first_port,
+                            const char **second_port) {
+  if (strcmp(callee->import_name, "vircon_gpu_set_drawing_point") == 0) {
+    *first_port = "GPU_DrawingPointX";
+    *second_port = "GPU_DrawingPointY";
+  } else if (strcmp(callee->import_name, "vircon_gpu_set_region_minimum") == 0) {
+    *first_port = "GPU_RegionMinX";
+    *second_port = "GPU_RegionMinY";
+  } else if (strcmp(callee->import_name, "vircon_gpu_set_region_maximum") == 0) {
+    *first_port = "GPU_RegionMaxX";
+    *second_port = "GPU_RegionMaxY";
+  } else if (strcmp(callee->import_name, "vircon_gpu_set_region_hotspot") == 0) {
+    *first_port = "GPU_RegionHotSpotX";
+    *second_port = "GPU_RegionHotSpotY";
+  } else if (strcmp(callee->import_name, "vircon_gpu_set_drawing_scale_bits") == 0 ||
+             strcmp(callee->import_name, "vircon_gpu_set_drawing_scale") == 0) {
+    *first_port = "GPU_DrawingScaleX";
+    *second_port = "GPU_DrawingScaleY";
+  } else
+    return false;
+  return true;
+}
+
+/* Lowers one safe two-port import while retaining both evaluated arguments in
+ * registers. A defined/indirect/helper call in the second expression uses the
+ * normal spill-based path because such a call may clobber R8. */
+static bool lower_two_port_import(Context *context, const WasmExpr *expression,
+                                  const char *first_port, const char *second_port, Value *value) {
+  Value first = {0}, second = {0};
+  int previous_result_register = context->preferred_result_register;
+  bool lowered;
+
+  context->preferred_result_register = 1;
+  lowered = lower_expression(context, expression->children[0], &first);
+  context->preferred_result_register = previous_result_register;
+  if (!lowered || !first.present || !load_value(context, 8, first))
+    return false;
+  release(context, first);
+
+  context->preferred_result_register = 1;
+  lowered = lower_expression(context, expression->children[1], &second);
+  context->preferred_result_register = previous_result_register;
+  if (!lowered || !second.present || !load_value(context, 1, second) ||
+      !emit(context, "  out %s, R8", first_port) || !emit(context, "  out %s, R1", second_port))
+    return false;
+  release(context, second);
+  value->present = false;
+  return true;
+}
+
 /* Evaluates arguments, then lowers either a platform import or direct call. */
 static bool lower_call(Context *context, const WasmExpr *expression, Value *value) {
   const WasmFunction *callee = wasm_module_find_function(context->validated->module, expression->name);
@@ -3116,6 +3205,12 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
   bool heap_arguments = false;
   char label[64];
   size_t index;
+  const char *first_port, *second_port;
+
+  if (callee->is_import && expression->child_count == 2 &&
+      two_port_import(callee, &first_port, &second_port) &&
+      !expression_clobbers_held_platform_argument(context->validated->module, expression->children[1]))
+    return lower_two_port_import(context, expression, first_port, second_port, value);
 
   if (expression->child_count > INLINE_CALL_ARGUMENTS) {
     arguments = calloc(expression->child_count, sizeof(*arguments));
@@ -3125,13 +3220,20 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
     }
     heap_arguments = true;
   }
-  for (index = 0; index < expression->child_count; ++index)
-    if (!lower_expression(context, expression->children[index], &arguments[index]) || !arguments[index].present ||
+  for (index = 0; index < expression->child_count; ++index) {
+    int previous_result_register = context->preferred_result_register;
+    bool lowered;
+    if (callee->is_import && expression->child_count == 1)
+      context->preferred_result_register = 1;
+    lowered = lower_expression(context, expression->children[index], &arguments[index]);
+    context->preferred_result_register = previous_result_register;
+    if (!lowered || !arguments[index].present ||
         (index + 1 < expression->child_count && !materialize_borrowed(context, &arguments[index]))) {
       if (heap_arguments)
         free(arguments);
       return false;
     }
+  }
   if (callee->is_import) {
     if (strcmp(callee->import_name, "vircon_set_background_color") == 0) {
       if (!load_value(context, 1, arguments[0]) || !emit(context, "  out GPU_ClearColor, R1") ||
@@ -3141,22 +3243,12 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
       if (!emit(context, "  wait"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_get_selected_texture") == 0) {
-      int slot = temp_slot(context);
-      if (slot == 0 || !emit(context, "  in R0, GPU_SelectedTexture") || !store_slot(context, slot, 0))
-        return false;
-      value->slot = slot;
-      value->present = true;
-      return true;
+      return lower_port_read(context, value, "GPU_SelectedTexture");
     } else if (strcmp(callee->import_name, "vircon_gpu_select_texture") == 0) {
       if (!load_value(context, 1, arguments[0]) || !emit(context, "  out GPU_SelectedTexture, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_get_selected_region") == 0) {
-      int slot = temp_slot(context);
-      if (slot == 0 || !emit(context, "  in R0, GPU_SelectedRegion") || !store_slot(context, slot, 0))
-        return false;
-      value->slot = slot;
-      value->present = true;
-      return true;
+      return lower_port_read(context, value, "GPU_SelectedRegion");
     } else if (strcmp(callee->import_name, "vircon_gpu_select_region") == 0) {
       if (!load_value(context, 1, arguments[0]) || !emit(context, "  out GPU_SelectedRegion, R1"))
         return false;
@@ -3372,12 +3464,7 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
                          : strcmp(callee->import_name, "vircon_memcard_is_connected") == 0   ? "MEM_Connected"
                          : strcmp(callee->import_name, "vircon_spu_get_channel_state") == 0  ? "SPU_ChannelState"
                                                                                              : "TIM_FrameCounter";
-      int slot = temp_slot(context);
-      if (slot == 0 || !emit(context, "  in R0, %s", port) || !store_slot(context, slot, 0))
-        return false;
-      value->slot = slot;
-      value->present = true;
-      return true;
+      return lower_port_read(context, value, port);
     } else {
       diagnostics_error(context->diagnostics, "internal error: unsupported import passed validation");
       return false;
@@ -4031,6 +4118,17 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
         return false;
     } else if (expression->unary_op == WASM_UNARY_CONVERT_I32_U_TO_F32) {
       if (!emit_f32_convert_i32_u(context))
+        return false;
+    } else if (expression->unary_op == WASM_UNARY_TRUNC_F32_TO_I32) {
+      /* Wasm traps for NaN and values outside signed i32 range. The bounds
+       * are exactly representable as f32; -2^31 is valid while +2^31 is not.
+       * Once those cases are excluded, Vircon32 CFI performs the required
+       * truncation toward zero in one instruction. */
+      if (!emit(context, "  mov R2, R1") || !emit(context, "  feq R2, R1") ||
+          !emit(context, "  jf R2, __wasm_trap") || !emit(context, "  mov R2, R1") ||
+          !emit(context, "  flt R2, 0xCF000000") || !emit(context, "  jt R2, __wasm_trap") ||
+          !emit(context, "  mov R2, R1") || !emit(context, "  fge R2, 0x4F000000") ||
+          !emit(context, "  jt R2, __wasm_trap") || !emit(context, "  cfi R1"))
         return false;
     } else if (expression->unary_op == WASM_UNARY_TRUNC_SAT_F32_TO_I32) {
       char special[64], nan[64], done[64];

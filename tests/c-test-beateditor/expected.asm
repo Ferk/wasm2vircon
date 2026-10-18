@@ -6,8 +6,8 @@ in R0, INP_GamepadRight
 in R0, INP_GamepadUp
 in R0, INP_GamepadDown
 out GPU_SelectedTexture, R1
-out GPU_RegionMinX, R1
-out GPU_RegionHotSpotY, R2
+out GPU_RegionMinX, R8
+out GPU_RegionHotSpotY, R1
 out GPU_Command, GPUCommand_DrawRegion
 in R0, SPU_ChannelState
 out SPU_SelectedChannel, R1

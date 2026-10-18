@@ -391,6 +391,8 @@ static const char *unary_opcode(BinaryenOp op) {
     return "f32.convert_i32_s";
   if (op == BinaryenConvertUInt32ToFloat32())
     return "f32.convert_i32_u";
+  if (op == BinaryenTruncSFloat32ToInt32())
+    return "i32.trunc_f32_s";
   if (op == BinaryenTruncSatSFloat32ToInt32())
     return "i32.trunc_sat_f32_s";
   if (op == BinaryenReinterpretFloat32())
@@ -1101,6 +1103,7 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
                            : op == BinaryenExtendS16Int32()          ? WASM_UNARY_EXTEND16_S
                            : op == BinaryenConvertSInt32ToFloat32()  ? WASM_UNARY_CONVERT_I32_S_TO_F32
                            : op == BinaryenConvertUInt32ToFloat32()  ? WASM_UNARY_CONVERT_I32_U_TO_F32
+                           : op == BinaryenTruncSFloat32ToInt32()    ? WASM_UNARY_TRUNC_F32_TO_I32
                            : op == BinaryenTruncSatSFloat32ToInt32() ? WASM_UNARY_TRUNC_SAT_F32_TO_I32
                            : op == BinaryenReinterpretFloat32()      ? WASM_UNARY_REINTERPRET_F32_TO_I32
                            : op == BinaryenReinterpretInt32()        ? WASM_UNARY_REINTERPRET_I32_TO_F32

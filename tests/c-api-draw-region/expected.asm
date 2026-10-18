@@ -3,5 +3,5 @@ out GPU_Command, GPUCommand_DrawRegion
 out GPU_Command, GPUCommand_DrawRegionZoomed
 out GPU_Command, GPUCommand_DrawRegionRotated
 out GPU_Command, GPUCommand_DrawRegionRotozoomed
-out GPU_DrawingPointX, R1
-out GPU_DrawingPointY, R2
+out GPU_DrawingPointX, R8
+out GPU_DrawingPointY, R1

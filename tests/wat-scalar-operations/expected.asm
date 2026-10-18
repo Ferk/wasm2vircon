@@ -19,5 +19,5 @@ __wasm_f32_nearest_even
 round R1
 __wasm_rotl_done
 __wasm_rotr_done
-out GPU_DrawingScaleX, R1
-out GPU_DrawingScaleY, R2
+out GPU_DrawingScaleX, R8
+out GPU_DrawingScaleY, R1

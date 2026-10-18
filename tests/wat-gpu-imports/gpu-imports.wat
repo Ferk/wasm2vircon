@@ -9,12 +9,17 @@
   (import "env" "vircon_gpu_set_drawing_point" (func $set_point (type $two)))
   (import "env" "vircon_gpu_draw_region" (func $draw_region (type $void)))
   (memory 1)
+  (func $computed_y (result i32)
+    (i32.const 30))
   (func $main (result i32)
     (local $texture i32)
     (local.set $texture (call $get_texture))
     (call $select_texture (i32.const -1))
     (call $select_region (i32.const 65))
     (call $set_point (i32.const 10) (i32.const 20))
+    ;; A defined call in the second operand may clobber every caller register,
+    ;; so this call deliberately exercises the safe spill-based fallback.
+    (call $set_point (i32.const 25) (call $computed_y))
     (call $draw_region)
     (call $select_texture (local.get $texture))
     (i32.const 0))
