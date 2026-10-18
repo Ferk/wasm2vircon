@@ -128,8 +128,8 @@ function(write_embedded_words output_c identifier input_words)
   file(WRITE "${output_c}" "${source}")
 endfunction()
 
-string(RANDOM LENGTH 12 ALPHABET 0123456789abcdef work_suffix)
-set(work_dir "${CMAKE_CURRENT_BINARY_DIR}/wasm2vircon-rom-tests-${work_suffix}")
+# leave the rom tests in a build directory to allow for later examination
+set(work_dir "${CMAKE_CURRENT_BINARY_DIR}/rom-tests.obj")
 file(MAKE_DIRECTORY "${work_dir}")
 
 if(DEFINED CASE_DIRECTORY)
@@ -383,4 +383,3 @@ if(TEST_MODE STREQUAL "simulator" AND NOT found_simulator_case)
   message(FATAL_ERROR "no C or C++ simulator testcases files found under ${TESTS_DIR}")
 endif()
 
-file(REMOVE_RECURSE "${work_dir}")
