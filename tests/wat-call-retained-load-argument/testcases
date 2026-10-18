@@ -1,0 +1,4 @@
+source=call-retained-load-argument.wat
+entry=main
+expectations=expected.asm
+ordered_expectations=ordered.asm

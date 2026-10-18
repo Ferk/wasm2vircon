@@ -3227,8 +3227,15 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
       context->preferred_result_register = 1;
     lowered = lower_expression(context, expression->children[index], &arguments[index]);
     context->preferred_result_register = previous_result_register;
+    /* Every earlier argument must survive evaluation of the following Wasm
+     * expressions. The final argument normally feeds the ABI store directly,
+     * but a retained register result must also be spilled for a multi-argument
+     * call: writing the preceding arguments uses R1 and would otherwise
+     * overwrite it before its own [SP+i] store. */
     if (!lowered || !arguments[index].present ||
-        (index + 1 < expression->child_count && !materialize_borrowed(context, &arguments[index]))) {
+        ((index + 1 < expression->child_count ||
+          (expression->child_count > 1 && arguments[index].register_plus_one != 0)) &&
+         !materialize_borrowed(context, &arguments[index]))) {
       if (heap_arguments)
         free(arguments);
       return false;
