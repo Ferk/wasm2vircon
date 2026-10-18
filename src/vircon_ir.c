@@ -700,6 +700,12 @@ typedef struct FrameLivenessSet {
   uint64_t *words;
 } FrameLivenessSet;
 
+/* One named target in the V32 IR, sorted by name for CFG lookup. */
+typedef struct IrLabelEntry {
+  const char *name;
+  size_t index;
+} IrLabelEntry;
+
 /* Sets one slot bit in a fixed-width liveness set. */
 static void frame_liveness_set(FrameLivenessSet set, size_t index) {
   set.words[index / 64u] |= UINT64_C(1) << (index % 64u);
@@ -733,16 +739,34 @@ static bool find_frame_liveness_slot(const int32_t *slots, size_t slot_count, in
   return false;
 }
 
+/* Orders label entries so branch targets can be resolved without repeatedly
+ * scanning a potentially very large generated program. */
+static int compare_ir_labels(const void *left, const void *right) {
+  const IrLabelEntry *left_label = left;
+  const IrLabelEntry *right_label = right;
+  return strcmp(left_label->name, right_label->name);
+}
+
 /* Finds a named label node used as a branch target. */
-static bool find_ir_label(const VirconIrProgram *program, const char *name, size_t *index) {
-  size_t cursor;
+static bool find_ir_label(const IrLabelEntry *labels, size_t label_count, const char *name, size_t *index) {
+  size_t first = 0, count = label_count;
   if (name == NULL)
     return false;
-  for (cursor = 0; cursor < program->count; ++cursor)
-    if (program->nodes[cursor].kind == VIRCON_IR_NODE_LABEL && strcmp(program->nodes[cursor].name, name) == 0) {
-      *index = cursor;
+  while (count != 0) {
+    size_t step = count / 2;
+    size_t cursor = first + step;
+    int comparison = strcmp(name, labels[cursor].name);
+    if (comparison == 0) {
+      *index = labels[cursor].index;
       return true;
     }
+    if (comparison > 0) {
+      first = cursor + 1;
+      count -= step + 1;
+    } else {
+      count = step;
+    }
+  }
   return false;
 }
 
@@ -779,11 +803,16 @@ static bool add_ir_successor(const VirconIrProgram *program, const VirconIrNode 
   return true;
 }
 
-/* Computes the at-most-two successors of one structured V32 instruction. */
-static bool ir_successors(const VirconIrProgram *program, size_t index, size_t *successors, size_t *count) {
+/* Computes the at-most-two successors of one structured V32 instruction.
+ * An indirect JMP has unknown successors within its function; callers must
+ * conservatively make every frame word live at that instruction. */
+static bool ir_successors(const VirconIrProgram *program, const IrLabelEntry *labels, size_t label_count,
+                          size_t index, size_t *successors, size_t *count, bool *unknown_successors) {
   const VirconIrNode *node = &program->nodes[index];
+  size_t target_operand;
   size_t target;
   *count = 0;
+  *unknown_successors = false;
   if (node->kind != VIRCON_IR_NODE_INSTRUCTION) {
     return index + 1 == program->count || add_ir_successor(program, node, index + 1, successors, count);
   }
@@ -791,8 +820,16 @@ static bool ir_successors(const VirconIrProgram *program, size_t index, size_t *
     return true;
   if (node->opcode == VIRCON_IR_OPCODE_JMP || node->opcode == VIRCON_IR_OPCODE_JT ||
       node->opcode == VIRCON_IR_OPCODE_JF) {
-    if (node->operand_count == 0 || node->operands[0].kind != VIRCON_IR_OPERAND_SYMBOL ||
-        !find_ir_label(program, node->operands[0].symbol, &target) ||
+    target_operand = node->opcode == VIRCON_IR_OPCODE_JMP ? 0 : 1;
+    if (node->operand_count <= target_operand)
+      return false;
+    if (node->operands[target_operand].kind != VIRCON_IR_OPERAND_SYMBOL) {
+      if (node->opcode != VIRCON_IR_OPCODE_JMP)
+        return false;
+      *unknown_successors = true;
+      return true;
+    }
+    if (!find_ir_label(labels, label_count, node->operands[target_operand].symbol, &target) ||
         !add_ir_successor(program, node, target, successors, count))
       return false;
     if ((node->opcode == VIRCON_IR_OPCODE_JT || node->opcode == VIRCON_IR_OPCODE_JF) &&
@@ -809,12 +846,16 @@ static bool ir_successors(const VirconIrProgram *program, size_t index, size_t *
  * slot table would be too large, this optimization simply declines to act. */
 void vircon_ir_eliminate_dead_frame_stores(VirconIrProgram *program) {
   int32_t slots[FRAME_LIVENESS_SLOT_LIMIT];
-  size_t slot_count = 0, word_count, node_count = program->count, index, operand_index;
-  FrameLivenessSet *uses = NULL, *definitions = NULL, *live_ins = NULL, *live_outs = NULL;
+  size_t slot_count = 0, word_count, liveness_word_count, node_count = program->count;
+  size_t index, operand_index, label_count = 0, label_index = 0;
+  uint64_t *uses = NULL, *definitions = NULL, *live_ins = NULL, *live_outs = NULL;
+  IrLabelEntry *labels = NULL;
   bool changed, valid = true;
 
   for (index = 0; index < node_count && valid; ++index) {
     const VirconIrNode *node = &program->nodes[index];
+    if (node->kind == VIRCON_IR_NODE_LABEL)
+      ++label_count;
     if (node->kind != VIRCON_IR_NODE_INSTRUCTION)
       continue;
     for (operand_index = 0; operand_index < node->operand_count; ++operand_index) {
@@ -836,20 +877,31 @@ void vircon_ir_eliminate_dead_frame_stores(VirconIrProgram *program) {
   if (!valid || slot_count == 0)
     return;
   word_count = (slot_count + 63u) / 64u;
-  uses = calloc(node_count, sizeof(*uses));
-  definitions = calloc(node_count, sizeof(*definitions));
-  live_ins = calloc(node_count, sizeof(*live_ins));
-  live_outs = calloc(node_count, sizeof(*live_outs));
-  if (uses == NULL || definitions == NULL || live_ins == NULL || live_outs == NULL)
+  if (node_count > SIZE_MAX / word_count || label_count > SIZE_MAX / sizeof(*labels))
+    return;
+  liveness_word_count = node_count * word_count;
+  uses = calloc(liveness_word_count, sizeof(*uses));
+  definitions = calloc(liveness_word_count, sizeof(*definitions));
+  live_ins = calloc(liveness_word_count, sizeof(*live_ins));
+  live_outs = calloc(liveness_word_count, sizeof(*live_outs));
+  labels = label_count == 0 ? NULL : malloc(label_count * sizeof(*labels));
+  if (uses == NULL || definitions == NULL || live_ins == NULL || live_outs == NULL ||
+      (label_count != 0 && labels == NULL))
     goto done;
+
+  for (index = 0; index < node_count; ++index)
+    if (program->nodes[index].kind == VIRCON_IR_NODE_LABEL) {
+      labels[label_index].name = program->nodes[index].name;
+      labels[label_index].index = index;
+      ++label_index;
+    }
+  if (label_count != 0)
+    qsort(labels, label_count, sizeof(*labels), compare_ir_labels);
+
   for (index = 0; index < node_count; ++index) {
-    uses[index].words = calloc(word_count, sizeof(uint64_t));
-    definitions[index].words = calloc(word_count, sizeof(uint64_t));
-    live_ins[index].words = calloc(word_count, sizeof(uint64_t));
-    live_outs[index].words = calloc(word_count, sizeof(uint64_t));
-    if (uses[index].words == NULL || definitions[index].words == NULL || live_ins[index].words == NULL ||
-        live_outs[index].words == NULL ||
-        !collect_frame_liveness_use_def(&program->nodes[index], slots, slot_count, uses[index], definitions[index]))
+    FrameLivenessSet use = {.words = uses + index * word_count};
+    FrameLivenessSet definition = {.words = definitions + index * word_count};
+    if (!collect_frame_liveness_use_def(&program->nodes[index], slots, slot_count, use, definition))
       goto done;
   }
   do {
@@ -857,22 +909,26 @@ void vircon_ir_eliminate_dead_frame_stores(VirconIrProgram *program) {
     for (index = node_count; index != 0; --index) {
       size_t cursor = index - 1, successor_count, successor_index;
       size_t successors[2];
-      uint64_t *old_in = malloc(word_count * sizeof(uint64_t));
-      if (old_in == NULL || !ir_successors(program, cursor, successors, &successor_count)) {
-        free(old_in);
+      uint64_t *node_use = uses + cursor * word_count;
+      uint64_t *node_definition = definitions + cursor * word_count;
+      uint64_t *node_live_in = live_ins + cursor * word_count;
+      uint64_t *node_live_out = live_outs + cursor * word_count;
+      bool unknown_successors;
+      if (!ir_successors(program, labels, label_count, cursor, successors, &successor_count,
+                         &unknown_successors))
         goto done;
+      memset(node_live_out, unknown_successors ? 0xFF : 0, word_count * sizeof(uint64_t));
+      if (!unknown_successors)
+        for (successor_index = 0; successor_index < successor_count; ++successor_index) {
+          FrameLivenessSet destination = {.words = node_live_out};
+          FrameLivenessSet source = {.words = live_ins + successors[successor_index] * word_count};
+          frame_liveness_union(destination, source, word_count);
+        }
+      for (size_t word = 0; word < word_count; ++word) {
+        uint64_t new_live_in = (node_live_out[word] & ~node_definition[word]) | node_use[word];
+        changed |= node_live_in[word] != new_live_in;
+        node_live_in[word] = new_live_in;
       }
-      memcpy(old_in, live_ins[cursor].words, word_count * sizeof(uint64_t));
-      memset(live_outs[cursor].words, 0, word_count * sizeof(uint64_t));
-      for (successor_index = 0; successor_index < successor_count; ++successor_index)
-        frame_liveness_union(live_outs[cursor], live_ins[successors[successor_index]], word_count);
-      memcpy(live_ins[cursor].words, live_outs[cursor].words, word_count * sizeof(uint64_t));
-      for (size_t word = 0; word < word_count; ++word)
-        live_ins[cursor].words[word] =
-            (live_ins[cursor].words[word] & ~definitions[cursor].words[word]) | uses[cursor].words[word];
-      for (size_t word = 0; word < word_count; ++word)
-        changed |= old_in[word] != live_ins[cursor].words[word];
-      free(old_in);
     }
   } while (changed);
   {
@@ -885,8 +941,9 @@ void vircon_ir_eliminate_dead_frame_stores(VirconIrProgram *program) {
           node->operands[0].reg == VIRCON_IR_REGISTER_BP) {
         size_t slot_index;
         int32_t slot = node->operands[0].has_displacement ? node->operands[0].displacement : 0;
+        FrameLivenessSet live_out = {.words = live_outs + index * word_count};
         if (find_frame_liveness_slot(slots, slot_count, slot, &slot_index) &&
-            !frame_liveness_contains(live_outs[index], slot_index))
+            !frame_liveness_contains(live_out, slot_index))
           remove = true;
       }
       if (remove) {
@@ -902,16 +959,9 @@ void vircon_ir_eliminate_dead_frame_stores(VirconIrProgram *program) {
     program->count = write_index;
   }
 done:
-  if (uses != NULL) {
-    for (index = 0; index < node_count; ++index) {
-      free(uses[index].words);
-      free(definitions[index].words);
-      free(live_ins[index].words);
-      free(live_outs[index].words);
-    }
-  }
   free(uses);
   free(definitions);
   free(live_ins);
   free(live_outs);
+  free(labels);
 }

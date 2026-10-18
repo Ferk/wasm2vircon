@@ -210,6 +210,46 @@ int main(void) {
     return fail(&program, diagnostic_stream, 21);
 
   vircon_ir_dispose(&program);
+  vircon_ir_init(&program);
+  if (!append_instruction(&program, &diagnostics, "  mov R1, 1") ||
+      !append_instruction(&program, &diagnostics, "  mov [BP-1], R1") ||
+      !append_instruction(&program, &diagnostics, "  jt R2, __frame_then") ||
+      !append_instruction(&program, &diagnostics, "  mov R3, 2") ||
+      !append_instruction(&program, &diagnostics, "  mov [BP-1], R3") ||
+      !append_instruction(&program, &diagnostics, "  jmp __frame_join") ||
+      !vircon_ir_append_label(&program, "__frame_then", &diagnostics) ||
+      !append_instruction(&program, &diagnostics, "  mov R4, 3") ||
+      !append_instruction(&program, &diagnostics, "  mov [BP-1], R4") ||
+      !vircon_ir_append_label(&program, "__frame_join", &diagnostics) ||
+      !append_instruction(&program, &diagnostics, "  mov R0, [BP-1]") ||
+      !append_instruction(&program, &diagnostics, "  ret") ||
+      !vircon_ir_append_label(&program, "__indirect_function", &diagnostics) ||
+      !append_instruction(&program, &diagnostics, "  mov [BP-2], R5") ||
+      !append_instruction(&program, &diagnostics, "  jmp R6") ||
+      !vircon_ir_append_label(&program, "__indirect_target", &diagnostics) ||
+      !append_instruction(&program, &diagnostics, "  mov R0, [BP-2]") ||
+      !append_instruction(&program, &diagnostics, "  ret") ||
+      !vircon_ir_append_label(&program, "__following_function", &diagnostics) ||
+      !append_instruction(&program, &diagnostics, "  mov [BP-3], R7") ||
+      !append_instruction(&program, &diagnostics, "  mov [BP-3], R8") ||
+      !append_instruction(&program, &diagnostics, "  mov R0, [BP-3]") ||
+      !append_instruction(&program, &diagnostics, "  ret"))
+    return fail(&program, diagnostic_stream, 22);
+  vircon_ir_eliminate_dead_frame_stores(&program);
+  if (program.count != 21 || program.nodes[1].opcode != VIRCON_IR_OPCODE_JT ||
+      program.nodes[1].operands[1].kind != VIRCON_IR_OPERAND_SYMBOL ||
+      strcmp(program.nodes[1].operands[1].symbol, "__frame_then") != 0 ||
+      program.nodes[3].operands[0].kind != VIRCON_IR_OPERAND_MEMORY_REGISTER ||
+      program.nodes[3].operands[0].displacement != -1 ||
+      program.nodes[7].operands[0].kind != VIRCON_IR_OPERAND_MEMORY_REGISTER ||
+      program.nodes[7].operands[0].displacement != -1 ||
+      program.nodes[12].operands[0].kind != VIRCON_IR_OPERAND_MEMORY_REGISTER ||
+      program.nodes[12].operands[0].displacement != -2 ||
+      program.nodes[18].operands[0].kind != VIRCON_IR_OPERAND_MEMORY_REGISTER ||
+      program.nodes[18].operands[0].displacement != -3)
+    return fail(&program, diagnostic_stream, 23);
+
+  vircon_ir_dispose(&program);
   fclose(diagnostic_stream);
   return 0;
 }
