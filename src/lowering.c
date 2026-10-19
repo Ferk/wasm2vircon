@@ -3823,7 +3823,11 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
     *value = left;
     return true;
   case WASM_BINARY_REM_U:
-    if (!emit(context, "  call __wasm_i32_div_u") || !load_slot(context, 1, left.slot) ||
+    /* The divider overwrites R1 with its shifting dividend. Preserve the
+     * original left operand before the call: a borrowed Wasm local receives a
+     * fresh result slot above, and that slot has not yet been initialized. */
+    if (!store_slot(context, left.slot, 1) || !emit(context, "  call __wasm_i32_div_u") ||
+        !load_slot(context, 1, left.slot) ||
         !emit(context, "  imul R0, R2") || !emit(context, "  isub R1, R0"))
       return false;
     context->target_word_address_cached = false;
