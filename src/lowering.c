@@ -93,6 +93,10 @@ typedef struct LoopFastPath {
   LoopTripKind trip_kind;
   LoopBoundKind bound_kind;
   uint32_t bound_value;
+  /* The version guard has already loaded this stable memory bound into R10.
+   * The checked fallback may reuse it only when all loop calls are audited as
+   * linear-memory preserving and no Wasm store can alias the bound. */
+  bool checked_copy_reuses_memory_bound;
 } LoopFastPath;
 /* Alignment facts accumulated at one structured branch target. */
 typedef struct AlignmentTarget {
@@ -1028,6 +1032,7 @@ typedef struct LoopScan {
   InvariantAccessGroup invariant_group;
   bool rejected;
   bool has_store;
+  bool has_linear_memory_clobbering_import;
   bool has_backedge;
   uint32_t counter_local;
   LoopTripKind trip_kind;
@@ -1376,6 +1381,8 @@ static void scan_versionable_loop(LoopScan *scan, const WasmExpr *expression) {
       scan->rejected = true;
       return;
     }
+    if (!platform_import_preserves_linear_memory(callee))
+      scan->has_linear_memory_clobbering_import = true;
   }
   if ((expression->kind == WASM_EXPR_BR && expression->name != NULL && scan->loop_name != NULL &&
        strcmp(expression->name, scan->loop_name) == 0) ||
@@ -1552,10 +1559,11 @@ static LoopFastPath analyze_loop_fast_path(const Context *context, const WasmExp
   if (scan.rejected || !scan.has_backedge || scan.counter_local >= scan.local_count ||
       scan.assignment_counts[scan.counter_local] != 1)
     goto done;
-  /* A linear-memory limit is stable across imported hardware calls, but an
-   * arbitrary store in the same loop could alias it. Countdown loops and
-   * local/constant limits do not have that ambiguity. */
-  if (scan.has_store && scan.bound_kind == LOOP_BOUND_ALIGNED_MEMORY)
+  /* A linear-memory limit is stable only when no Wasm store or unclassified
+   * platform import can write it. Countdown loops and local/constant limits
+   * do not have that aliasing ambiguity. */
+  if ((scan.has_store || scan.has_linear_memory_clobbering_import) &&
+      scan.bound_kind == LOOP_BOUND_ALIGNED_MEMORY)
     goto done;
   if (scan.bound_kind == LOOP_BOUND_LOCAL &&
       (scan.bound_value >= scan.local_count || scan.assignment_counts[scan.bound_value] != 0))
@@ -1620,6 +1628,9 @@ static LoopFastPath analyze_loop_fast_path(const Context *context, const WasmExp
       plan.trip_kind = scan.trip_kind;
       plan.bound_kind = scan.bound_kind;
       plan.bound_value = scan.bound_value;
+      plan.checked_copy_reuses_memory_bound =
+          scan.bound_kind == LOOP_BOUND_ALIGNED_MEMORY && !scan.has_store &&
+          !scan.has_linear_memory_clobbering_import;
     }
   }
   if (!plan.valid && best != SIZE_MAX) {
@@ -1633,6 +1644,9 @@ static LoopFastPath analyze_loop_fast_path(const Context *context, const WasmExp
     plan.trip_kind = scan.trip_kind;
     plan.bound_kind = scan.bound_kind;
     plan.bound_value = scan.bound_value;
+    plan.checked_copy_reuses_memory_bound =
+        scan.bound_kind == LOOP_BOUND_ALIGNED_MEMORY && !scan.has_store &&
+        !scan.has_linear_memory_clobbering_import;
     plan.use_word_pointer = group->all_word_aligned && (plan.stride & 3u) == 0;
     /* The loop scan identifies a local by syntax, while flow-sensitive facts
      * stored after whole-function analysis do not necessarily describe that
@@ -1677,9 +1691,12 @@ static bool emit_loop_fast_guard(Context *context, const LoopFastPath *plan, con
         !emit(context, "  jf R1, %s", checked_label))
       return false;
   } else if (plan->trip_kind == LOOP_TRIP_INCREMENT_TO_LIMIT) {
-    if (!emit(context, "  mov R2, R1") || !emit(context, "  ilt R2, 0") ||
-        !emit(context, "  jt R2, %s", checked_label) || !emit_loop_bound(context, plan, 3) ||
-        !emit(context, "  mov R10, R3") ||
+    /* The accepted constant-address load is statically in bounds, so loading
+     * it before the negative-counter fallback cannot introduce a new trap.
+     * It also guarantees R10 is initialized on every checked-loop entry. */
+    if (!emit_loop_bound(context, plan, 3) || !emit(context, "  mov R10, R3") ||
+        !emit(context, "  mov R2, R1") || !emit(context, "  ilt R2, 0") ||
+        !emit(context, "  jt R2, %s", checked_label) ||
         !emit(context, "  mov R2, R3") || !emit(context, "  igt R2, R1") ||
         !emit(context, "  jf R2, %s", checked_label) || !emit(context, "  isub R3, R1"))
       return false;
@@ -1752,6 +1769,10 @@ static bool lower_loop_copy(Context *context, const WasmExpr *loop, const LoopFa
     context->fast_invariant_alias_local = plan->invariant_alias_local;
     context->fast_invariant_alias_offset = plan->invariant_alias_offset;
     context->fast_bound_active = plan->trip_kind == LOOP_TRIP_INCREMENT_TO_LIMIT;
+    context->fast_bound_kind = plan->bound_kind;
+    context->fast_bound_value = plan->bound_value;
+  } else if (plan->checked_copy_reuses_memory_bound) {
+    context->fast_bound_active = true;
     context->fast_bound_kind = plan->bound_kind;
     context->fast_bound_value = plan->bound_value;
   }
@@ -3563,9 +3584,9 @@ static void set_binary_address_identity(Value *result, const Value *left, const 
   }
 }
 
-/* Matches the stable limit captured by an active loop-version guard. The
- * guarded fast copy may reuse R10 because the loop scan rejected assignments
- * to local limits and rejected stores when the limit resides in memory. */
+/* Matches the stable limit captured by an active loop-version guard. The fast
+ * copy always reuses R10; the checked copy does so only for a proven stable
+ * linear-memory limit across audited direct hardware imports. */
 static bool is_cached_fast_loop_bound(const Context *context, const WasmExpr *expression) {
   LoopBoundKind kind;
   uint32_t value;

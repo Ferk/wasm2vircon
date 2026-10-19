@@ -172,6 +172,21 @@ static const ImportSpec IMPORTS[] = {
     {"env", "vircon_spu_set_channel_speed", {WASM_VALUE_F32}, 1, WASM_VALUE_NONE},
 };
 
+/* Effects are intentionally separate from signatures. Any import absent from
+ * this list is a linear-memory clobber, even if it is accepted by IMPORTS. */
+typedef struct ImportMemoryEffect {
+  const char *module, *name;
+  bool preserves_linear_memory;
+} ImportMemoryEffect;
+
+static const ImportMemoryEffect IMPORT_MEMORY_EFFECTS[] = {
+    {"env", "vircon_gpu_set_drawing_point", true},
+    {"env", "vircon_gpu_draw_region", true},
+    {"env", "vircon_gpu_draw_region_zoomed", true},
+    {"env", "vircon_gpu_draw_region_rotated", true},
+    {"env", "vircon_gpu_draw_region_rotozoomed", true},
+};
+
 /* Finds the accepted platform-import definition for a module/name pair. */
 static const ImportSpec *find_import_spec(const char *module, const char *name) {
   size_t index;
@@ -179,6 +194,22 @@ static const ImportSpec *find_import_spec(const char *module, const char *name) 
     if (strcmp(module, IMPORTS[index].module) == 0 && strcmp(name, IMPORTS[index].name) == 0)
       return &IMPORTS[index];
   return NULL;
+}
+
+/* Exposes only audited import memory effects to frontend optimizations.
+ * The whitelist is intentionally separate from signature validation: adding
+ * an import to IMPORTS must not silently make it a load-cache exception. */
+bool platform_import_preserves_linear_memory(const WasmFunction *function) {
+  size_t index;
+  if (function == NULL || !function->is_import)
+    return false;
+  for (index = 0; index < sizeof(IMPORT_MEMORY_EFFECTS) / sizeof(IMPORT_MEMORY_EFFECTS[0]); ++index) {
+    const ImportMemoryEffect *effect = &IMPORT_MEMORY_EFFECTS[index];
+    if (strcmp(function->import_module, effect->module) == 0 &&
+        strcmp(function->import_name, effect->name) == 0)
+      return effect->preserves_linear_memory;
+  }
+  return false;
 }
 
 /* Checks an imported function against its exact profile signature. */

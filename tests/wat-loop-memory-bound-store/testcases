@@ -1,0 +1,3 @@
+source=loop-memory-bound-store.wat
+entry=main
+forbidden_expectations=forbidden.asm

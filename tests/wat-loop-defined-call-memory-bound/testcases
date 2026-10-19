@@ -1,0 +1,3 @@
+source=loop-defined-call-memory-bound.wat
+entry=main
+forbidden_expectations=forbidden.asm
