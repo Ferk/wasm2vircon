@@ -13,9 +13,13 @@ pub fn main() void {}
 pub export fn vircon_main() callconv(.c) void {
     var previous_up_pressed = false;
     var previous_down_pressed = false;
+    var cpu_percent: i32 = 0;
     boids.initialize();
 
     while (true) {
+        const start_frame = vircon.frameCounter();
+        const start_cycles = vircon.cycleCounter();
+
         vircon.selectGamepad(0);
         const up_pressed = vircon.gamepadUp();
         const down_pressed = vircon.gamepadDown();
@@ -37,10 +41,15 @@ pub export fn vircon_main() callconv(.c) void {
         vircon.printAt(10, 10, "Boids:");
         vircon.printUIntAt(80, 10, @intCast(boids.count()));
         vircon.printAt(120, 10, "(up/down +/-10)");
-        vircon.printAt(10, 30, "Update frames:");
-        vircon.printUIntAt(160, 30, @intCast(update_frames));
-        vircon.printAt(10, 50, "FPS:");
-        vircon.printFixed2At(60, 50, fps);
+        vircon.printAt(10, 30, "FPS:");
+        vircon.printFixed2At(60, 30, fps);
+        vircon.printAt(10, 50, "CPU:");
+        vircon.printUIntAt(60, 50, @intCast(cpu_percent));
+        vircon.printAt(90, 50, "%");
+
+        // Show the previous frame's complete workload while measuring this one.
+        cpu_percent = @divTrunc(((vircon.frameCounter() - start_frame) * 250000 +
+            vircon.cycleCounter() - start_cycles) * 100, 250000);
         vircon.endFrame();
     }
 }

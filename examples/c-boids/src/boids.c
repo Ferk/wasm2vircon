@@ -2,6 +2,8 @@
 
 #include "boids.h"
 
+#define CYCLES_PER_FRAME 250000
+
 #define MAX_BOID_COUNT     150
 #define INITIAL_BOID_COUNT 50
 #define BOID_COUNT_STEP    10
@@ -296,10 +298,14 @@ void run_boids(void)
     int previous_up_pressed = 0;
     int previous_down_pressed = 0;
     float frames_per_update;
+    int cpu_percent = 0;
 
     initialize_boids();
 
     for (;;) {
+        int start_frame = get_frame_counter();
+        int start_cycles = get_cycle_counter();
+
         /* Change workload once per press rather than every held frame. */
         select_gamepad(0);
         /* Input ports may use signed nonzero transition states. */
@@ -324,10 +330,17 @@ void run_boids(void)
         print_at(10, 10, "Boids:");
         print_uint_at(80, 10, (unsigned)get_boid_count());
         print_at(120, 10, "(up/down +/-10)");
-        print_at(10, 30, "Update frames:");
-        print_uint_at(160, 30, (unsigned)update_frames);
-        print_at(10, 50, "FPS:");
-        print_fixed_2_at(60, 50, frames_per_update);
+        print_at(10, 30, "FPS:");
+        print_fixed_2_at(60, 30, frames_per_update);
+        print_at(10, 50, "CPU:");
+        print_uint_at(60, 50, (unsigned)cpu_percent);
+        print_at(90, 50, "%");
+
+        /* The value is displayed on the following frame, after all current
+         * simulation, drawing, and HUD work has been measured. */
+        cpu_percent =
+            ((get_frame_counter() - start_frame) * CYCLES_PER_FRAME +
+             get_cycle_counter() - start_cycles) * 100 / CYCLES_PER_FRAME;
         end_frame();
     }
 }

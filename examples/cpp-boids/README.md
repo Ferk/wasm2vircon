@@ -11,8 +11,9 @@ The explicit `vircon_main` export is C-linked so the Wasm entry name remains
 stable despite normal C++ name mangling.
 
 Gamepad 0 **up** adds ten boids and **down** removes ten, with a range of
-10–150. The HUD reports active boids, simulation frame slots, and the derived
-`60 / update_frames` estimate.
+10–150. The HUD reports active boids, the simulation update-rate estimate, and
+the previous frame's CPU usage as a percentage of Vircon32's 250,000-cycle
+display-frame budget.
 
 ## Requirements
 

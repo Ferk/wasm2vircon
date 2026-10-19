@@ -5,9 +5,9 @@ This is a self-contained Zig port of the C boids benchmark in
 flocking simulation, BIOS-font status display, and no external resources.
 
 The example starts with 50 boids. On gamepad 0, press **up** to add ten boids
-and **down** to remove ten; the range is 10–150. The HUD shows the number of
-Vircon frame slots consumed by the simulation step and the corresponding
-`60 / update_frames` estimate.
+and **down** to remove ten; the range is 10–150. The HUD shows the simulation
+update-rate estimate and the previous frame's CPU usage as a
+percentage of Vircon32's 250,000-cycle display-frame budget.
 
 ## Requirements
 

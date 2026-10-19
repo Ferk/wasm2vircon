@@ -6,8 +6,10 @@ flocking algorithm, BIOS-font HUD, cyan BIOS-pixel rendering, and gamepad-0
 up/down workload controls.
 
 The program starts with 50 boids. Press **up** to add ten and **down** to
-remove ten; the active range is 10–150. The HUD reports occupied simulation
-frame slots and a `60 / update_frames` update-rate estimate.
+remove ten; the active range is 10–150. The HUD reports the simulation
+update-rate estimate and the previous frame's CPU usage as a percentage of
+Vircon32's 250,000-cycle display-frame
+budget.
 
 ## Requirements
 

@@ -18,6 +18,7 @@ const (
 	margin           float32 = 50.0
 	turnFactor       float32 = 0.2
 	framesPerSecond  int32   = 60
+	cyclesPerFrame   int32   = 250000
 	colorBlack       int32   = -16777216 // 0xFF000000
 	colorWhite       int32   = -1        // 0xFFFFFFFF
 	colorCyan        int32   = -256      // 0xFFFFFF00
@@ -67,6 +68,9 @@ func virconInputGamepadDown() int32
 
 //go:wasmimport env vircon_timer_get_frame_counter
 func virconTimerGetFrameCounter() int32
+
+//go:wasmimport env vircon_timer_get_cycle_counter
+func virconTimerGetCycleCounter() int32
 
 // Boid stores the position and velocity of one simulated flock member.
 type Boid struct {

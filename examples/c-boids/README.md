@@ -7,12 +7,11 @@ public C API. No project runtime source files are needed.
 This is a deliberately simple O(N²) flocking benchmark. It starts with 50
 boids and draws each one as a small cyan BIOS-pixel square. Press gamepad 0's
 **up** and **down** directions to add or remove ten boids; the fixed capacity
-is 150 and the minimum is 10. It uses no external resources. The on-screen
-frame value measures how many hardware frame slots the simulation update
-occupied, before rendering the boid squares and text; a sub-frame update
-therefore displays `1`. `FPS` is `60.0 / update_frames`, the resulting
-simulation-update-rate estimate. A 100-boid update is intentionally far beyond
-a smooth one-frame workload on Vircon32.
+is 150 and the minimum is 10. It uses no external resources. `FPS` is the
+simulation update-rate estimate. A 100-boid update is intentionally far beyond
+a smooth one-frame workload on Vircon32. The `CPU` line reports the previous
+frame's simulation, drawing, and HUD work as a percentage of Vircon32's
+250,000-cycle display-frame budget.
 
 ## Requirements
 

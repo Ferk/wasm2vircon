@@ -10,6 +10,9 @@ small Rust-facing wrapper around the same hardware-like `env.*` imports used
 by the other examples; its text and decimal helpers are ordinary Rust code.
 
 Gamepad 0 **up** and **down** add or remove ten boids within a 10–150 range.
+The HUD reports the simulation update-rate estimate and the previous frame's
+CPU usage as a percentage of
+Vircon32's 250,000-cycle display-frame budget.
 
 ## Requirements
 

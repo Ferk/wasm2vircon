@@ -1,7 +1,7 @@
 # wasm2vircon
 
 `wasm2vircon` is a restricted WebAssembly-to-[Vircon32](https://www.vircon32.com/)
-compiler path for freestanding C programs:
+compiler path for freestanding wasm32 programs.
 
 ```text
 C source → clang wasm32 → wasm2vircon → Vircon32 assembly → .v32 ROM
@@ -55,13 +55,13 @@ Use validation without generating assembly when checking whether a module fits
 the current restricted profile:
 
 ```sh
-build/wasm2vircon --validate-only build/game.wasm --entry main
+wasm2vircon --validate-only build/game.wasm --entry main
 ```
 
 For a module that is not yet accepted, use the raw Binaryen inventory report:
 
 ```sh
-build/wasm2vircon --report-profile build/game.wasm > build/game.profile.txt
+wasm2vircon --report-profile build/game.wasm > build/game.profile.txt
 ```
 
 The report lists module counts, imports, defined-function signatures and local
@@ -180,59 +180,3 @@ Write the program entry point as `void main(void)`, matching the official
 Vircon C convention. The example exports `main`; adapt its `wasm-ld --export`
 and `wasm2vircon --entry` arguments for other frontend conventions such as an
 explicitly exported Zig C-ABI function.
-
-## Public C API at a glance
-
-Applications include `#include <vircon.h>`. The header contains the ordinary
-C implementation of every currently supported public helper, so no project
-runtime sources are passed through `--extra-source`. The public groups are:
-
-- frame and BIOS-font text: `clear_screen`, `print_at`, number printing, and
-  `end_frame`;
-- texture/region drawing, multiply colour, blending, scale, rotation, zoom,
-  rotozoom, and BIOS line primitives;
-- selected-gamepad input, frame counter, current time/date, and frame sleep;
-- hardware RNG wrappers `rand` and `srand`;
-- selected-channel sound playback, volume, speed, looping-sound setup, and
-  automatic free-channel playback; and
-- a small finite-`float` math layer: `sinf`, `cosf`, `tanf`, `asinf`,
-  `acosf`, `expf`, `logf`, and `powf`.
-
-Application code should not call raw `env.*` imports or `vircon__*` names.
-They are private hardware bindings, not the stable C API.
-
-## Important limitations
-
-There is no hosted libc. In particular, do not assume `stdio`, files,
-`printf`, locale, threads, WASI, or arbitrary compiler-builtins are
-available. Use the small header-only API and add ordinary application C for
-higher-level features. `print_at` is BIOS-font text rendering implemented as
-normal C in `vircon.h`, not a compiler intrinsic. The supplied allocation
-functions use a bounded configurable global heap. Define
-`VIRCON_IMPLEMENTATION` in one application source before including `vircon.h`
-when using allocation; see the C API reference for the setup and byte-addressed
-configuration rules. Heap-using linked modules are accepted directly through
-the same compiler invocation as other supported applications.
-
-The current VirconWasm profile supports only the instructions demonstrated by
-the included ports. It rejects, among other things, application Wasm globals, mutable/imported tables,
-general i64 use, most floating-point operations,
-bulk memory other than default-memory `memory.copy` and `memory.fill`, and
-general libc-generated code. The sole i64 exception is a
-statically addressed, four-byte-aligned `i64.store` fed directly by
-`i64.const`; it is split into two native 32-bit stores for Clang's
-adjacent-`int` initialization optimization. A second narrow exception accepts
-a direct `i64.load` used as an `i64.store` value, for an eight-byte aggregate
-copy; it is legalized as two i32 reads and two i32 writes. i64 arithmetic,
-locals, parameters, results, and all other uses remain unsupported.
-The profile also accepts extracting an i32 word from a direct i64 load, with an
-optional constant logical right shift; this remains a frontend-only
-two-i32-word legalization rather than general i64 support.
-It also accepts the matching direct `local.tee` aggregate-copy shape, storing
-the pair in two compiler frame slots so its low/high i32 fields can be consumed
-immediately. Finally, an exact Zig computed-pair packing tree—zero-extended
-low/high i32 words, with the high word shifted left by constant 32 and ORed—can
-be the immediate operand of `i64.store`; it becomes ordered low/high i32
-stores. Other i64 local uses and i64 arithmetic remain unsupported.
-Keep applications simple and
-inspect the generated normalized Wasm before adding a new dependency.

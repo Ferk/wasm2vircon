@@ -4,6 +4,7 @@
 //! ordinary Rust code, not compiler intrinsics.
 
 pub const FRAMES_PER_SECOND: i32 = 60;
+pub const CYCLES_PER_FRAME: i32 = 250_000;
 pub const COLOR_BLACK: i32 = 0xff00_0000u32 as i32;
 pub const COLOR_WHITE: i32 = 0xffff_ffffu32 as i32;
 pub const COLOR_CYAN: i32 = 0xffff_ff00u32 as i32;
@@ -38,6 +39,8 @@ unsafe extern "C" {
     fn input_gamepad_down() -> i32;
     #[link_name = "vircon_timer_get_frame_counter"]
     fn timer_get_frame_counter() -> i32;
+    #[link_name = "vircon_timer_get_cycle_counter"]
+    fn timer_get_cycle_counter() -> i32;
 }
 
 /// Clears the next displayed frame to a packed Vircon ABGR colour.
@@ -66,6 +69,8 @@ pub fn gamepad_up() -> bool { unsafe { input_gamepad_up() > 0 } }
 pub fn gamepad_down() -> bool { unsafe { input_gamepad_down() > 0 } }
 /// Returns the current video-frame counter.
 pub fn frame_counter() -> i32 { unsafe { timer_get_frame_counter() } }
+/// Returns the CPU cycle counter within the current display frame.
+pub fn cycle_counter() -> i32 { unsafe { timer_get_cycle_counter() } }
 
 /// Draws a byte string as CP-1252 BIOS-font glyphs.
 pub fn print_at(initial_x: i32, initial_y: i32, text: &[u8]) {

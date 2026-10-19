@@ -18,9 +18,13 @@ fn panic(_: &PanicInfo) -> ! {
 pub extern "C" fn vircon_main() -> ! {
     let mut previous_up_pressed = false;
     let mut previous_down_pressed = false;
+    let mut cpu_percent = 0i32;
     boids::initialize();
 
     loop {
+        let start_frame = vircon::frame_counter();
+        let start_cycles = vircon::cycle_counter();
+
         vircon::select_gamepad(0);
         let up_pressed = vircon::gamepad_up();
         let down_pressed = vircon::gamepad_down();
@@ -42,10 +46,17 @@ pub extern "C" fn vircon_main() -> ! {
         vircon::print_at(10, 10, b"Boids:");
         vircon::print_uint_at(80, 10, boids::count() as u32);
         vircon::print_at(120, 10, b"(up/down +/-10)");
-        vircon::print_at(10, 30, b"Update frames:");
-        vircon::print_uint_at(160, 30, update_frames as u32);
-        vircon::print_at(10, 50, b"FPS:");
-        vircon::print_fixed_2_at(60, 50, frames_per_update);
+        vircon::print_at(10, 30, b"FPS:");
+        vircon::print_fixed_2_at(60, 30, frames_per_update);
+        vircon::print_at(10, 50, b"CPU:");
+        vircon::print_uint_at(60, 50, cpu_percent as u32);
+        vircon::print_at(90, 50, b"%");
+
+        // Display the previous frame's measurement while measuring this one.
+        let cycles = (vircon::frame_counter().wrapping_sub(start_frame))
+            .wrapping_mul(vircon::CYCLES_PER_FRAME)
+            .wrapping_add(vircon::cycle_counter().wrapping_sub(start_cycles));
+        cpu_percent = cycles.wrapping_mul(100) / vircon::CYCLES_PER_FRAME;
         vircon::end_frame();
     }
 }

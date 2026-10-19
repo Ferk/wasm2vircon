@@ -6,14 +6,19 @@ package main
 // cartridge entry selected by wasm2vircon.
 func main() {}
 
-//go:export vircon_main
 // Owns the benchmark lifetime and intentionally never returns.
+//
+//go:export vircon_main
 func virconMain() {
 	previousUpPressed := false
 	previousDownPressed := false
+	cpuPercent := int32(0)
 	initializeBoids()
 
 	for {
+		startFrame := virconTimerGetFrameCounter()
+		startCycles := virconTimerGetCycleCounter()
+
 		virconInputSelectGamepad(0)
 		upPressed := virconInputGamepadUp() > 0
 		downPressed := virconInputGamepadDown() > 0
@@ -35,10 +40,15 @@ func virconMain() {
 		printAt(10, 10, "Boids:")
 		printUIntAt(80, 10, uint32(boidCount))
 		printAt(120, 10, "(up/down +/-10)")
-		printAt(10, 30, "Update frames:")
-		printUIntAt(160, 30, uint32(updateFrames))
-		printAt(10, 50, "FPS:")
-		printFixed2At(60, 50, fps)
+		printAt(10, 30, "FPS:")
+		printFixed2At(60, 30, fps)
+		printAt(10, 50, "CPU:")
+		printUIntAt(60, 50, uint32(cpuPercent))
+		printAt(90, 50, "%")
+
+		// Display the previous frame's measurement while measuring this one.
+		cpuPercent = ((virconTimerGetFrameCounter()-startFrame)*cyclesPerFrame +
+			virconTimerGetCycleCounter() - startCycles) * 100 / cyclesPerFrame
 		virconEndFrame()
 	}
 }
