@@ -33,8 +33,8 @@ freestanding Wasm input; `zig build v32` explicitly selects the default ROM
 target.
 
 `build.zig` is intentionally reusable: copy this directory, update
-`project_name`, `entry_name`, and `source_path` at its top, then adjust
-`rom.xml` to the new cartridge title and binary path. It uses Zig's own
+`project_name`, `entry_name`, and `source_path` at its top. It generates a
+`.rom.xml` definition with the cartridge title and binary path. It uses Zig's own
 filesystem API to create `build/`, so it does not rely on Unix `mkdir` or
 `cp`; only the project toolchain executables themselves must be on `PATH`.
 

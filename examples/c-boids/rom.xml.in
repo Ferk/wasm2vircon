@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
-<rom-definition version="1.0">
-  <rom type="cartridge" title="@project_rom_title@" version="@project_rom_version@" />
-  <binary path="@project_name@.vbin" />
-  <textures>
-@project_texture_xml@  </textures>
-  <sounds>
-@project_sound_xml@  </sounds>
-</rom-definition>

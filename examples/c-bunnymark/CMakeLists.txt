@@ -143,7 +143,7 @@ endforeach()
 set(project_wasm "${CMAKE_CURRENT_BINARY_DIR}/${project_name}.wasm")
 set(project_asm "${CMAKE_CURRENT_BINARY_DIR}/${project_name}.asm")
 set(project_vbin "${CMAKE_CURRENT_BINARY_DIR}/${project_name}.vbin")
-set(project_xml "${CMAKE_CURRENT_BINARY_DIR}/${project_name}.xml")
+set(project_xml "${CMAKE_CURRENT_BINARY_DIR}/${project_name}.rom.xml")
 set(project_rom "${CMAKE_CURRENT_BINARY_DIR}/${project_name}.v32")
 
 
@@ -270,11 +270,14 @@ foreach(sound IN LISTS project_sounds)
   math(EXPR sound_index "${sound_index} + 1")
 endforeach()
 
-configure_file(
-  "${CMAKE_CURRENT_SOURCE_DIR}/rom.xml.in"
-  "${project_xml}"
-  @ONLY
-)
+file(WRITE "${project_xml}"
+  "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>\n"
+  "<rom-definition version=\"1.0\">\n"
+  "  <rom type=\"cartridge\" title=\"${project_rom_title}\" version=\"${project_rom_version}\" />\n"
+  "  <binary path=\"${project_name}.vbin\" />\n"
+  "  <textures>\n${project_texture_xml}  </textures>\n"
+  "  <sounds>\n${project_sound_xml}  </sounds>\n"
+  "</rom-definition>\n")
 
 
 # ---------------------------------------------------------------------------

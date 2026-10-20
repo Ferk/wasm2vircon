@@ -1,3 +1,4 @@
 /build/
+*.rom.xml
 *obj
 wasm2vircon

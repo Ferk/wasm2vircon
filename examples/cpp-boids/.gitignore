@@ -1,1 +1,15 @@
-build
+/build/
+
+/CMakeFiles/
+CMakeCache.txt
+cmake_*.cmake
+Makefile
+
+*.v32
+*.rom.xml
+*.vbin
+*.vtex
+*.vsnd
+*.asm
+*.wasm
+*.o

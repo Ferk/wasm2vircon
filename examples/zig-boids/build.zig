@@ -6,6 +6,8 @@
 const std = @import("std");
 
 const project_name = "zig-boids";
+const rom_title = "Zig Boids";
+const rom_version = "1.0";
 const entry_name = "vircon_main";
 const source_path = "src/main.zig";
 
@@ -21,8 +23,11 @@ pub fn build(b: *std.Build) void {
     const wasm_path = b.fmt("build/{s}.wasm", .{project_name});
     const asm_path = b.fmt("build/{s}.asm", .{project_name});
     const vbin_path = b.fmt("build/{s}.vbin", .{project_name});
+    const xml_path = b.fmt("build/{s}.rom.xml", .{project_name});
     const rom_path = b.fmt("build/{s}.v32", .{project_name});
     const entry_export = b.fmt("--export={s}", .{entry_name});
+
+    writeRomDefinition(b, xml_path);
 
     const compile = b.addSystemCommand(&.{
         b.graph.zig_exe, "build-exe", source_path, "-target", "wasm32-freestanding",
@@ -35,8 +40,25 @@ pub fn build(b: *std.Build) void {
     translate.step.dependOn(&compile.step);
     const assemble = b.addSystemCommand(&.{ "assemble", "-o", vbin_path, asm_path });
     assemble.step.dependOn(&translate.step);
-    const pack = b.addSystemCommand(&.{ "packrom", "-o", rom_path, "rom.xml" });
+    const pack = b.addSystemCommand(&.{ "packrom", "-o", rom_path, xml_path });
     pack.step.dependOn(&assemble.step);
     v32.dependOn(&pack.step);
     b.default_step.dependOn(v32);
+}
+
+/// Writes the generated ROM definition beside the program binary.
+fn writeRomDefinition(b: *std.Build, xml_path: []const u8) void {
+    const xml = b.fmt(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>\n" ++
+            "<rom-definition version=\"1.0\">\n" ++
+            "  <rom type=\"cartridge\" title=\"{s}\" version=\"{s}\" />\n" ++
+            "  <binary path=\"{s}.vbin\" />\n" ++
+            "  <textures />\n" ++
+            "  <sounds />\n" ++
+            "</rom-definition>\n",
+        .{ rom_title, rom_version, project_name },
+    );
+    std.Io.Dir.cwd().writeFile(b.graph.io, .{ .sub_path = xml_path, .data = xml }) catch |err| {
+        std.process.fatal("cannot write ROM definition: {s}", .{@errorName(err)});
+    };
 }
