@@ -81,6 +81,7 @@ typedef enum LoopTripKind {
 typedef struct LoopFastPath {
   bool valid;
   bool use_word_pointer;
+  bool promote_loop_locals;
   bool needs_alignment_guard;
   bool has_invariant_loaded_base;
   uint32_t base_local, counter_local, stride;
@@ -159,6 +160,12 @@ typedef struct Context {
   bool fast_bound_active;
   LoopBoundKind fast_bound_kind;
   uint32_t fast_bound_value;
+  /* A guarded fast loop may retain its canonical byte-pointer and counter
+   * locals in R11 and R9. Only the fast copy uses these values; it flushes
+   * them once on ordinary loop exit before joining the checked copy. */
+  bool fast_loop_locals_active;
+  uint32_t fast_loop_base_local;
+  uint32_t fast_loop_counter_local;
   int preferred_result_register;
   const WasmExpr *current_expression;
 } Context;
@@ -1034,11 +1041,33 @@ typedef struct LoopScan {
   bool has_store;
   bool has_linear_memory_clobbering_import;
   bool has_backedge;
+  bool register_promotion_safe;
   uint32_t counter_local;
   LoopTripKind trip_kind;
   LoopBoundKind bound_kind;
   uint32_t bound_value;
 } LoopScan;
+
+/* Recognizes local.get plus one signed constant. This exact shape is used by
+ * promoted canonical loop-local assignments, including countdown by -1. */
+static bool syntactic_local_delta(const WasmExpr *expression, uint32_t local, int32_t *delta) {
+  const WasmExpr *left, *right;
+  if (expression->kind != WASM_EXPR_BINARY || expression->binary_op != WASM_BINARY_ADD ||
+      expression->child_count != 2)
+    return false;
+  left = expression->children[0];
+  right = expression->children[1];
+  if (left->kind == WASM_EXPR_I32_CONST) {
+    const WasmExpr *swap = left;
+    left = right;
+    right = swap;
+  }
+  if (left->kind != WASM_EXPR_LOCAL_GET || left->index != local ||
+      right->kind != WASM_EXPR_I32_CONST)
+    return false;
+  *delta = right->i32_value;
+  return true;
+}
 
 /* Recognizes local.get plus an optional nonnegative constant byte offset. */
 static bool syntactic_affine_local(const WasmExpr *expression, uint32_t *local, uint32_t *offset) {
@@ -1375,6 +1404,15 @@ static void scan_versionable_loop(LoopScan *scan, const WasmExpr *expression) {
     scan->rejected = true;
     return;
   }
+  if (expression->kind == WASM_EXPR_RETURN || expression->kind == WASM_EXPR_BR ||
+      expression->kind == WASM_EXPR_BR_TABLE ||
+      (expression->kind == WASM_EXPR_BR_IF &&
+       (expression->name == NULL || scan->loop_name == NULL ||
+        strcmp(expression->name, scan->loop_name) != 0)) ||
+      (expression->kind == WASM_EXPR_BINARY &&
+       (expression->binary_op == WASM_BINARY_DIV_U ||
+        expression->binary_op == WASM_BINARY_REM_U)))
+    scan->register_promotion_safe = false;
   if (expression->kind == WASM_EXPR_CALL) {
     const WasmFunction *callee = wasm_module_find_function(scan->context->validated->module, expression->name);
     if (callee == NULL || !callee->is_import) {
@@ -1539,7 +1577,7 @@ fail_released:
 /* Builds the narrow affine-loop plan used by the guarded fast/checked copies. */
 static LoopFastPath analyze_loop_fast_path(const Context *context, const WasmExpr *loop) {
   LoopFastPath plan = {0};
-  LoopScan scan = {.context = context, .loop_name = loop->name};
+  LoopScan scan = {.context = context, .loop_name = loop->name, .register_promotion_safe = true};
   size_t index, best = SIZE_MAX;
 
   if (loop->name == NULL || loop->child_count != 1)
@@ -1631,6 +1669,7 @@ static LoopFastPath analyze_loop_fast_path(const Context *context, const WasmExp
       plan.checked_copy_reuses_memory_bound =
           scan.bound_kind == LOOP_BOUND_ALIGNED_MEMORY && !scan.has_store &&
           !scan.has_linear_memory_clobbering_import;
+      plan.promote_loop_locals = scan.register_promotion_safe;
     }
   }
   if (!plan.valid && best != SIZE_MAX) {
@@ -1647,6 +1686,7 @@ static LoopFastPath analyze_loop_fast_path(const Context *context, const WasmExp
     plan.checked_copy_reuses_memory_bound =
         scan.bound_kind == LOOP_BOUND_ALIGNED_MEMORY && !scan.has_store &&
         !scan.has_linear_memory_clobbering_import;
+    plan.promote_loop_locals = scan.register_promotion_safe;
     plan.use_word_pointer = group->all_word_aligned && (plan.stride & 3u) == 0;
     /* The loop scan identifies a local by syntax, while flow-sensitive facts
      * stored after whole-function analysis do not necessarily describe that
@@ -1684,7 +1724,8 @@ static bool emit_loop_fast_guard(Context *context, const LoopFastPath *plan, con
   int counter_slot = local_slot(context->function, plan->counter_local);
   int base_slot = local_slot(context->function, plan->base_local);
 
-  if (!load_slot(context, 1, counter_slot))
+  if (!load_slot(context, 1, counter_slot) ||
+      (plan->promote_loop_locals && !emit(context, "  mov R9, R1")))
     return false;
   if (plan->trip_kind == LOOP_TRIP_COUNTDOWN) {
     if (!emit(context, "  mov R3, R1") || !emit(context, "  igt R1, 0") ||
@@ -1703,7 +1744,8 @@ static bool emit_loop_fast_guard(Context *context, const LoopFastPath *plan, con
   } else
     return false;
 
-  if (!load_slot(context, 2, base_slot))
+  if (!load_slot(context, 2, base_slot) ||
+      (plan->promote_loop_locals && !emit(context, "  mov R11, R2")))
     return false;
   if (plan->has_invariant_loaded_base &&
       (!emit(context, "  mov R12, [%u]", LINEAR_BASE + plan->invariant_base_address / 4u) ||
@@ -1771,17 +1813,24 @@ static bool lower_loop_copy(Context *context, const WasmExpr *loop, const LoopFa
     context->fast_bound_active = plan->trip_kind == LOOP_TRIP_INCREMENT_TO_LIMIT;
     context->fast_bound_kind = plan->bound_kind;
     context->fast_bound_value = plan->bound_value;
+    context->fast_loop_locals_active = plan->promote_loop_locals;
+    context->fast_loop_base_local = plan->base_local;
+    context->fast_loop_counter_local = plan->counter_local;
   } else if (plan->checked_copy_reuses_memory_bound) {
     context->fast_bound_active = true;
     context->fast_bound_kind = plan->bound_kind;
     context->fast_bound_value = plan->bound_value;
   }
   success = lower_expression(context, loop->children[0], &body_value);
+  if (success && fast && plan->promote_loop_locals)
+    success = store_slot(context, local_slot(context->function, plan->base_local), 11) &&
+              store_slot(context, local_slot(context->function, plan->counter_local), 9);
   context->fast_memory_active = false;
   context->fast_word_pointer_active = false;
   context->fast_invariant_base_active = false;
   context->fast_has_invariant_alias = false;
   context->fast_bound_active = false;
+  context->fast_loop_locals_active = false;
   release(context, body_value);
   target = pop_target(context);
   free(target.label);
@@ -4056,6 +4105,17 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
       *value = result;
       return true;
     }
+    if (context->fast_loop_locals_active &&
+        (expression->index == context->fast_loop_base_local ||
+         expression->index == context->fast_loop_counter_local)) {
+      unsigned reg = expression->index == context->fast_loop_base_local ? 11u : 9u;
+      value->type = WASM_VALUE_I32;
+      value->present = true;
+      value->register_plus_one = reg + 1u;
+      value->has_address_identity = true;
+      value->address_base_local = expression->index;
+      return true;
+    }
     value->slot = local_slot(context->function, expression->index);
     value->present = true;
     value->is_borrowed = true;
@@ -4066,6 +4126,33 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
     return true;
   }
   case WASM_EXPR_LOCAL_SET:
+    if (context->fast_loop_locals_active &&
+        (expression->index == context->fast_loop_base_local ||
+         expression->index == context->fast_loop_counter_local)) {
+      int32_t delta;
+      unsigned reg = expression->index == context->fast_loop_base_local ? 11u : 9u;
+      Value promoted = {.type = WASM_VALUE_I32,
+                        .present = true,
+                        .register_plus_one = reg + 1u,
+                        .has_address_identity = true,
+                        .address_base_local = expression->index};
+      if (expression->child_count != 1 ||
+          !syntactic_local_delta(expression->children[0], expression->index, &delta) ||
+          !emit(context, "  iadd R%u, 0x%08X", reg, (uint32_t)delta))
+        return false;
+      /* R13 names the same proven-aligned object through Vircon word
+       * addressing, so advance it alongside the promoted Wasm byte pointer. */
+      if (context->fast_word_pointer_active &&
+          expression->index == context->fast_word_pointer_base_local &&
+          !emit(context, "  iadd R13, %u", context->fast_word_pointer_stride))
+        return false;
+      assign_local_address_identity(context, expression->index, &promoted);
+      if (expression->is_tee)
+        *value = promoted;
+      else
+        value->present = false;
+      return true;
+    }
     if (!lower_expression(context, expression->children[0], &left) || !left.present)
       return false;
     if (local_value_type(context->function, expression->index) == WASM_VALUE_I64) {

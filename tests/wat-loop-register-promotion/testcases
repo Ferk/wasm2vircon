@@ -1,0 +1,4 @@
+source=loop-register-promotion.wat
+entry=main
+expectations=expected.asm
+ordered_expectations=ordered.asm

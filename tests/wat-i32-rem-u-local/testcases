@@ -1,0 +1,3 @@
+source=remainder-local.wat
+entry=main
+ordered_expectations=expected.asm
