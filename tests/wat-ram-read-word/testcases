@@ -1,0 +1,3 @@
+source=ram-read-word.wat
+entry=main
+expectations=expected.asm

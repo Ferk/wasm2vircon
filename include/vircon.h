@@ -148,6 +148,7 @@ void vircon__rng_set_current_value(int value) VIRCON__IMPORT("vircon_rng_set_cur
 int vircon__memcard_is_connected(void) VIRCON__IMPORT("vircon_memcard_is_connected");
 int vircon__memcard_read_word(int word_index) VIRCON__IMPORT("vircon_memcard_read_word");
 void vircon__memcard_write_word(int word_index, int value) VIRCON__IMPORT("vircon_memcard_write_word");
+int vircon__ram_read_word(int word_address) VIRCON__IMPORT("vircon_ram_read_word");
 void vircon__spu_select_channel(int value) VIRCON__IMPORT("vircon_spu_select_channel");
 void vircon__spu_select_sound(int value) VIRCON__IMPORT("vircon_spu_select_sound");
 int vircon__spu_get_selected_sound(void) VIRCON__IMPORT("vircon_spu_get_selected_sound");
@@ -627,6 +628,13 @@ static inline int play_sound(int sound) {
   return -1;
 }
 
+/* Physical RAM ------------------------------------------------------------
+ * This explicit low-level escape hatch reads a Vircon32 physical word
+ * address. It does not accept a C pointer or a Wasm byte offset. Invalid
+ * addresses return zero, and no corresponding physical write API is exposed. */
+#define ram_word_count 4194304
+static inline int ram_read_word(int word_address) { return vircon__ram_read_word(word_address); }
+
 /* Memory card --------------------------------------------------------------
  * Vircon cards are word-addressed.  These public helpers deliberately use
  * `int` words too: a normal C `int *` advances four Wasm bytes while one card
@@ -1043,7 +1051,7 @@ static inline float pow(float x, float y) { return powf(x, y); }
  * file before including vircon.h when the program uses allocation. */
 #ifdef VIRCON_IMPLEMENTATION
 
-#define VIRCON__WASM_MAX_MEMORY_BYTES 0x007A0000u
+#define VIRCON__WASM_MAX_MEMORY_BYTES 0x00850000u
 #define VIRCON__HEAP_ALIGNMENT 16u
 
 void *malloc_start_address = (void *)0;

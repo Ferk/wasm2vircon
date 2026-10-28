@@ -382,4 +382,3 @@ endif()
 if(TEST_MODE STREQUAL "simulator" AND NOT found_simulator_case)
   message(FATAL_ERROR "no C or C++ simulator testcases files found under ${TESTS_DIR}")
 endif()
-

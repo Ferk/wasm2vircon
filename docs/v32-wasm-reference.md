@@ -162,12 +162,26 @@ Bytes within a target word are packed little-endian. Therefore a C `char *`
 remains byte-addressed: `p + 1` advances by one byte, not one Vircon word.
 
 The linear-memory region starts at Vircon RAM word address `1,000,000`
-(`0x000F4240`). It has 8,000,000 bytes available before the target's reserved
+(`0x000F4240`). It has 8,777,216 bytes available before the target's reserved
 upper RAM area. Since Wasm memory sizes are whole 64 KiB pages, the maximum
-initial or grown size is **122 pages** (7,995,392 bytes). A module may declare
+initial or grown size is **133 pages** (8,716,288 bytes). A module may declare
 a larger Wasm maximum, but a growth beyond this physical target limit returns
 Wasm's normal `0xFFFFFFFF` failure result. A smaller declared maximum remains
 an additional enforced limit.
+
+The module declaration determines its initial page count. Frontend linkers
+normally choose a minimum large enough for static data and their initial Wasm
+stack; programs do not necessarily start with one page. wasm2vircon preserves
+that declaration and tracks successful `memory.grow` operations up to the
+target limit. It does not reserve a named record area or assign a purpose to
+physical RAM outside linear memory.
+
+The read-only physical-RAM API is separate from Wasm pointers. Generated
+startup leaves physical words `0..999,997` untouched. Compiler state occupies
+words `999,998` and `999,999`, linear memory begins at `1,000,000`, and the
+upper reserved region holds the native call stack. A cooperating environment
+may define its own data layout in an otherwise untouched low word range; the
+compiler only performs bounds-checked raw reads and does not interpret it.
 
 At cartridge startup, active data segments are packed into little-endian target
 words and copied into writable RAM. This preserves writable C static data and
@@ -387,7 +401,7 @@ checks the selector, loads the selected address, and transfers with Vircon32
 | `memory.copy` | Copies `length` bytes from source byte address to destination byte address in the default linear memory. It is overlap-safe, like C `memmove`. |
 | `memory.fill` | Writes `length` bytes at destination byte address. Each byte is the low eight bits of the supplied fill value. |
 | `memory.size` | Returns the current default-memory length in 64 KiB Wasm pages. It reads compiler-owned page-count state, so its result changes after successful growth. |
-| `memory.grow` | Evaluates its unsigned `i32` page request, zero-initializes that many new pages on success, and returns the old page count. It returns `0xFFFFFFFF` without changing memory if the request exceeds the module maximum or the 122-page target limit. |
+| `memory.grow` | Evaluates its unsigned `i32` page request, zero-initializes that many new pages on success, and returns the old page count. It returns `0xFFFFFFFF` without changing memory if the request exceeds the module maximum or the 133-page target limit. |
 
 The `offset` immediate on every supported load/store participates in the
 effective address: the dynamic address plus that constant byte offset is the

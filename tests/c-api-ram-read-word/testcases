@@ -1,0 +1,4 @@
+source=ram-read-word.c
+entry=main
+include_dirs=../../include
+expectations=expected.asm

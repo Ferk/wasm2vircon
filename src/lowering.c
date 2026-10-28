@@ -3156,6 +3156,29 @@ static bool lower_port_read(Context *context, Value *value, const char *port) {
   return true;
 }
 
+/* Reads one explicitly addressed physical Vircon32 RAM word. The signed
+ * comparisons implement the full unsigned 22-bit address bound without
+ * allowing negative Wasm i32 values to wrap into device or ROM space. */
+static bool lower_physical_ram_read(Context *context, const Value *address, Value *value) {
+  Value result = *address;
+  char invalid[64], done[64];
+
+  if (!fresh_label(context, "physical_ram_invalid", invalid, sizeof(invalid)) ||
+      !fresh_label(context, "physical_ram_done", done, sizeof(done)) ||
+      !reserve_value_slot(context, &result) || !load_value(context, 1, *address) ||
+      !emit(context, "  mov R2, R1") || !emit(context, "  ilt R2, 0") ||
+      !emit(context, "  jt R2, %s", invalid) || !emit(context, "  mov R2, R1") ||
+      !emit(context, "  igt R2, 0x%08X", VIRCON_RAM_WORDS - 1u) ||
+      !emit(context, "  jt R2, %s", invalid) || !emit(context, "  mov R0, [R1]") ||
+      !emit(context, "  jmp %s", done) || !emit_label(context, invalid) ||
+      !emit(context, "  mov R0, 0") || !emit_label(context, done) ||
+      !store_slot(context, result.slot, 0))
+    return false;
+
+  *value = result;
+  return true;
+}
+
 /* Lowers a unary CPU instruction in place so its argument slot becomes the
  * returned value and remains owned by the enclosing expression. */
 static bool lower_cpu_unary(Context *context, const Value *argument, Value *value, const char *instruction) {
@@ -3424,6 +3447,8 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
       if (!load_value(context, 1, arguments[0]) || !load_value(context, 2, arguments[1]) ||
           !emit(context, "  iadd R1, 0x30000000") || !emit(context, "  mov [R1], R2"))
         return false;
+    } else if (strcmp(callee->import_name, "vircon_ram_read_word") == 0) {
+      return lower_physical_ram_read(context, &arguments[0], value);
     } else if (strcmp(callee->import_name, "vircon_gpu_set_multiply_color") == 0) {
       if (!load_value(context, 1, arguments[0]) || !emit(context, "  out GPU_MultiplyColor, R1"))
         return false;

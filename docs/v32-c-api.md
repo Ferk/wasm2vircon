@@ -418,6 +418,43 @@ use ordinary byte-addressed C buffers and pack each word little-endian. This
 preserves card contents without incorrectly treating a Wasm byte offset as a
 Vircon card word address.
 
+### Physical RAM reads
+
+Vircon32 has one shared physical RAM containing 4,194,304 addressable 32-bit
+words. This deliberately narrow API exposes read-only target-word access:
+
+| API | Behaviour |
+| --- | --- |
+| `ram_word_count` | Total physical RAM words (`4,194,304`). |
+| `int ram_read_word(int word_address)` | Reads one physical RAM word, or returns zero when the address is outside `0..0x003FFFFF`. |
+
+The argument to `ram_read_word` is a Vircon32 **physical word address**. It is
+not a C pointer and not a byte offset into Wasm linear memory. The function
+returns the raw word; record formats, magic values, versions, checksums, and
+absent-data handling remain application and firmware policy. There is no raw
+physical-RAM write API. Internally this is the language-neutral import
+`env.vircon_ram_read_word : (i32) -> i32`; wasm2vircon bounds-checks its
+argument and emits a direct target word read for valid addresses.
+
+No record format or reserved-record purpose is built into this API. Code that
+cooperates with firmware, an emulator, or another producer chooses and
+interprets its own addresses. The compiler never maps Wasm linear memory below
+physical word `1,000,000`. Words `999,998` and `999,999` hold compiler-owned
+memory-page and stack-pointer state, so an external producer must avoid them.
+The lower range `0..999,997` is not overwritten by generated cartridge startup
+or later `memory.grow`; data written there after machine reset therefore
+remains available for an early read. Avoid the upper reserved region because
+the native Vircon32 call stack grows there.
+
+The Wasm module itself declares its initial memory in 64 KiB pages. This is a
+minimum, not an eager allocation performed by wasm2vircon: the linker normally
+chooses enough pages for static data and its Wasm stack, and the program may
+later request more with `memory.grow`. Projects using `wasm-ld` may explicitly
+set page-aligned byte limits with `--initial-memory=<bytes>` and
+`--max-memory=<bytes>`, but the initial value must still fit all linked static
+storage and stack requirements. wasm2vircon preserves and validates those
+module declarations rather than silently replacing them.
+
 ### Freestanding byte, string, and allocation helpers
 
 These are ordinary header-only C helpers over normal byte-addressed Wasm
@@ -452,7 +489,7 @@ integral magnitude within the signed i32 range.
 
 `vircon_memory_size_pages` and `vircon_memory_grow_pages` expose the default
 Wasm memory in 64 KiB pages. Growth returns the previous page count, or
-`0xFFFFFFFF` on failure. It is limited to the compiler's 122-page Wasm region.
+`0xFFFFFFFF` on failure. It is limited to the compiler's 133-page Wasm region.
 
 The allocation API follows the official `misc.h` shape, adapted to normal
 byte-addressed C/Wasm pointers (not the 32bit words from the official Vircon C
@@ -480,7 +517,7 @@ accepts that one canonical linker ABI global automatically.
 Before the first allocation, applications may set `malloc_start_address` and
 `malloc_end_address`. They are byte pointers; the end is inclusive. A null
 start defaults to the initial end of Wasm memory, preserving linked static data
-and the Wasm stack. A null end defaults to the last byte of the 122-page Wasm
+and the Wasm stack. A null end defaults to the last byte of the 133-page Wasm
 region. Configuration is frozen after first use. Fresh heap space calls
 `memory.grow` only as needed and cannot cross the configured end or target
 limit. As in the official API, non-positive sizes return null and
