@@ -304,6 +304,8 @@ values (`1` or `0`).
 | `i64.shl` | Shifts the full 64-bit bit pattern left by the low six bits of the count, inserting zero bits on the right. |
 | `i64.shr_u` | Shifts the full 64-bit bit pattern right by the low six bits of the count, inserting zero bits on the left. |
 | `i64.shr_s` | Shifts the full 64-bit value right as a signed two's-complement number, copying its original bit 63 into newly opened high bits. |
+| `i64.rotl` | Rotates all 64 bits left by the low six bits of the count; bits shifted out of bit 63 re-enter at bit 0. A count of 32 swaps the two target words. |
+| `i64.rotr` | Rotates all 64 bits right by the low six bits of the count; bits shifted out of bit 0 re-enter at bit 63. A count of 32 swaps the two target words. |
 | `i64.eqz` | Returns `1` when both i64 words are zero, otherwise `0`. |
 | `i64.eq` | Returns `1` when both corresponding i64 words are equal, otherwise `0`. |
 | `i64.ne` | Returns `1` when either corresponding i64 word differs, otherwise `0`. |
@@ -453,7 +455,7 @@ The documented i64 local/temporary subset uses adjacent i32 words, but i64
 parameters, function results, and direct-call argument passing are still
 unsupported because the existing call ABI transports one word per parameter
 and returns through one 32-bit register. Signed/unsigned division and
-remainder, rotates, narrow loads/stores, and most
+remainder, bit counting (`i64.clz`, `i64.ctz`, `i64.popcnt`), narrow loads/stores, and most
 conversions are also not implemented yet. Some are plausible pair-lowering
 candidates, but division and a public multiword call ABI need careful trap and
 calling-convention design rather than a superficial instruction mapping.

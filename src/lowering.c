@@ -2537,6 +2537,49 @@ static bool lower_i64_eqz(Context *context, const WasmExpr *expression, Value *v
   return true;
 }
 
+/* Rotates an i64 pair by the low six bits of the count, including word swaps
+ * at 32 bits. A negative target SHL count means an unsigned right shift. */
+static bool emit_i64_rotate(Context *context, const Value *left, const Value *right, bool rotate_left) {
+  char less_than_32[64], store_result[64];
+
+  if (!fresh_label(context, "i64_rotate_small", less_than_32, sizeof(less_than_32)) ||
+      !fresh_label(context, "i64_rotate_store", store_result, sizeof(store_result)) ||
+      !load_slot(context, 2, right->slot) || !emit(context, "  and R2, 63") ||
+      !load_slot(context, 1, left->slot) || !load_slot(context, 3, left->high_slot) ||
+      !emit(context, "  mov R4, R2") || !emit(context, "  ilt R4, 32") ||
+      !emit(context, "  jt R4, %s", less_than_32) ||
+      !emit(context, "  mov R4, R1") || !emit(context, "  mov R1, R3") ||
+      !emit(context, "  mov R3, R4") || !emit(context, "  isub R2, 32") ||
+      !emit_label(context, less_than_32) || !emit(context, "  jf R2, %s", store_result))
+    return false;
+
+  if (rotate_left) {
+    /* low' = (low << n) | (high >> (32 - n)); high' is symmetric. */
+    if (!emit(context, "  mov R6, R2") || !emit(context, "  isub R6, 32") ||
+        !emit(context, "  mov R4, R1") || !emit(context, "  shl R4, R2") ||
+        !emit(context, "  mov R5, R3") || !emit(context, "  shl R5, R6") ||
+        !emit(context, "  or R4, R5") || !emit(context, "  mov R5, R3") ||
+        !emit(context, "  shl R5, R2") || !emit(context, "  mov R7, R1") ||
+        !emit(context, "  shl R7, R6") || !emit(context, "  or R5, R7"))
+      return false;
+  } else {
+    /* low' = (low >> n) | (high << (32 - n)); high' is symmetric. */
+    if (!emit(context, "  mov R6, 0") || !emit(context, "  isub R6, R2") ||
+        !emit(context, "  mov R7, 32") || !emit(context, "  isub R7, R2") ||
+        !emit(context, "  mov R4, R1") || !emit(context, "  shl R4, R6") ||
+        !emit(context, "  mov R5, R3") || !emit(context, "  shl R5, R7") ||
+        !emit(context, "  or R4, R5") || !emit(context, "  mov R5, R3") ||
+        !emit(context, "  shl R5, R6") || !emit(context, "  mov R7, R1") ||
+        !emit(context, "  mov R6, 32") || !emit(context, "  isub R6, R2") ||
+        !emit(context, "  shl R7, R6") || !emit(context, "  or R5, R7"))
+      return false;
+  }
+
+  return emit(context, "  mov R1, R4") && emit(context, "  mov R3, R5") &&
+         emit_label(context, store_result) && store_slot(context, left->slot, 1) &&
+         store_slot(context, left->high_slot, 3);
+}
+
 /* Lowers the supported pair-wise i64 arithmetic, bit operations, and equality. */
 static bool lower_i64_binary(Context *context, const WasmExpr *expression, Value *value) {
   Value left = {0}, right = {0};
@@ -2761,6 +2804,11 @@ static bool lower_i64_binary(Context *context, const WasmExpr *expression, Value
         return false;
     }
     if (!emit(context, "  jmp %s", done) || !emit_label(context, zero) || !emit_label(context, done))
+      return false;
+    break;
+  case WASM_BINARY_I64_ROTL:
+  case WASM_BINARY_I64_ROTR:
+    if (!emit_i64_rotate(context, &left, &right, expression->binary_op == WASM_BINARY_I64_ROTL))
       return false;
     break;
   default:
@@ -3923,6 +3971,8 @@ static bool lower_binary(Context *context, const WasmExpr *expression, Value *va
   case WASM_BINARY_I64_SHL:
   case WASM_BINARY_I64_SHR_U:
   case WASM_BINARY_I64_SHR_S:
+  case WASM_BINARY_I64_ROTL:
+  case WASM_BINARY_I64_ROTR:
   case WASM_BINARY_I64_EQ:
   case WASM_BINARY_I64_NE:
   case WASM_BINARY_I64_LT_S:

@@ -493,6 +493,10 @@ static const char *binary_opcode(BinaryenOp op) {
     return "i64.shr_u";
   if (op == BinaryenShrSInt64())
     return "i64.shr_s";
+  if (op == BinaryenRotLInt64())
+    return "i64.rotl";
+  if (op == BinaryenRotRInt64())
+    return "i64.rotr";
   if (op == BinaryenEqInt64())
     return "i64.eq";
   if (op == BinaryenNeInt64())
@@ -1161,6 +1165,8 @@ static WasmExpr *convert_expression(BinaryenExpressionRef source, Diagnostics *d
                             : op == BinaryenShlInt64()   ? WASM_BINARY_I64_SHL
                             : op == BinaryenShrUInt64()  ? WASM_BINARY_I64_SHR_U
                             : op == BinaryenShrSInt64()  ? WASM_BINARY_I64_SHR_S
+                            : op == BinaryenRotLInt64()  ? WASM_BINARY_I64_ROTL
+                            : op == BinaryenRotRInt64()  ? WASM_BINARY_I64_ROTR
                             : op == BinaryenEqInt64()    ? WASM_BINARY_I64_EQ
                             : op == BinaryenNeInt64()    ? WASM_BINARY_I64_NE
                             : op == BinaryenLtSInt64()   ? WASM_BINARY_I64_LT_S
