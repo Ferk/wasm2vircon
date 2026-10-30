@@ -2,8 +2,8 @@
 # before the frame WAIT instruction.
 gamepad3 connect
 gamepad3 right
-display GPU_SelectedTexture selected_texture
-display GPU_SelectedRegion selected_region
-display GPU_DrawingPointX drawing_x
-display GPU_DrawingPointY drawing_y
-display INP_SelectedGamepad selected_gamepad
+display/X GPU_SelectedTexture selected_texture
+display/X GPU_SelectedRegion selected_region
+display/X GPU_DrawingPointX drawing_x
+display/X GPU_DrawingPointY drawing_y
+display/X INP_SelectedGamepad selected_gamepad

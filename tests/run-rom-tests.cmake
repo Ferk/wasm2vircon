@@ -372,7 +372,14 @@ foreach(case_directory IN LISTS case_directories)
     if(NOT simulator_result EQUAL 0)
       message(FATAL_ERROR "${case_name}: v32sim failed (exit ${simulator_result}):\n${simulator_stdout}${simulator_stderr}")
     endif()
-    require_expectations("${case_name}" "${simulation_output}" "${case_directory}/${case_sim_expectations}" "simulator output")
+    # v32sim versions differ in spacing and whether hexadecimal ports are
+    # labeled /X. Normalize those presentation details before checking values;
+    # retain the original output above for debugging.
+    string(REGEX REPLACE "(0x[0-9A-Fa-f]+)/[xX]:" "\\1:" normalized_simulator_output "${simulator_stdout}${simulator_stderr}")
+    string(REGEX REPLACE ":[ \t]*" ": " normalized_simulator_output "${normalized_simulator_output}")
+    set(normalized_simulation_output "${case_output}/${program_name}.v32sim.normalized.out")
+    file(WRITE "${normalized_simulation_output}" "${normalized_simulator_output}")
+    require_expectations("${case_name}" "${normalized_simulation_output}" "${case_directory}/${case_sim_expectations}" "simulator output")
   endif()
 endforeach()
 

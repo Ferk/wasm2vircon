@@ -2,9 +2,9 @@
 # from the minimum coordinates. This catches macro-shadowing mistakes that
 # mere checks for the six OUT instructions cannot detect.
 display/d R0 result
-display/d GPU_RegionMinX region_min_x
-display/d GPU_RegionMinY region_min_y
-display/d GPU_RegionMaxX region_max_x
-display/d GPU_RegionMaxY region_max_y
-display/d GPU_RegionHotspotX region_hotspot_x
-display/d GPU_RegionHotspotY region_hotspot_y
+display/X GPU_RegionMinX region_min_x
+display/X GPU_RegionMinY region_min_y
+display/X GPU_RegionMaxX region_max_x
+display/X GPU_RegionMaxY region_max_y
+display/X GPU_RegionHotspotX region_hotspot_x
+display/X GPU_RegionHotspotY region_hotspot_y

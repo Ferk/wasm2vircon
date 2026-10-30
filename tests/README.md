@@ -24,3 +24,19 @@ CTest displays every discovered fixture by name, so a failure identifies the
 specific WAT or C/ROM case instead of only reporting an umbrella profile test.
 Optional simulator variants are registered separately when the v32sim path and
 BIOS are configured.
+
+For behavioral checks, configure an externally installed, recent `v32sim`
+and an official BIOS, then run the tests labeled `simulator`:
+
+```sh
+cmake -S . -B build -DBUILD_TESTING=ON \
+  -DWASM2VIRCON_V32SIM_EXECUTABLE=/path/to/v32sim \
+  -DWASM2VIRCON_V32SIM_BIOS=/path/to/BiosWithoutLogo.v32
+cmake --build build
+ctest --test-dir build -L simulator --output-on-failure
+```
+
+The simulator must model logical right shifts and SPU channel state. The complete suite also runs the simulator variants when configured.
+Each case retains its assembly expectations, while its simulator
+commands and expected values live alongside it. Raw simulator output
+is saved in the case's build directory for inspection.

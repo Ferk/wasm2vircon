@@ -1,9 +1,9 @@
-display GPU_ClearColor clear_color
-display GPU_SelectedTexture selected_texture
-display GPU_SelectedRegion selected_region
-display GPU_DrawingPointX drawing_x
-display GPU_DrawingPointY drawing_y
-display SPU_SelectedChannel selected_channel
-display SPU_ChannelAssignedSound assigned_sound
-display SPU_Command sound_command
+display/X GPU_ClearColor clear_color
+display/X GPU_SelectedTexture selected_texture
+display/X GPU_SelectedRegion selected_region
+display/X GPU_DrawingPointX drawing_x
+display/X GPU_DrawingPointY drawing_y
+display/X SPU_SelectedChannel selected_channel
+display/X SPU_ChannelAssignedSound assigned_sound
+display/X SPU_ChannelState channel_state
 display/d R0 result
