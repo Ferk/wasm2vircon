@@ -373,6 +373,14 @@ static size_t local_storage_words(const WasmFunction *function) {
   return words;
 }
 
+/* Counts argument words in ABI order; an i64 occupies two adjacent words. */
+static size_t parameter_storage_words(const WasmValueType *params, size_t count) {
+  size_t index, words = 0;
+  for (index = 0; index < count; ++index)
+    words += params[index] == WASM_VALUE_I64 ? 2u : 1u;
+  return words;
+}
+
 /* Restores Wasm's per-invocation zero value for every non-parameter local.
  * Small frames use direct stores; larger frames use Vircon32's native SETS
  * operation over the contiguous local range [BP-local_words, BP-1]. */
@@ -402,9 +410,9 @@ static size_t outgoing_call_slots(const WasmModule *module, const WasmExpr *expr
   if (expression->kind == WASM_EXPR_CALL) {
     const WasmFunction *callee = wasm_module_find_function(module, expression->name);
     if (callee != NULL && !callee->is_import)
-      slots = expression->child_count;
+      slots = parameter_storage_words(callee->params, callee->param_count);
   } else if (expression->kind == WASM_EXPR_CALL_INDIRECT) {
-    slots = expression->signature_param_count;
+    slots = parameter_storage_words(expression->signature_params, expression->signature_param_count);
   } else if (expression->kind == WASM_EXPR_MEMORY_COPY || expression->kind == WASM_EXPR_MEMORY_FILL) {
     slots = 3;
   }
@@ -523,7 +531,7 @@ static int local_slot(const WasmFunction *function, uint32_t index) {
   uint32_t local;
   int slot = -1;
   if (index < function->param_count)
-    return (int)(2 + index);
+    return (int)(2 + parameter_storage_words(function->params, index));
   local = index - (uint32_t)function->param_count;
   for (uint32_t cursor = 0; cursor < local; ++cursor)
     slot -= function->locals[cursor] == WASM_VALUE_I64 ? 2 : 1;
@@ -984,7 +992,9 @@ static bool word_access_is_proven_aligned(const Context *context, const WasmExpr
 }
 
 /* Returns the high target word of a validated two-word i64 local. */
-static int i64_local_high_slot(const WasmFunction *function, uint32_t index) { return local_slot(function, index) - 1; }
+static int i64_local_high_slot(const WasmFunction *function, uint32_t index) {
+  return local_slot(function, index) + (index < function->param_count ? 1 : -1);
+}
 /* Converts a function pointer within module storage to its Wasm index. */
 static size_t function_index(const WasmModule *module, const WasmFunction *function) {
   return (size_t)(function - module->functions);
@@ -996,6 +1006,7 @@ static void function_label(const WasmModule *module, const WasmFunction *functio
 
 static bool lower_expression(Context *context, const WasmExpr *expression, Value *value);
 static bool lower_expression_impl(Context *context, const WasmExpr *expression, Value *value);
+static bool reserve_i64_value(Context *context, Value *value);
 static bool emit_i32_shr_s(Context *context);
 static bool emit_i32_extend_s(Context *context, unsigned bits);
 
@@ -1484,6 +1495,41 @@ static bool indirect_target_matches(const WasmFunction *function, const WasmExpr
   return true;
 }
 
+/* Writes evaluated arguments into the caller's reserved outgoing word area. */
+static bool emit_call_arguments(Context *context, const Value *arguments, size_t count) {
+  size_t index, word = 0;
+  for (index = 0; index < count; ++index) {
+    if (!load_value(context, 1, arguments[index]) || !emit(context, "  mov [SP+%zu], R1", word++))
+      return false;
+    if (arguments[index].type == WASM_VALUE_I64 &&
+        (!load_slot(context, 1, arguments[index].high_slot) || !emit(context, "  mov [SP+%zu], R1", word++)))
+      return false;
+  }
+  return true;
+}
+
+/* Copies a returned i64 pair or scalar into compiler-owned temporary storage. */
+static bool capture_call_result(Context *context, WasmValueType type, Value *value) {
+  if (type == WASM_VALUE_I64)
+    return reserve_i64_value(context, value) && store_slot(context, value->slot, 0) &&
+           store_slot(context, value->high_slot, 1);
+  if (type == WASM_VALUE_I32 || type == WASM_VALUE_F32) {
+    value->slot = temp_slot(context);
+    value->type = type;
+    value->present = true;
+    return value->slot != 0 && store_slot(context, value->slot, 0);
+  }
+  value->present = false;
+  return true;
+}
+
+/* Places a Wasm function result in the target ABI's return registers. */
+static bool emit_function_result(Context *context, Value value) {
+  if (value.type == WASM_VALUE_I64)
+    return load_slot(context, 0, value.slot) && load_slot(context, 1, value.high_slot);
+  return load_value(context, 0, value);
+}
+
 /* Lowers an immutable Wasm function-table call into checked direct-call
  * cases. Arguments and the selector are each evaluated exactly once in Wasm
  * order. Out-of-range, null, and signature-mismatched slots share the normal
@@ -1516,9 +1562,8 @@ static bool lower_call_indirect(Context *context, const WasmExpr *expression, Va
       !selector.present || !materialize_value(context, &selector))
     goto fail;
 
-  for (index = 0; index < expression->signature_param_count; ++index)
-    if (!load_value(context, 1, arguments[index]) || !emit(context, "  mov [SP+%zu], R1", index))
-      goto fail;
+  if (!emit_call_arguments(context, arguments, expression->signature_param_count))
+    goto fail;
   if (!load_value(context, 3, selector))
     goto fail;
   release(context, selector);
@@ -1550,16 +1595,8 @@ static bool lower_call_indirect(Context *context, const WasmExpr *expression, Va
   if (!emit(context, "  jmp __wasm_trap") || !emit_label(context, done))
     goto fail_released;
   context->target_word_address_cached = false;
-  if (expression->signature_result == WASM_VALUE_I32 || expression->signature_result == WASM_VALUE_F32) {
-    int slot = temp_slot(context);
-    if (slot == 0 || !store_slot(context, slot, 0))
-      goto fail_released;
-    value->slot = slot;
-    value->type = expression->signature_result;
-    value->present = true;
-  } else {
-    value->present = false;
-  }
+  if (!capture_call_result(context, expression->signature_result, value))
+    goto fail_released;
   if (heap_arguments)
     free(arguments);
   return true;
@@ -3624,12 +3661,11 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
     value->present = false;
     return true;
   }
-  for (index = 0; index < expression->child_count; ++index)
-    if (!load_value(context, 1, arguments[index]) || !emit(context, "  mov [SP+%zu], R1", index)) {
-      if (heap_arguments)
-        free(arguments);
-      return false;
-    }
+  if (!emit_call_arguments(context, arguments, expression->child_count)) {
+    if (heap_arguments)
+      free(arguments);
+    return false;
+  }
   for (index = expression->child_count; index != 0; --index)
     release(context, arguments[index - 1]);
   function_label(context->validated->module, callee, label, sizeof(label));
@@ -3639,17 +3675,11 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
     return false;
   }
   context->target_word_address_cached = false;
-  if (callee->result == WASM_VALUE_I32 || callee->result == WASM_VALUE_F32) {
-    int slot = temp_slot(context);
-    if (slot == 0 || !store_slot(context, slot, 0)) {
-      if (heap_arguments)
-        free(arguments);
-      return false;
-    }
-    value->slot = slot;
-    value->present = true;
-  } else
-    value->present = false;
+  if (!capture_call_result(context, callee->result, value)) {
+    if (heap_arguments)
+      free(arguments);
+    return false;
+  }
   if (heap_arguments)
     free(arguments);
   return true;
@@ -4603,7 +4633,7 @@ static bool lower_expression_impl(Context *context, const WasmExpr *expression, 
   case WASM_EXPR_RETURN:
     if (expression->child_count != 0) {
       if (!lower_expression(context, expression->children[0], &left) || !left.present ||
-          !load_value(context, 0, left))
+          !emit_function_result(context, left))
         return false;
       release(context, left);
     }
@@ -4706,11 +4736,12 @@ static bool lower_function(const ValidatedModule *validated, const WasmFunction 
       !emit(&context, "  isub SP, %zu", frame_slots) || !initialize_function_locals(&context, local_words) ||
       !lower_expression(&context, function->body, &result))
     goto done;
-  if (function->result == WASM_VALUE_I32 || function->result == WASM_VALUE_F32) {
+  if (function->result == WASM_VALUE_I32 || function->result == WASM_VALUE_F32 || function->result == WASM_VALUE_I64) {
     if (result.present) {
-      if (!load_value(&context, 0, result))
+      if (!emit_function_result(&context, result))
         goto done;
-    } else if (!emit(&context, "  mov R0, 0"))
+    } else if (!emit(&context, "  mov R0, 0") ||
+               (function->result == WASM_VALUE_I64 && !emit(&context, "  mov R1, 0")))
       goto done;
   }
   release(&context, result);

@@ -236,13 +236,15 @@ static bool matches_indirect_signature(const WasmFunction *function, const WasmE
   return true;
 }
 
-/* Checks the profile's scalar parameter, local, and result restrictions. */
-static bool function_has_i32_signature(const WasmFunction *function) {
+/* Checks the profile's supported parameter, local, and result types. */
+static bool function_has_supported_signature(const WasmFunction *function) {
   size_t index;
-  if (function->result != WASM_VALUE_NONE && function->result != WASM_VALUE_I32 && function->result != WASM_VALUE_F32)
+  if (function->result != WASM_VALUE_NONE && function->result != WASM_VALUE_I32 &&
+      function->result != WASM_VALUE_F32 && function->result != WASM_VALUE_I64)
     return false;
   for (index = 0; index < function->param_count; ++index)
-    if (function->params[index] != WASM_VALUE_I32 && function->params[index] != WASM_VALUE_F32)
+    if (function->params[index] != WASM_VALUE_I32 && function->params[index] != WASM_VALUE_F32 &&
+        function->params[index] != WASM_VALUE_I64)
       return false;
   for (index = 0; index < function->local_count; ++index)
     if (function->locals[index] != WASM_VALUE_I32 && function->locals[index] != WASM_VALUE_F32 &&
@@ -280,6 +282,15 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
   case WASM_EXPR_NOP:
     return true;
   case WASM_EXPR_BLOCK:
+    if (expression->name != NULL && expression->value_type == WASM_VALUE_I64) {
+      validation_expression_error(diagnostics, function, expression, "i64 block results are unsupported");
+      return false;
+    }
+    /* Unnamed sequence blocks may pass their final i64 value to a function. */
+    for (index = 0; index < expression->child_count; ++index)
+      if (!validate_expression(module, function, expression->children[index], reachable, diagnostics))
+        return false;
+    return true;
   case WASM_EXPR_LOOP:
     for (index = 0; index < expression->child_count; ++index)
       if (!validate_expression(module, function, expression->children[index], reachable, diagnostics))
@@ -470,7 +481,8 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
            validate_expression(module, function, expression->children[2], reachable, diagnostics);
   case WASM_EXPR_RETURN:
     if ((function->result == WASM_VALUE_NONE && expression->child_count != 0) ||
-        ((function->result == WASM_VALUE_I32 || function->result == WASM_VALUE_F32) && expression->child_count != 1)) {
+        ((function->result == WASM_VALUE_I32 || function->result == WASM_VALUE_F32 ||
+          function->result == WASM_VALUE_I64) && expression->child_count != 1)) {
       validation_expression_error(diagnostics, function, expression, "incompatible return");
       return false;
     }
@@ -518,13 +530,14 @@ static bool validate_expression(const WasmModule *module, const WasmFunction *fu
       return false;
     }
     if (expression->signature_result != WASM_VALUE_NONE && expression->signature_result != WASM_VALUE_I32 &&
-        expression->signature_result != WASM_VALUE_F32) {
+        expression->signature_result != WASM_VALUE_F32 && expression->signature_result != WASM_VALUE_I64) {
       validation_expression_error(diagnostics, function, expression, "unsupported indirect-call result type");
       return false;
     }
     for (index = 0; index < expression->signature_param_count; ++index)
       if (expression->signature_params[index] != WASM_VALUE_I32 &&
-          expression->signature_params[index] != WASM_VALUE_F32) {
+          expression->signature_params[index] != WASM_VALUE_F32 &&
+          expression->signature_params[index] != WASM_VALUE_I64) {
         validation_expression_error(diagnostics, function, expression,
                                     "indirect-call parameters must use supported scalar types");
         return false;
@@ -568,7 +581,7 @@ static bool validate_function(const WasmModule *module, const WasmFunction *func
   if (reachable[index])
     return true;
   reachable[index] = true;
-  if (!function_has_i32_signature(function)) {
+  if (!function_has_supported_signature(function)) {
     validation_function_error(diagnostics, function, "reachable function has unsupported VirconWasm value types");
     return false;
   }
@@ -672,9 +685,9 @@ bool validate_virconwasm_v1(const WasmModule *module, const char *entry_name, Va
   }
   entry = wasm_module_find_function(module, entry_export->value);
   if (entry == NULL || entry->is_import || entry->param_count != 0 ||
-      (entry->result != WASM_VALUE_NONE && entry->result != WASM_VALUE_I32)) {
+      (entry->result != WASM_VALUE_NONE && entry->result != WASM_VALUE_I32 && entry->result != WASM_VALUE_I64)) {
     diagnostics_error(diagnostics,
-                      "entry export '%s' must refer to a defined () -> () or () -> i32 "
+                      "entry export '%s' must refer to a defined () -> (), () -> i32 or () -> i64 "
                       "function",
                       entry_name);
     return false;

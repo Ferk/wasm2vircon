@@ -134,10 +134,9 @@ export:
 - no imported memory; `memory.size` and default-memory `memory.grow` are
   supported within the target's fixed physical linear-memory region;
 - entry export `main` by default, or the name given to `--entry` (with entry
-  signature `() -> ()` or `() -> i32`)
-- defined functions with any practical number of `i32`/`f32` parameters and
-  an `i32`, `f32`, or void result. `i64` is currently supported for locals and
-  intermediate expressions only, not parameters or function results;
+  signature `() -> ()`, `() -> i32`, or `() -> i64`)
+- defined functions with any practical number of `i32`, `f32`, or `i64`
+  parameters and an `i32`, `f32`, `i64`, or void result;
 - active data segments with a constant `i32` offset in the default memory.
 
 The only global exception is automatic linker stack support. The compiler
@@ -214,7 +213,7 @@ false.
 | `i32.const` | Produces the written 32-bit integer bit pattern, such as `i32.const 42`. |
 | `i64.const` | Produces the written 64-bit integer bit pattern. The compiler holds it as adjacent low and high i32 words. |
 | `f32.const` | Produces the written IEEE-754 single-precision value, such as `f32.const 1.5`. |
-| `local.get` | Reads one function parameter or local variable. Its result has that local's declared supported type: `i32`, `f32`, or local-only `i64`. |
+| `local.get` | Reads one function parameter or local variable. Its result has that local's declared supported type: `i32`, `f32`, or `i64`. |
 | `local.set` | Evaluates one value and writes it into a function parameter/local slot. It has no result. |
 | `local.tee` | Evaluates one value, writes it into a local slot, and returns that same value. A compiler uses it to save a calculation while continuing to use it. |
 | `drop` | Evaluates one supported value and discards its result. Side effects of the evaluated expression still occur. |
@@ -224,9 +223,12 @@ false.
 | `nop` | Does nothing: it consumes no values, produces no values, and has no observable Wasm state change. It is accepted and emits no target instruction. |
 
 Parameters, locals, and temporary values are stored in compiler-managed target
-stack slots. The generated calling convention uses `R0` for an `i32` or `f32`
-return value; registers are caller-clobbered. Direct calls support nesting and
-recursion. Each caller reserves exactly enough outgoing stack words for its
+stack slots. Each `i32` or `f32` argument occupies one outgoing word; an `i64`
+argument occupies two consecutive words, low word first. The callee reads the
+same words starting at `[BP+2]`. An `i32` or `f32` return value uses `R0`;
+an `i64` result uses `R0` for its low word and `R1` for its high word. All
+registers are caller-clobbered. Direct calls and supported indirect calls use
+the same convention, including for nested calls and recursion. Each caller reserves enough outgoing stack words for its
 widest defined call; platform imports continue to lower directly to hardware
 operations rather than consuming a generic argument area.
 
@@ -280,11 +282,9 @@ division by zero rather than relying on a particular trap presentation.
 
 ### Supported 64-bit integer subset
 
-Vircon32 registers and the public defined-function ABI are 32-bit. For the
-supported i64 subset, wasm2vircon therefore represents every temporary or
-local i64 as two compiler-managed i32 stack words: the low 32 bits first, then
-the high 32 bits. This preserves Wasm's little-endian memory layout without
-pretending that a Wasm i64 is one native Vircon32 register.
+Vircon32 registers are 32-bit. wasm2vircon therefore represents an i64 as two
+32-bit words, with separate low and high words in locals, temporaries,
+arguments, and results. Wasm memory keeps its little-endian byte layout.
 
 An i64 shift count uses its low six bits, as WebAssembly specifies: a count of
 64 is equivalent to zero. Equality instructions return ordinary `i32` boolean
@@ -367,7 +367,7 @@ Programs targeting VirconWasm should avoid relying on particular NaN results.
 | `br` | Unconditionally transfers to one active enclosing `block` or `loop`, selected by Wasm's nesting depth. It may carry one `i32` or `f32` value when targeting a compatible named result block. |
 | `br_if` | Evaluates an `i32` condition and performs the same structured branch as `br` only when that condition is nonzero. A value-carrying form preserves its value on the non-branching path. |
 | `br_table` | Selects one active enclosing resultless `block` or `loop` target from an `i32` selector. See the explanation below. |
-| `return` | Leaves the current defined function. A void function returns no value; an `i32` or `f32` function returns one value. |
+| `return` | Leaves the current defined function. A void function returns no value; an `i32`, `f32`, or `i64` function returns one value. |
 | `call` | Calls a directly named defined function or one allowlisted `env` platform import. |
 | `call_indirect` | Evaluates ordinary arguments followed by an `i32` table index and calls the selected function when that immutable table slot has the exact declared signature. Out-of-range, null, and signature-mismatched slots trap. |
 | `unreachable` | Immediately takes the shared `__wasm_trap` path, which halts the target. It is not an ignored marker or a no-op. |
@@ -451,14 +451,10 @@ for the current game-oriented profile.
 
 **Remaining i64 operations and ABI forms**
 
-The documented i64 local/temporary subset uses adjacent i32 words, but i64
-parameters, function results, and direct-call argument passing are still
-unsupported because the existing call ABI transports one word per parameter
-and returns through one 32-bit register. Signed/unsigned division and
-remainder, bit counting (`i64.clz`, `i64.ctz`, `i64.popcnt`), narrow loads/stores, and most
-conversions are also not implemented yet. Some are plausible pair-lowering
-candidates, but division and a public multiword call ABI need careful trap and
-calling-convention design rather than a superficial instruction mapping.
+Signed/unsigned division and remainder, bit counting (`i64.clz`, `i64.ctz`,
+`i64.popcnt`), narrow loads/stores, and most conversions are not implemented
+yet. Some are plausible pair-lowering candidates; division also needs careful
+handling of Wasm traps. Multi-value function returns remain unsupported.
 
 **`i32.clz`, `i32.ctz`, and `i32.popcnt`**
 

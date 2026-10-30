@@ -1,0 +1,3 @@
+source=calls.wat
+entry=main
+expectations=expected.asm

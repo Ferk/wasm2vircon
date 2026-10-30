@@ -1,0 +1,4 @@
+source=block.wat
+entry=main
+outcome=reject
+error_expectations=expected.error
