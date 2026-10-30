@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.20)
 
 project(wasm2vircon VERSION 0.1.0 LANGUAGES C)
 
+# Use MinGW's C99-compatible stdio wrappers for formats such as %zu, including
+# on environments whose default Windows runtime uses older printf conventions.
+if(MINGW)
+  add_compile_definitions(__USE_MINGW_ANSI_STDIO=1)
+endif()
+
 # Respect Binaryen_ROOT with CMake versions that know the modern package-root
 # policy, while remaining compatible with the project's CMake 3.20 minimum.
 if(POLICY CMP0144)
@@ -48,16 +54,31 @@ if(WASM2VIRCON_BINARYEN_TARGET)
 else()
   # Legacy Binaryen installations do not provide a package config.  Locate
   # their C API explicitly and add static-library dependencies ourselves.
-  find_path(WASM2VIRCON_BINARYEN_INCLUDE_DIR binaryen-c.h)
-  find_library(WASM2VIRCON_BINARYEN_LIBRARY NAMES binaryen)
+  # MSYS2's native MinGW packages install under the active MINGW_PREFIX, which
+  # is not necessarily in a Windows CMake installation's default search path.
+  set(_binaryen_prefix_hints "${Binaryen_ROOT}" "$ENV{Binaryen_ROOT}")
+  if(MINGW)
+    # The compiler path is native even when MINGW_PREFIX is an MSYS /ucrt64
+    # path that a native Windows CMake cannot interpret on its own.
+    get_filename_component(_mingw_bin_dir "${CMAKE_C_COMPILER}" DIRECTORY)
+    get_filename_component(_mingw_prefix "${_mingw_bin_dir}" DIRECTORY)
+    list(APPEND _binaryen_prefix_hints "${_mingw_prefix}" "$ENV{MINGW_PREFIX}")
+  endif()
+  find_path(WASM2VIRCON_BINARYEN_INCLUDE_DIR binaryen-c.h
+    HINTS ${_binaryen_prefix_hints} PATH_SUFFIXES include)
+  find_library(WASM2VIRCON_BINARYEN_LIBRARY NAMES binaryen
+    HINTS ${_binaryen_prefix_hints} PATH_SUFFIXES lib)
   if(NOT WASM2VIRCON_BINARYEN_INCLUDE_DIR OR NOT WASM2VIRCON_BINARYEN_LIBRARY)
     message(FATAL_ERROR
       "Binaryen C API was not found. Install Binaryen's CMake package or development files "
-      "(header binaryen-c.h and library binaryen), then configure again.")
+      "(header binaryen-c.h and library binaryen), then configure again. "
+      "Set Binaryen_ROOT to the installation prefix if necessary. For MSYS2, "
+      "use a matching MinGW environment and its mingw-w64 Binaryen package.")
   endif()
   get_filename_component(WASM2VIRCON_BINARYEN_EXTENSION
     "${WASM2VIRCON_BINARYEN_LIBRARY}" EXT)
-  if(WASM2VIRCON_BINARYEN_EXTENSION STREQUAL "${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  if(WASM2VIRCON_BINARYEN_EXTENSION STREQUAL "${CMAKE_STATIC_LIBRARY_SUFFIX}"
+     AND NOT WASM2VIRCON_BINARYEN_LIBRARY MATCHES "\\.dll\\.a$")
     set(WASM2VIRCON_BINARYEN_IS_STATIC ON)
     set(WASM2VIRCON_BINARYEN_NEEDS_MANUAL_STATIC_DEPS ON)
   endif()
@@ -94,7 +115,7 @@ elseif(NOT WASM2VIRCON_BINARYEN_TARGET)
   list(REMOVE_DUPLICATES WASM2VIRCON_BINARYEN_STATIC_LIBRARY_NAMES)
   find_file(WASM2VIRCON_BINARYEN_STATIC_LIBRARY
     NAMES ${WASM2VIRCON_BINARYEN_STATIC_LIBRARY_NAMES}
-    HINTS "${WASM2VIRCON_BINARYEN_LIBRARY_DIRECTORY}")
+    HINTS "${WASM2VIRCON_BINARYEN_LIBRARY_DIRECTORY}" NO_DEFAULT_PATH)
 else()
   set(WASM2VIRCON_BINARYEN_STATIC_LIBRARY "")
 endif()
@@ -179,6 +200,12 @@ endif()
 option(BUILD_TESTING "Build and register wasm2vircon tests" OFF)
 include(CTest)
 if(BUILD_TESTING)
+  add_executable(wasm2vircon-diagnostics-test tests/unit-diagnostics/test.c src/diagnostics.c)
+  target_compile_features(wasm2vircon-diagnostics-test PRIVATE c_std_11)
+  target_include_directories(wasm2vircon-diagnostics-test PRIVATE src)
+  wasm2vircon_enable_warnings(wasm2vircon-diagnostics-test)
+  add_test(NAME wasm2vircon-diagnostics COMMAND wasm2vircon-diagnostics-test)
+
   # Small native unit tests live in self-contained directories just like the
   # source-to-ROM fixtures below.
   add_executable(wasm2vircon-memory-model-test tests/unit-memory-model/test.c)

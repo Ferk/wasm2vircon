@@ -108,6 +108,48 @@ This creates `build/wasm2vircon`. Confirm the command-line interface with:
 build/wasm2vircon --help
 ```
 
+### Windows with MSYS2
+
+Open the **MSYS2 UCRT64** terminal and install the matching native toolchain,
+CMake, Ninja, and Binaryen. Run the configure and build commands in that same
+terminal, from the project directory:
+
+```sh
+pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-binaryen
+/ucrt64/bin/cmake -S . -B build-ucrt64 -G Ninja \
+  -DCMAKE_MAKE_PROGRAM="$(cygpath -m /ucrt64/bin/ninja.exe)" \
+  -DCMAKE_C_COMPILER="$(cygpath -m /ucrt64/bin/gcc.exe)"
+/ucrt64/bin/cmake --build build-ucrt64
+./build-ucrt64/wasm2vircon.exe --help
+```
+
+If CMake reports that it cannot find Ninja, check the terminal and installation:
+
+```sh
+echo "$MSYSTEM"                 # should print UCRT64
+command -v cmake ninja gcc      # should find the tools in /ucrt64/bin
+pacman -Q mingw-w64-ucrt-x86_64-ninja
+ls -l /ucrt64/bin/ninja.exe
+```
+
+If `MSYSTEM` is not `UCRT64`, open the **MSYS2 UCRT64** shortcut and retry.
+If the package or executable is missing, rerun the `pacman -S` command above
+in that terminal. The explicit `CMAKE_MAKE_PROGRAM` path avoids relying on
+CMake finding Ninja on `PATH`. If a previous configuration cached a different
+generator or tool path, configure with a new build directory name (or remove
+the old build directory after checking that it contains no files you need).
+An IDE that invokes CMake separately needs the same UCRT64 environment or its
+own configuration pointing to these tools.
+
+Use the same MSYS2 environment for the compiler and Binaryen; other MinGW
+environments require their corresponding packages. CMake searches the active
+MinGW compiler's prefix for Binaryen. If using a different installation, set
+`-DBinaryen_ROOT=C:/path/to/prefix` (the directory containing `include` and
+`lib`). Start with a fresh build directory after changing toolchains or paths.
+MSYS2's Binaryen package provides a DLL and import library, so keep the matching
+MSYS2 `bin` directory on `PATH` when running the executable. Its other runtime
+DLL dependencies must also be available when distributing the executable.
+
 ## Testing
 
 ```sh

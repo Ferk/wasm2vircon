@@ -1,4 +1,10 @@
 /build/
+
+/CMakeFiles/
+CMakeCache.txt
+cmake_*.cmake
+Makefile
+
 *.rom.xml
 *obj
 wasm2vircon
