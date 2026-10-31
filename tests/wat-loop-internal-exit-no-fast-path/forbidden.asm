@@ -1,0 +1,1 @@
+__wasm_loop_fast_

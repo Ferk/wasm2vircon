@@ -1,0 +1,3 @@
+source=loop-internal-exit.wat
+entry=main
+forbidden_expectations=forbidden.asm

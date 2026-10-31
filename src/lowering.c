@@ -1052,6 +1052,7 @@ typedef struct LoopScan {
   bool has_store;
   bool has_linear_memory_clobbering_import;
   bool has_backedge;
+  const WasmExpr *unconditional_backedge;
   bool register_promotion_safe;
   uint32_t counter_local;
   LoopTripKind trip_kind;
@@ -1233,6 +1234,66 @@ static bool parse_counted_backedge(const LoopScan *scan, const WasmExpr *branch,
     return false;
   *trip_kind = LOOP_TRIP_INCREMENT_TO_LIMIT;
   return parse_loop_bound(scan->context, condition->children[1], bound_kind, bound_value);
+}
+
+/* Returns whether a named label is defined inside this loop body. A branch
+ * to such a label does not end the loop, so it cannot establish a trip count. */
+static bool loop_body_defines_label(const WasmExpr *expression, const char *name) {
+  size_t index;
+  if ((expression->kind == WASM_EXPR_BLOCK || expression->kind == WASM_EXPR_LOOP ||
+       expression->kind == WASM_EXPR_IF) && expression->name != NULL && strcmp(expression->name, name) == 0)
+    return true;
+  for (index = 0; index < expression->child_count; ++index)
+    if (loop_body_defines_label(expression->children[index], name))
+      return true;
+  return false;
+}
+
+/* Accepts an exit-on-zero countdown followed immediately by an unconditional
+ * backedge. The exit must leave the loop, and the counter must be decremented
+ * exactly once per iteration. Other exits may only shorten the trip. */
+static bool parse_exit_countdown_backedge(LoopScan *scan, const WasmExpr *body) {
+  const WasmExpr *exit_branch, *backedge, *condition, *decrement;
+  const WasmExpr *left, *right;
+  if (body->kind != WASM_EXPR_BLOCK || body->child_count < 2)
+    return false;
+  exit_branch = body->children[body->child_count - 2];
+  backedge = body->children[body->child_count - 1];
+  if (exit_branch->kind != WASM_EXPR_BR_IF || exit_branch->name == NULL ||
+      backedge->kind != WASM_EXPR_BR || backedge->name == NULL ||
+      strcmp(backedge->name, scan->loop_name) != 0 ||
+      strcmp(exit_branch->name, scan->loop_name) == 0 ||
+      loop_body_defines_label(body, exit_branch->name) ||
+      exit_branch->child_count != 1 || backedge->child_count != 0)
+    return false;
+  condition = exit_branch->children[0];
+  if (condition->kind != WASM_EXPR_UNARY || condition->unary_op != WASM_UNARY_EQZ ||
+      condition->child_count != 1)
+    return false;
+  decrement = condition->children[0];
+  if (decrement->kind != WASM_EXPR_LOCAL_SET || !decrement->is_tee || decrement->child_count != 1 ||
+      local_value_type(scan->context->function, decrement->index) != WASM_VALUE_I32)
+    return false;
+  left = decrement->children[0];
+  if (left->kind != WASM_EXPR_BINARY || left->binary_op != WASM_BINARY_ADD || left->child_count != 2)
+    return false;
+  right = left->children[1];
+  left = left->children[0];
+  if (left->kind == WASM_EXPR_I32_CONST) {
+    const WasmExpr *swap = left;
+    left = right;
+    right = swap;
+  }
+  if (left->kind != WASM_EXPR_LOCAL_GET || left->index != decrement->index ||
+      right->kind != WASM_EXPR_I32_CONST || right->i32_value != -1)
+    return false;
+  scan->unconditional_backedge = backedge;
+  scan->has_backedge = true;
+  scan->counter_local = decrement->index;
+  scan->trip_kind = LOOP_TRIP_COUNTDOWN;
+  scan->bound_kind = LOOP_BOUND_NONE;
+  scan->register_promotion_safe = false;
+  return true;
 }
 
 /* Recognizes an aligned, non-trapping i32 load from a constant address. Such
@@ -1439,8 +1500,10 @@ static void scan_versionable_loop(LoopScan *scan, const WasmExpr *expression) {
     size_t target_index;
     if (expression->kind == WASM_EXPR_BR ||
         (expression->name != NULL && strcmp(expression->name, scan->loop_name) == 0)) {
-      scan->rejected = true;
-      return;
+      if (expression != scan->unconditional_backedge) {
+        scan->rejected = true;
+        return;
+      }
     }
     for (target_index = 0; target_index < expression->branch_target_count; ++target_index)
       if (strcmp(expression->branch_targets[target_index], scan->loop_name) == 0) {
@@ -1630,6 +1693,7 @@ static LoopFastPath analyze_loop_fast_path(const Context *context, const WasmExp
   if (scan.assignment_counts == NULL || scan.strides == NULL || scan.stride_assignments == NULL ||
       scan.invariant_aliases == NULL)
     goto done;
+  parse_exit_countdown_backedge(&scan, loop->children[0]);
   scan_versionable_loop(&scan, loop->children[0]);
   if (scan.rejected || !scan.has_backedge || scan.counter_local >= scan.local_count ||
       scan.assignment_counts[scan.counter_local] != 1)
