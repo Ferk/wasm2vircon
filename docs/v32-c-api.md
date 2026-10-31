@@ -76,6 +76,7 @@ normally treats as built-in:
 | `INT_MIN`, `INT_MAX` | Signed 32-bit integer limits. |
 | `blending_alpha`, `blending_add`, `blending_subtract` | GPU blend-mode values `0x20`, `0x21`, and `0x22`. |
 | `bios_character_width`, `bios_character_height` | Fixed BIOS font dimensions: `10` and `20` pixels. |
+| `gpu_pixels_per_frame` | GPU drawing budget of 2,073,600 pixels per display frame. |
 
 The official Vircon C compiler uses `NULL` as `-1` because its source pointers
 are word addresses. This toolchain uses standard byte-addressed C/Wasm
@@ -151,9 +152,10 @@ currently supported.
 | `void clear_screen(int color)` | Sets the clear colour and issues the clear-screen GPU command. |
 | `void end_frame(void)` | Waits for the next Vircon frame. |
 | `void print_at(int x, int y, const char *text)` | Draws a NUL-terminated BIOS-font string at pixel coordinates. |
+| `void print(const char *text)` | Draws text starting at the current GPU drawing point. |
 | `void print_uint_at(int x, int y, unsigned value)` | Draws an unsigned decimal integer. |
 | `void print_int_at(int x, int y, int value)` | Draws a signed decimal integer. |
-| `void print_fixed_2_at(int x, int y, float value)` | Draws a signed decimal value with two fractional digits. |
+| `void print_fixed_2_at(int x, int y, float value)` | Draws a signed decimal value with exactly two fractional digits, truncating toward zero. This project helper differs from official `ftoa` formatting. |
 
 `print_at` consumes **CP-1252-compatible bytes**, not UTF-8. Each nonzero byte
 directly selects a BIOS glyph region. The BIOS font has 256 10×20-pixel glyphs.
@@ -218,8 +220,10 @@ textures.
 | --- | --- |
 | `void select_texture(int texture_id)` | Selects a cartridge texture. |
 | `int get_selected_texture(void)` | Returns the GPU's current selected texture; this may be the BIOS texture ID `-1`. |
+| `int get_gpu_remaining_pixels(void)` | Returns the current frame's remaining GPU pixel budget, or `-1` when exhausted. `gpu_pixels_per_frame` is the full budget. |
 | `void select_region(int region_id)` | Selects a region within the selected texture. |
 | `int get_selected_region(void)` | Returns the region currently selected for the current texture. |
+| `void get_region_minimum(int *x, int *y)` | Stores the selected region's minimum texture coordinates. |
 | `void set_region_minimum(int x, int y)` | Sets selected region minimum coordinates. |
 | `void set_region_maximum(int x, int y)` | Sets selected region maximum coordinates. |
 | `void set_region_hotspot(int x, int y)` | Sets selected region hotspot coordinates. |
@@ -278,10 +282,15 @@ struct vircon_region_matrix {
     int elements_x, elements_y;
     int gap;
 };
-void define_region_matrix(const struct vircon_region_matrix *definition);
+void define_region_matrix(int first_id, int first_min_x, int first_min_y,
+                          int first_max_x, int first_max_y,
+                          int first_hotspot_x, int first_hotspot_y,
+                          int elements_x, int elements_y, int gap);
+void define_region_matrix_from_descriptor(const struct vircon_region_matrix *definition);
 ```
 
-Prefer a `static const struct vircon_region_matrix` definition. That keeps the
+The first function matches the official argument order. The descriptor variant
+is a project extension; prefer a `static const struct vircon_region_matrix`. That keeps the
 description in active data and avoids introducing an avoidable dynamic-stack
 aggregate into the restricted Wasm frontend.
 
@@ -497,6 +506,11 @@ dialect). It is a configurable global heap with a doubly linked block list:
 `malloc` splits large free blocks, `free` coalesces adjacent blocks, and 
 `realloc` shrinks or expands in place when possible. `calloc` checks
 multiplication overflow and clears its requested bytes.
+
+The official allocator helpers `merge_free_malloc_blocks`, `reduce_malloc_block`,
+and `expand_malloc_block` are also available. They operate on valid heap blocks;
+their sizes are bytes and block splits respect this allocator's 16-byte alignment.
+Like the allocation functions, they require `VIRCON_IMPLEMENTATION` in one source.
 
 To keep all runtime source in this header while retaining one heap across an
 application with multiple `.c` files, define `VIRCON_IMPLEMENTATION` before

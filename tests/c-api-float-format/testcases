@@ -1,0 +1,6 @@
+source=float-format.c
+entry=__original_main
+include_dirs=../../include
+expectations=expected.asm
+sim_commands=v32sim.commands
+sim_expectations=expected.v32sim

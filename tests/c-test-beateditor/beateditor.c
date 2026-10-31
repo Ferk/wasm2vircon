@@ -67,9 +67,9 @@ static void define_editor_regions(void)
     set_region_minimum(0, 0); set_region_maximum(639, 359); set_region_hotspot(0, 0);
     select_region(REGION_ACTIVE_COLUMN);
     set_region_minimum(641, 1); set_region_maximum(674, 184); set_region_hotspot(641, 1);
-    define_region_matrix(&state_icons);
-    define_region_matrix(&buttons);
-    define_region_matrix(&instruments);
+    define_region_matrix_from_descriptor(&state_icons);
+    define_region_matrix_from_descriptor(&buttons);
+    define_region_matrix_from_descriptor(&instruments);
     select_region(REGION_SELECTION);
     set_region_minimum(460, 361); set_region_maximum(501, 408); set_region_hotspot(464, 365);
     select_region(REGION_CELL_MARK);

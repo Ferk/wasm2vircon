@@ -3429,11 +3429,17 @@ static bool lower_call(Context *context, const WasmExpr *expression, Value *valu
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_get_selected_texture") == 0) {
       return lower_port_read(context, value, "GPU_SelectedTexture");
+    } else if (strcmp(callee->import_name, "vircon_gpu_get_remaining_pixels") == 0) {
+      return lower_port_read(context, value, "GPU_RemainingPixels");
     } else if (strcmp(callee->import_name, "vircon_gpu_select_texture") == 0) {
       if (!load_value(context, 1, arguments[0]) || !emit(context, "  out GPU_SelectedTexture, R1"))
         return false;
     } else if (strcmp(callee->import_name, "vircon_gpu_get_selected_region") == 0) {
       return lower_port_read(context, value, "GPU_SelectedRegion");
+    } else if (strcmp(callee->import_name, "vircon_gpu_get_region_min_x") == 0) {
+      return lower_port_read(context, value, "GPU_RegionMinX");
+    } else if (strcmp(callee->import_name, "vircon_gpu_get_region_min_y") == 0) {
+      return lower_port_read(context, value, "GPU_RegionMinY");
     } else if (strcmp(callee->import_name, "vircon_gpu_select_region") == 0) {
       if (!load_value(context, 1, arguments[0]) || !emit(context, "  out GPU_SelectedRegion, R1"))
         return false;

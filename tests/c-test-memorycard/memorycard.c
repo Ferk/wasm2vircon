@@ -154,9 +154,9 @@ static void define_regions(void)
     static const struct vircon_region_matrix tiles = { REGION_TILE, 277, 1, 356, 80, 277, 1, 3, 1, 1 };
     static const struct vircon_region_matrix actions = { REGION_LOAD, 420, 82, 506, 101, 420, 82, 1, 4, 1 };
     select_texture(0);
-    define_region_matrix(&tiles);
+    define_region_matrix_from_descriptor(&tiles);
     select_region(REGION_DOG_HOUSE); set_region_minimum(277, 82); set_region_maximum(418, 144); set_region_hotspot(277, 82);
-    define_region_matrix(&actions);
+    define_region_matrix_from_descriptor(&actions);
     select_region(REGION_WINDOW); set_region_minimum(1, 1); set_region_maximum(275, 127); set_region_hotspot(1, 1);
     select_region(REGION_CONTENTS_TEXT); set_region_minimum(1, 129); set_region_maximum(134, 209); set_region_hotspot(1, 129);
     select_region(REGION_CONTENTS_INFO); set_region_minimum(136, 129); set_region_maximum(268, 209); set_region_hotspot(136, 129);

@@ -16,6 +16,8 @@ static float clamp_float(float value, float minimum, float maximum)
     return value;
 }
 
+static char zoom_text[32];
+
 int main(void)
 {
     int rotation_degrees = 0;
@@ -53,7 +55,8 @@ int main(void)
         print_int_at(520, 310, rotation_degrees);
         print_at(570, 310, "degrees");
         print_at(450, 330, "Zoom: X");
-        print_fixed_2_at(530, 330, zoom_factor);
+        ftoa(zoom_factor, zoom_text);
+        print_at(520, 330, zoom_text);
         end_frame();
     }
 }

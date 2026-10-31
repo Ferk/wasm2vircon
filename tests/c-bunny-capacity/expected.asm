@@ -1,0 +1,1 @@
+call __wasm_function_

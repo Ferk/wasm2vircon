@@ -55,7 +55,7 @@ static void define_piano_regions(void)
     set_region_minimum(144, 237); set_region_maximum(169, 267); set_region_hotspot(149, 267);
     select_region(REGION_VOLUME_SLIDER);
     set_region_minimum(173, 237); set_region_maximum(182, 252); set_region_hotspot(173, 237);
-    define_region_matrix(&play_buttons);
+    define_region_matrix_from_descriptor(&play_buttons);
 }
 
 static void draw_white_notes(void)

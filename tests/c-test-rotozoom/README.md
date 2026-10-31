@@ -8,9 +8,6 @@ scale, angle, hotspot, and rotozoom draw from the official test. It packages
 the two copied PNG assets as texture IDs 0 and 1.
 
 The original uses the official custom-C `itoa`, `ftoa`, `strcpy`, and `strcat`
-helpers to compose status strings. The port instead uses the project runtime's
-ordinary-C `print_int_at` and intentionally small `print_fixed_2_at` helpers.
-The latter prints the bounded zoom value to exactly two decimal places; unlike
-the original's `ftoa`, it does not print up to five significant decimal digits.
-This keeps formatting outside the compiler and avoids adding unneeded general
-string/format APIs; it does not affect the graphical transform or controls.
+helpers to compose status strings. The port uses ordinary-C `print_int_at` for
+the angle and `ftoa` followed by `print_at` for the zoom value. Like the
+original, zoom uses up to five fractional digits and removes trailing zeroes.

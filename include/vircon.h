@@ -86,8 +86,11 @@ extern "C" {
 void vircon__set_background_color(int color) VIRCON__IMPORT("vircon_set_background_color");
 void vircon__end_frame(void) VIRCON__IMPORT("vircon_end_frame");
 int vircon__gpu_get_selected_texture(void) VIRCON__IMPORT("vircon_gpu_get_selected_texture");
+int vircon__gpu_get_remaining_pixels(void) VIRCON__IMPORT("vircon_gpu_get_remaining_pixels");
 void vircon__gpu_select_texture(int value) VIRCON__IMPORT("vircon_gpu_select_texture");
 int vircon__gpu_get_selected_region(void) VIRCON__IMPORT("vircon_gpu_get_selected_region");
+int vircon__gpu_get_region_min_x(void) VIRCON__IMPORT("vircon_gpu_get_region_min_x");
+int vircon__gpu_get_region_min_y(void) VIRCON__IMPORT("vircon_gpu_get_region_min_y");
 void vircon__gpu_select_region(int value) VIRCON__IMPORT("vircon_gpu_select_region");
 void vircon__gpu_set_drawing_point(int x, int y) VIRCON__IMPORT("vircon_gpu_set_drawing_point");
 void vircon__gpu_draw_region(void) VIRCON__IMPORT("vircon_gpu_draw_region");
@@ -190,6 +193,8 @@ static inline void end_frame(void) { vircon__end_frame(); }
  * not clamped, matching the official header's direct bit packing behavior. */
 #define screen_width 640
 #define screen_height 360
+/* GPU drawing capacity restored at each display frame. */
+#define gpu_pixels_per_frame (screen_width * screen_height * 9)
 
 #define color_black 0xFF000000
 #define color_white 0xFFFFFFFF
@@ -280,21 +285,23 @@ static inline void print_int_at(int x, int y, int value) {
   }
   print_uint_at(x, y, (unsigned)value);
 }
+/* Draw two truncated fractional digits directly after the integer digits. */
 static inline void print_fixed_2_at(int x, int y, float value) {
   static char fraction[3] = {'0', '0', 0};
   int hundredths = (int)(value * 100.0f);
   unsigned magnitude;
-  if (hundredths < 0) {
+  if (value < 0.0f) {
     print_at(x, y, "-");
     x += 10;
-    hundredths = -hundredths;
   }
+  if (hundredths < 0)
+    hundredths = -hundredths;
   magnitude = (unsigned)hundredths;
-  print_uint_at(x, y, magnitude / 100u);
-  print_at(x + 20, y, ".");
+  x = vircon__print_digits(x, y, magnitude / 100u);
+  print_at(x, y, ".");
   fraction[0] = (char)('0' + (magnitude / 10u) % 10u);
   fraction[1] = (char)('0' + magnitude % 10u);
-  print_at(x + 30, y, fraction);
+  print_at(x + 10, y, fraction);
 }
 
 /* Texture, regions and drawing --------------------------------------------
@@ -303,9 +310,16 @@ static inline void print_fixed_2_at(int x, int y, float value) {
 static inline void select_texture(int id) { vircon__gpu_select_texture(id); }
 /* Returns the texture currently selected in GPU state, including BIOS texture -1. */
 static inline int get_selected_texture(void) { return vircon__gpu_get_selected_texture(); }
+/* Returns the current GPU pixel budget, or -1 when this frame is exhausted. */
+static inline int get_gpu_remaining_pixels(void) { return vircon__gpu_get_remaining_pixels(); }
 static inline void select_region(int id) { vircon__gpu_select_region(id); }
 /* Returns the region currently selected for the current texture. */
 static inline int get_selected_region(void) { return vircon__gpu_get_selected_region(); }
+/* Read the selected region's minimum texture coordinates. */
+static inline void get_region_minimum(int *x, int *y) {
+  *x = vircon__gpu_get_region_min_x();
+  *y = vircon__gpu_get_region_min_y();
+}
 static inline void set_region_minimum(int x, int y) { vircon__gpu_set_region_minimum(x, y); }
 static inline void set_region_maximum(int x, int y) { vircon__gpu_set_region_maximum(x, y); }
 static inline void set_region_hotspot(int x, int y) { vircon__gpu_set_region_hotspot(x, y); }
@@ -319,6 +333,13 @@ static inline int get_blending_mode(void) { return vircon__gpu_get_active_blendi
 static inline void get_drawing_point(int *x, int *y) {
   *x = vircon__gpu_get_drawing_point_x();
   *y = vircon__gpu_get_drawing_point_y();
+}
+
+/* Print from the current GPU drawing point, as in the official video API. */
+static inline void print(const char *text) {
+  int x, y;
+  get_drawing_point(&x, &y);
+  print_at(x, y, text);
 }
 /* Use this typed f32 form for calculated scale values. */
 static inline void set_drawing_scale(float x, float y) { vircon__gpu_set_drawing_scale(x, y); }
@@ -395,7 +416,7 @@ struct vircon_region_matrix {
   int first_id, first_min_x, first_min_y, first_max_x, first_max_y;
   int first_hotspot_x, first_hotspot_y, elements_x, elements_y, gap;
 };
-static inline void define_region_matrix(const struct vircon_region_matrix *d) {
+static inline void define_region_matrix_from_descriptor(const struct vircon_region_matrix *d) {
   int id = d->first_id, min_x = d->first_min_x, min_y = d->first_min_y;
   int max_x = d->first_max_x, max_y = d->first_max_y;
   int hotspot_x = d->first_hotspot_x, hotspot_y = d->first_hotspot_y;
@@ -420,6 +441,15 @@ static inline void define_region_matrix(const struct vircon_region_matrix *d) {
     max_x = d->first_max_x;
     hotspot_x = d->first_hotspot_x;
   }
+}
+
+/* Define a grid of regions using the argument order of the official API. */
+static inline void define_region_matrix(int first_id, int first_min_x, int first_min_y, int first_max_x,
+                                        int first_max_y, int first_hotspot_x, int first_hotspot_y,
+                                        int elements_x, int elements_y, int gap) {
+  const struct vircon_region_matrix d = {first_id, first_min_x, first_min_y, first_max_x, first_max_y,
+                                         first_hotspot_x, first_hotspot_y, elements_x, elements_y, gap};
+  define_region_matrix_from_descriptor(&d);
 }
 
 /* BIOS texture -1 region 256 is a white pixel. These leave it selected. */
@@ -824,6 +854,11 @@ void *malloc(vircon_size_t size);
 void free(void *memory);
 void *calloc(vircon_size_t count, vircon_size_t size);
 void *realloc(void *memory, vircon_size_t size);
+/* Allocator internals exposed for source compatibility; sizes are Wasm bytes.
+ * Pass valid blocks belonging to this heap, as with the official helpers. */
+void merge_free_malloc_blocks(malloc_block *block);
+void reduce_malloc_block(malloc_block *block, int new_size);
+bool expand_malloc_block(malloc_block *block, int new_size);
 /* Compares byte regions as unsigned bytes, like the standard C routine. */
 VIRCON__NOINLINE VIRCON__LIBC_INLINE int memcmp(const void *first, const void *second,
                                                 vircon_size_t count) {
@@ -1149,6 +1184,42 @@ static void vircon__heap_reduce(volatile malloc_block *block, unsigned size) {
   else
     vircon__heap_last_block = freed;
   (void)vircon__heap_merge(freed);
+}
+
+/* Merge a free block with adjacent free blocks, updating the heap tail. */
+void merge_free_malloc_blocks(malloc_block *block) {
+  (void)vircon__heap_merge(block);
+}
+
+/* Shrink a block when the remaining aligned space can form a free block. */
+void reduce_malloc_block(malloc_block *block, int new_size) {
+  unsigned size;
+  if (new_size < 0 || (unsigned)new_size > block->size)
+    return;
+  size = vircon__heap_align((unsigned)new_size);
+  if (size <= block->size)
+    vircon__heap_reduce(block, size);
+}
+
+/* Grow in place into a free following block, retaining heap alignment. */
+bool expand_malloc_block(malloc_block *block, int new_size) {
+  volatile malloc_block *current = block;
+  volatile malloc_block *next = current->next;
+  unsigned size;
+  if (new_size <= 0 || (unsigned)new_size <= current->size)
+    return true;
+  size = vircon__heap_align((unsigned)new_size);
+  if (size < (unsigned)new_size || next == (volatile malloc_block *)0 || !next->free ||
+      next->size + (unsigned)sizeof(malloc_block) < size - current->size)
+    return false;
+  current->size += (unsigned)sizeof(malloc_block) + next->size;
+  current->next = next->next;
+  if (next->next != (malloc_block *)0)
+    next->next->previous = block;
+  else
+    vircon__heap_last_block = current;
+  vircon__heap_reduce(current, size);
+  return true;
 }
 
 /* Reserves a fresh contiguous block, growing Wasm memory only when needed. */

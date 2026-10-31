@@ -46,7 +46,7 @@ int main(void)
     select_texture(0);
     select_gamepad(0);
 
-    define_region_matrix(&tile_set_regions);
+    define_region_matrix_from_descriptor(&tile_set_regions);
 
     select_region(REGION_ARROW_LEFT);
     set_region_minimum(0, 241);

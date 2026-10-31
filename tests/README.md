@@ -38,5 +38,6 @@ ctest --test-dir build -L simulator --output-on-failure
 
 The simulator must model logical right shifts and SPU channel state. The complete suite also runs the simulator variants when configured.
 Each case retains its assembly expectations, while its simulator
-commands and expected values live alongside it. Raw simulator output
-is saved in the case's build directory for inspection.
+commands and expected values live alongside it. The simulator variant writes
+its build files and raw output under `build/rom-tests.obj/<case>/simulator/`,
+so it can run in parallel with the normal ROM case.

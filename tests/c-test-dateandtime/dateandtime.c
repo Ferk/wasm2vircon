@@ -14,7 +14,7 @@ int main(void)
      * is the full 6x32 seconds colon. Both are separate from the digit grids. */
     select_region(1); set_region_minimum(364,1); set_region_maximum(364,31); set_region_hotspot(364,31);
     select_region(2); set_region_minimum(211,315); set_region_maximum(216,346); set_region_hotspot(211,315);
-    define_region_matrix(&large); define_region_matrix(&small); define_region_matrix(&date); define_region_matrix(&months);
+    define_region_matrix_from_descriptor(&large); define_region_matrix_from_descriptor(&small); define_region_matrix_from_descriptor(&date); define_region_matrix_from_descriptor(&months);
     assign_channel_sound(1,0); set_channel_volume(.2f); set_channel_speed(1.1892f);
     assign_channel_sound(0,0); set_channel_volume(.25f);
     for (;;) {

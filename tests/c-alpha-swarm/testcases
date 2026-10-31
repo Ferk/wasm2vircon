@@ -1,0 +1,7 @@
+source=alpha-swarm.c
+extra_sources=../../examples/c-boids/src/alpha_swarm.c
+include_dirs=../../include ../../examples/c-boids/src
+entry=__original_main
+expectations=expected.asm
+sim_commands=v32sim.commands
+sim_expectations=expected.v32sim

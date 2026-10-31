@@ -1,0 +1,1 @@
+__wasm_memory_grow

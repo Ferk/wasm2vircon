@@ -11,6 +11,6 @@ also in `assets/` and is converted with `png2vircon`.
 The source changes from the official dialect are limited to ISO C array/type
 syntax, `int main(void)`, replacing `embedded` with the generated ordinary C
 array, and using the project runtime. The original ten-argument
-`define_region_matrix` call becomes a pointer to an equivalent ordinary C
-runtime structure, which is a more natural representation for its region
-matrix data.
+`define_region_matrix` call uses `define_region_matrix_from_descriptor` with
+an equivalent ordinary C structure. The official ten-argument form is also
+available to applications.

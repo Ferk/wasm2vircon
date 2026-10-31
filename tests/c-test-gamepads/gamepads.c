@@ -27,10 +27,10 @@ int main(void)
 
     select_texture(0);
     select_region(0); set_region_minimum(1, 1); set_region_maximum(227, 112); set_region_hotspot(1, 1);
-    define_region_matrix(&player_text);
-    define_region_matrix(&arrows);
-    define_region_matrix(&front_buttons);
-    define_region_matrix(&shoulder_buttons);
+    define_region_matrix_from_descriptor(&player_text);
+    define_region_matrix_from_descriptor(&arrows);
+    define_region_matrix_from_descriptor(&front_buttons);
+    define_region_matrix_from_descriptor(&shoulder_buttons);
     select_region(36); set_region_minimum(205, 114); set_region_maximum(225, 128); set_region_hotspot(205, 114);
     select_region(40); set_region_minimum(205, 130); set_region_maximum(206, 131); set_region_hotspot(205, 130);
 

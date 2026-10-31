@@ -180,6 +180,10 @@ foreach(case_directory IN LISTS case_directories)
   endif()
 
   set(case_output "${work_dir}/${case_name}")
+  # Normal and simulator variants may run concurrently under CTest.
+  if(TEST_MODE STREQUAL "simulator")
+    string(APPEND case_output "/simulator")
+  endif()
   file(MAKE_DIRECTORY "${case_output}")
   get_filename_component(program_name "${case_source}" NAME_WE)
   set(wasm_file "${case_output}/${program_name}.wasm")

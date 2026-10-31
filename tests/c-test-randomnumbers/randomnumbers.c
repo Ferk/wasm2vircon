@@ -21,7 +21,7 @@ int main(void)
     int total = 0;
     select_texture(0);
     select_region(0); set_region_minimum(0, 0); set_region_maximum(285, 359); set_region_hotspot(285, 0);
-    define_region_matrix(&dice); define_region_matrix(&bars);
+    define_region_matrix_from_descriptor(&dice); define_region_matrix_from_descriptor(&bars);
     srand(get_time()); select_gamepad(0);
     select_channel(0); set_channel_volume(0.2f);
     select_channel(1); set_channel_volume(0.8f);
