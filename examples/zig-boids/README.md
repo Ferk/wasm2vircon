@@ -1,13 +1,16 @@
-# Zig Boids
+# Zig Boids benchmarks
 
-This is a self-contained Zig port of the C boids benchmark in
-[`../c-boids`](../c-boids). It uses the same deliberately simple O(N²)
-flocking simulation, BIOS-font status display, and no external resources.
+This freestanding Zig example implements the Boids, BunnyMark, and Alpha
+Swarm workloads from the [C benchmark](../c-boids). Workload state, rendering,
+and the benchmark controller are ordinary Zig code; no textures or sounds
+are required. The source files keep the workloads separate from the controller.
 
-The example starts with 50 boids. On gamepad 0, press **up** to add ten boids
-and **down** to remove ten; the range is 10–150. The HUD shows the simulation
-update-rate estimate and the previous frame's CPU usage as a
-percentage of Vircon32's 250,000-cycle display-frame budget.
+Use **L/R** to switch workloads, **up/down** to change the count in batches,
+and **left/right** to change it by one. Holding a direction repeats using the
+frame counter. **Start** runs the same six one-second cases as the C ROM and
+then returns to interactive mode. The HUD shows the completed-frame FPS and
+CPU/GPU usage. The optional [benchmark test](../test/README.md) collects and
+compares the language tours with v32sim.
 
 ## Requirements
 
@@ -37,6 +40,8 @@ target.
 `.rom.xml` definition with the cartridge title and binary path. It uses Zig's own
 filesystem API to create `build/`, so it does not rely on Unix `mkdir` or
 `cp`; only the project toolchain executables themselves must be on `PATH`.
+The Wasm retains its name section so the translator can identify Zig's
+`__stack_pointer` global when the benchmark uses stack-resident state.
 
 `src/vircon.zig` is a documented Zig-facing counterpart to the public C API.
 It exposes video/region drawing, BIOS-font text, input, timers/RNG, sound,

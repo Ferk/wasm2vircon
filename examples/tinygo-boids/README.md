@@ -1,15 +1,16 @@
-# TinyGo Boids
+# TinyGo Boids benchmarks
 
-This is a self-contained TinyGo port of the C boids benchmark in
-[`../c-boids`](../c-boids). It preserves the deliberately simple O(N²)
-flocking algorithm, BIOS-font HUD, cyan BIOS-pixel rendering, and gamepad-0
-up/down workload controls.
+This freestanding TinyGo example implements the Boids, BunnyMark, and Alpha
+Swarm workloads from the [C benchmark](../c-boids). Workload state, rendering,
+and the benchmark controller are ordinary TinyGo code; no textures or sounds
+are required. The source files keep the workloads separate from the controller.
 
-The program starts with 50 boids. Press **up** to add ten and **down** to
-remove ten; the active range is 10–150. The HUD reports the simulation
-update-rate estimate and the previous frame's CPU usage as a percentage of
-Vircon32's 250,000-cycle display-frame
-budget.
+Use **L/R** to switch workloads, **up/down** to change the count in batches,
+and **left/right** to change it by one. Holding a direction repeats using the
+frame counter. **Start** runs the same six one-second cases as the C ROM and
+then returns to interactive mode. The HUD shows the completed-frame FPS and
+CPU/GPU usage. The optional [benchmark test](../test/README.md) collects and
+compares the language tours with v32sim.
 
 ## Requirements
 
@@ -32,9 +33,16 @@ cmake --build build
 ```
 
 The result is `build/TinyGoBoids.v32`. The default CMake target is `v32`, so
-`cmake --build build --target v32` is equivalent. `CMakeLists.txt` is deliberately
-reusable: change `project_name`, `tinygo_target`, and `wasm_entry` near its
-top, then update `rom.xml.in` when copying this example into another cartridge.
+`cmake --build build --target v32` is equivalent. The cartridge configuration
+at the top of `CMakeLists.txt` defines the project name, entry export, TinyGo
+options, source package, and optional texture and sound lists. Go files below
+the source directory are tracked as dependencies; add non-Go inputs to
+`project_extra_dependencies` when needed.
+
+The build generates `TinyGoBoids.rom.xml` and, when resources are listed,
+uses the official converters to create numbered textures and sounds. Set
+`WASM2VIRCON_EXECUTABLE` to select a particular translator. The intermediate
+Wasm, assembly, and program binary have separate build steps.
 
 The TinyGo input profile is intentionally narrow:
 
@@ -50,11 +58,8 @@ functions. `//go:export vircon_main` is a direct entry export; it intentionally
 does not use TinyGo's `//go:wasmexport` reactor wrapper, which would require a
 separate `_initialize` call before the cartridge entry.
 
-`-opt=1` is intentional. TinyGo's more aggressive `-opt=2` currently turns
-part of the flock update into a value-carrying structured branch, which is
-outside the deliberately resultless VirconWasm control-flow subset. The
-`-opt=1` output retains the same application behavior and passes the supported
-frontend profile.
+`-opt=1` is the profile currently used for this example and its benchmark
+results. Other optimization levels may produce different Wasm and performance.
 
 TinyGo itself requires a Go toolchain version compatible with the TinyGo build.
 If `tinygo build` reports a host Go version mismatch, install/select the Go

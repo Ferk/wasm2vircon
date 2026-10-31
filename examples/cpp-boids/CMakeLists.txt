@@ -1,14 +1,81 @@
 cmake_minimum_required(VERSION 3.20)
 
-# Change this one value when copying the sample into a new C++ cartridge.
-set(project_name "CppBoids")
-project(${project_name} NONE)
-set(wasm_entry "vircon_main")
+# ---------------------------------------------------------------------------
+# Cartridge configuration
+#
+# This is the only section that normally needs editing when this file is
+# copied into another freestanding C++ cartridge project. Paths may be absolute
+# or relative to this CMakeLists.txt. Texture and sound list order determines
+# the corresponding Vircon32 resource IDs, starting at zero.
+# ---------------------------------------------------------------------------
 
-get_filename_component(WASM2VIRCON_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+project(CppBoids LANGUAGES NONE)
+set(project_name "${PROJECT_NAME}")
+set(project_rom_title "C++ Boids benchmarks")
+set(project_rom_version "1.0")
+set(project_entry "vircon_main")
 
-# An explicit cache value wins. Otherwise prefer the normal PATH installation,
-# then a compiler built in this checkout for contributor convenience.
+set(project_sources
+  src/main.cpp
+  src/boids.cpp
+  src/benchmark.cpp
+  src/bunnies.cpp
+  src/alpha_swarm.cpp
+  src/count_repeat.cpp
+  src/fps_counter.cpp
+)
+
+# List project-owned headers so editing one triggers recompilation. The public
+# vircon.h dependency is added automatically below.
+set(project_headers
+  src/boids.hpp
+  src/boids.h
+  src/benchmark.h
+  src/bunnies.h
+  src/alpha_swarm.h
+  src/count_repeat.h
+  src/fps_counter.h
+)
+
+# These optional lists customize compilation without changing the pipeline.
+set(project_include_directories)
+# This allocation-free example uses freestanding C++ without exceptions or RTTI.
+set(project_compile_options -std=c++17 -fno-builtin -nostdlib -fno-exceptions -fno-rtti)
+set(project_link_options)
+
+set(project_textures)
+
+# WAV files listed here become sound-0.vsnd, sound-1.vsnd, and so on.
+set(project_sounds)
+
+
+
+# ---------------------------------------------------------------------------
+# Tool and public-header discovery
+# ---------------------------------------------------------------------------
+
+# Resolves one configured path relative to the directory containing this file.
+function(resolve_project_path input_path output_variable)
+  if(IS_ABSOLUTE "${input_path}")
+    set(resolved_path "${input_path}")
+  else()
+    get_filename_component(
+      resolved_path
+      "${input_path}"
+      ABSOLUTE
+      BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+  endif()
+  set(${output_variable} "${resolved_path}" PARENT_SCOPE)
+endfunction()
+
+get_filename_component(
+  WASM2VIRCON_CHECKOUT_ROOT
+  "${CMAKE_CURRENT_LIST_DIR}/../.."
+  ABSOLUTE
+)
+
+# An explicit path wins, followed by PATH and then a checkout build.
 set(WASM2VIRCON_EXECUTABLE "" CACHE FILEPATH "Path to the wasm2vircon executable")
 if(NOT WASM2VIRCON_EXECUTABLE)
   unset(WASM2VIRCON_EXECUTABLE CACHE)
@@ -17,58 +84,227 @@ endif()
 if(NOT WASM2VIRCON_EXECUTABLE)
   unset(WASM2VIRCON_EXECUTABLE CACHE)
   find_program(WASM2VIRCON_EXECUTABLE NAMES wasm2vircon
-    HINTS "${WASM2VIRCON_ROOT}" "${WASM2VIRCON_ROOT}/build" NO_DEFAULT_PATH)
+    HINTS "${WASM2VIRCON_CHECKOUT_ROOT}" "${WASM2VIRCON_CHECKOUT_ROOT}/build"
+    NO_DEFAULT_PATH)
 endif()
 if(NOT WASM2VIRCON_EXECUTABLE)
   message(FATAL_ERROR "wasm2vircon was not found on PATH; set WASM2VIRCON_EXECUTABLE explicitly")
 endif()
 
-find_program(CLANGXX_EXECUTABLE NAMES clang++ REQUIRED)
+set(WASM2VIRCON_INCLUDE_DIR "" CACHE PATH "Directory containing the public vircon.h header")
+if(NOT WASM2VIRCON_INCLUDE_DIR)
+  if(EXISTS "${WASM2VIRCON_CHECKOUT_ROOT}/include/vircon.h")
+    set(WASM2VIRCON_INCLUDE_DIR "${WASM2VIRCON_CHECKOUT_ROOT}/include")
+  else()
+    unset(WASM2VIRCON_INCLUDE_DIR CACHE)
+    find_path(WASM2VIRCON_INCLUDE_DIR NAMES vircon.h)
+  endif()
+endif()
+if(NOT EXISTS "${WASM2VIRCON_INCLUDE_DIR}/vircon.h")
+  message(FATAL_ERROR
+    "vircon.h was not found; set WASM2VIRCON_INCLUDE_DIR to its containing directory")
+endif()
+
+set(VIRCON_CXX_COMPILER "" CACHE FILEPATH "Clang++ executable with wasm32 support")
+if(NOT VIRCON_CXX_COMPILER)
+  unset(VIRCON_CXX_COMPILER CACHE)
+  find_program(VIRCON_CXX_COMPILER NAMES clang++ REQUIRED)
+endif()
 find_program(WASM_LD_EXECUTABLE NAMES wasm-ld REQUIRED)
 find_program(ASSEMBLE_EXECUTABLE NAMES assemble REQUIRED)
 find_program(PACKROM_EXECUTABLE NAMES packrom REQUIRED)
 
-set(project_main_source "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
-set(project_boids_source "${CMAKE_CURRENT_SOURCE_DIR}/src/boids.cpp")
-set(project_boids_header "${CMAKE_CURRENT_SOURCE_DIR}/src/boids.hpp")
-set(project_main_object "${CMAKE_CURRENT_BINARY_DIR}/main.o")
-set(project_boids_object "${CMAKE_CURRENT_BINARY_DIR}/boids.o")
+if(project_textures)
+  find_program(PNG2VIRCON_EXECUTABLE NAMES png2vircon REQUIRED)
+endif()
+if(project_sounds)
+  find_program(WAV2VIRCON_EXECUTABLE NAMES wav2vircon REQUIRED)
+endif()
+
+
+# ---------------------------------------------------------------------------
+# Input and output paths
+# ---------------------------------------------------------------------------
+
+set(source_paths)
+foreach(source IN LISTS project_sources)
+  resolve_project_path("${source}" source_path)
+  if(NOT EXISTS "${source_path}")
+    message(FATAL_ERROR "C++ source not found: ${source_path}")
+  endif()
+  list(APPEND source_paths "${source_path}")
+endforeach()
+
+set(header_paths "${WASM2VIRCON_INCLUDE_DIR}/vircon.h")
+foreach(header IN LISTS project_headers)
+  resolve_project_path("${header}" header_path)
+  if(NOT EXISTS "${header_path}")
+    message(FATAL_ERROR "C++ header not found: ${header_path}")
+  endif()
+  list(APPEND header_paths "${header_path}")
+endforeach()
+
+set(include_flags -I "${WASM2VIRCON_INCLUDE_DIR}")
+# No WASI sysroot or C++ standard library is required by these sources.
+set(cxx_target_flags --target=wasm32-unknown-unknown)
+foreach(include_directory IN LISTS project_include_directories)
+  resolve_project_path("${include_directory}" include_path)
+  list(APPEND include_flags -I "${include_path}")
+endforeach()
+
 set(project_wasm "${CMAKE_CURRENT_BINARY_DIR}/${project_name}.wasm")
 set(project_asm "${CMAKE_CURRENT_BINARY_DIR}/${project_name}.asm")
 set(project_vbin "${CMAKE_CURRENT_BINARY_DIR}/${project_name}.vbin")
 set(project_xml "${CMAKE_CURRENT_BINARY_DIR}/${project_name}.rom.xml")
 set(project_rom "${CMAKE_CURRENT_BINARY_DIR}/${project_name}.v32")
+
+
+# ---------------------------------------------------------------------------
+# C++ -> Wasm object files -> linked Wasm module
+# ---------------------------------------------------------------------------
+
+set(project_objects)
+set(source_index 0)
+foreach(source_path IN LISTS source_paths)
+  set(object_path "${CMAKE_CURRENT_BINARY_DIR}/source-${source_index}.o")
+  add_custom_command(
+    OUTPUT "${object_path}"
+    COMMAND
+      "${VIRCON_CXX_COMPILER}"
+      ${cxx_target_flags}
+      -O2
+      -ffreestanding
+      ${include_flags}
+      ${project_compile_options}
+      -c "${source_path}"
+      -o "${object_path}"
+    DEPENDS "${source_path}" ${header_paths}
+    COMMENT "Compiling ${source_path} for wasm32"
+    VERBATIM
+  )
+  list(APPEND project_objects "${object_path}")
+  math(EXPR source_index "${source_index} + 1")
+endforeach()
+
+add_custom_command(
+  OUTPUT "${project_wasm}"
+  COMMAND
+    "${WASM_LD_EXECUTABLE}"
+    --no-entry
+    "--export=${project_entry}"
+    --allow-undefined
+    ${project_objects}
+    ${project_link_options}
+    -o "${project_wasm}"
+  DEPENDS ${project_objects}
+  COMMENT "Linking ${project_name}.wasm"
+  VERBATIM
+)
+
+
+# ---------------------------------------------------------------------------
+# Wasm -> Vircon32 program
+# ---------------------------------------------------------------------------
+
+add_custom_command(
+  OUTPUT "${project_asm}"
+  COMMAND
+    "${WASM2VIRCON_EXECUTABLE}"
+    "${project_wasm}"
+    --entry "${project_entry}"
+    -o "${project_asm}"
+  DEPENDS "${project_wasm}" "${WASM2VIRCON_EXECUTABLE}"
+  COMMENT "Translating Wasm to Vircon32 assembly"
+  VERBATIM
+)
+
+add_custom_command(
+  OUTPUT "${project_vbin}"
+  COMMAND "${ASSEMBLE_EXECUTABLE}" -o "${project_vbin}" "${project_asm}"
+  DEPENDS "${project_asm}"
+  COMMENT "Assembling ${project_name}.vbin"
+  VERBATIM
+)
+
+
+# ---------------------------------------------------------------------------
+# PNG/WAV resources
+#
+# Numbered output names make their ROM order and public resource IDs explicit,
+# and avoid basename collisions between assets from different directories.
+# ---------------------------------------------------------------------------
+
+set(project_texture_outputs)
+set(project_texture_xml "")
+set(texture_index 0)
+foreach(texture IN LISTS project_textures)
+  resolve_project_path("${texture}" texture_source)
+  if(NOT EXISTS "${texture_source}")
+    message(FATAL_ERROR "PNG texture not found: ${texture_source}")
+  endif()
+  set(texture_name "texture-${texture_index}.vtex")
+  set(texture_output "${CMAKE_CURRENT_BINARY_DIR}/${texture_name}")
+  add_custom_command(
+    OUTPUT "${texture_output}"
+    COMMAND "${PNG2VIRCON_EXECUTABLE}" "${texture_source}" -o "${texture_output}"
+    DEPENDS "${texture_source}"
+    COMMENT "Converting texture ${texture_index}: ${texture_source}"
+    VERBATIM
+  )
+  list(APPEND project_texture_outputs "${texture_output}")
+  string(APPEND project_texture_xml "    <texture path=\"${texture_name}\" />\n")
+  math(EXPR texture_index "${texture_index} + 1")
+endforeach()
+
+set(project_sound_outputs)
+set(project_sound_xml "")
+set(sound_index 0)
+foreach(sound IN LISTS project_sounds)
+  resolve_project_path("${sound}" sound_source)
+  if(NOT EXISTS "${sound_source}")
+    message(FATAL_ERROR "WAV sound not found: ${sound_source}")
+  endif()
+  set(sound_name "sound-${sound_index}.vsnd")
+  set(sound_output "${CMAKE_CURRENT_BINARY_DIR}/${sound_name}")
+  add_custom_command(
+    OUTPUT "${sound_output}"
+    COMMAND
+      "${CMAKE_COMMAND}" -E env SDL_AUDIODRIVER=dummy
+      "${WAV2VIRCON_EXECUTABLE}" "${sound_source}" -o "${sound_output}"
+    DEPENDS "${sound_source}"
+    COMMENT "Converting sound ${sound_index}: ${sound_source}"
+    VERBATIM
+  )
+  list(APPEND project_sound_outputs "${sound_output}")
+  string(APPEND project_sound_xml "    <sound path=\"${sound_name}\" />\n")
+  math(EXPR sound_index "${sound_index} + 1")
+endforeach()
+
 file(WRITE "${project_xml}"
   "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>\n"
   "<rom-definition version=\"1.0\">\n"
-  "  <rom type=\"cartridge\" title=\"${project_name}\" version=\"1.0\" />\n"
+  "  <rom type=\"cartridge\" title=\"${project_rom_title}\" version=\"${project_rom_version}\" />\n"
   "  <binary path=\"${project_name}.vbin\" />\n"
-  "  <textures />\n"
-  "  <sounds />\n"
+  "  <textures>\n${project_texture_xml}  </textures>\n"
+  "  <sounds>\n${project_sound_xml}  </sounds>\n"
   "</rom-definition>\n")
 
-set(cpp_wasm_flags
-  --target=wasm32-unknown-unknown -O2 -std=c++17
-  -ffreestanding -fno-builtin -nostdlib -fno-exceptions -fno-rtti
-  -I "${WASM2VIRCON_ROOT}/include")
+
+# ---------------------------------------------------------------------------
+# Program + resources -> cartridge ROM
+# ---------------------------------------------------------------------------
 
 add_custom_command(
   OUTPUT "${project_rom}"
-  # Compile ordinary freestanding C++ to relocatable Wasm objects.
-  COMMAND "${CLANGXX_EXECUTABLE}" ${cpp_wasm_flags}
-    -c "${project_main_source}" -o "${project_main_object}"
-  COMMAND "${CLANGXX_EXECUTABLE}" ${cpp_wasm_flags}
-    -c "${project_boids_source}" -o "${project_boids_object}"
-  # Retain the env.* platform imports for wasm2vircon, then package the ROM.
-  COMMAND "${WASM_LD_EXECUTABLE}" --no-entry --export=${wasm_entry} --allow-undefined
-    "${project_main_object}" "${project_boids_object}" -o "${project_wasm}"
-  COMMAND "${WASM2VIRCON_EXECUTABLE}" "${project_wasm}" --entry "${wasm_entry}" -o "${project_asm}"
-  COMMAND "${ASSEMBLE_EXECUTABLE}" -o "${project_vbin}" "${project_asm}"
   COMMAND "${PACKROM_EXECUTABLE}" -o "${project_rom}" "${project_xml}"
-  DEPENDS "${project_main_source}" "${project_boids_source}" "${project_boids_header}"
-    "${WASM2VIRCON_ROOT}/include/vircon.h" "${project_xml}"
-  COMMENT "Building ${project_name}.v32"
-  VERBATIM)
+  DEPENDS
+    "${project_vbin}"
+    "${project_xml}"
+    ${project_texture_outputs}
+    ${project_sound_outputs}
+  COMMENT "Packaging ${project_name}.v32"
+  VERBATIM
+)
 
-# Keep the human-facing build target stable while project_name controls files.
+# The stable user-facing target is always `v32`, regardless of cartridge name.
 add_custom_target(v32 ALL DEPENDS "${project_rom}")

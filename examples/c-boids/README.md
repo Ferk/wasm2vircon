@@ -1,17 +1,55 @@
-# Boidmark C sample
+# C Boids benchmark sample
 
 This is a self-contained CMake application build. Its `CMakeLists.txt` shows
 the complete basic C-to-ROM command sequence and includes the header-only
 public C API. No project runtime source files are needed.
 
-This is a deliberately simple O(N²) flocking benchmark. It starts with 50
-boids and draws each one as a small cyan BIOS-pixel square. Press gamepad 0's
-**up** and **down** directions to add or remove ten boids; the fixed capacity
-is 150 and the minimum is 10. It uses no external resources. `FPS` is the
-simulation update-rate estimate. A 100-boid update is intentionally far beyond
-a smooth one-frame workload on Vircon32. The `CPU` line reports the previous
-frame's simulation, drawing, and HUD work as a percentage of Vircon32's
-250,000-cycle display-frame budget.
+The ROM contains three resource-free workloads. **L/R** switches between
+different benchmark modes; Holding **up/down** changes its count in batches
+and **left/right** changes it by one.
+
+The different benchmark modes included are:
+
+- **Boids** uses a deliberately simple O(N²) flocking algorithm, starting at
+  50 cyan squares. Count ranges from 0 to 150, in batches of 10.
+- **BunnyMark** moves independent sprites, drawn in gray using the BIOS font's
+  `b` glyph and GPU multiply color. Count ranges from 0 to 9999, batches of 100.
+- **Alpha Swarm** draws large, overlapping translucent `v` glyphs using the
+  BIOS font. They bounce below the HUD and rotate to follow their direction.
+  Count ranges from 0 to 96, in batches of 5. At high counts the GPU rejects draws
+  after its pixel budget is exhausted. The HUD is drawn first, above the layers,
+  so it remains visible when GPU usage reaches 100%. The glyph's region is
+  derived from the active BIOS font, including with the standard BIOS.
+
+All modes use the same HUD and timing code. `FPS` counts complete update and
+drawing iterations over at least 60 display frames, including time spent
+waiting for the next frame. The HUD shows 60.00 until its first measured window
+finishes, about one second later. `CPU` reports the previous frame's simulation, drawing, and HUD work as a
+percentage of Vircon32's 250,000-cycle display-frame budget. `GPU` reports the
+pixel budget used in the hardware frame sampled at the end of the previous
+iteration, capped at 100%; if an iteration spans frames it is not an aggregate
+of those frames.
+
+Press **Start** at any time to run the benchmark tour. It resets each workload
+and runs each case for at least 60 display frames (about one second), going
+through different modes and count values. The HUD shows the current case;
+the selected interactive workload resumes after the final one. A slow iteration can span multiple display
+frames, so each case finishes after its current iteration and can exceed one second.
+
+## Collect benchmark results
+
+From the repository root, run the C benchmark and collect code size and,
+when available, a v32sim instruction profile:
+
+```sh
+cmake -DEXAMPLES=c-boids -P examples/test/benchmark.cmake
+```
+
+To include the other available language examples, omit `-DEXAMPLES=c-boids`.
+Each example checks its own tools. Missing executables reported during
+configuration are skipped; `-DREQUIRE_ALL=ON` instead reports them as errors.
+Other build failures stop the run with the example's diagnostic. Use
+`-DENABLE_V32SIM=OFF` to skip simulation explicitly.
 
 ## Requirements
 

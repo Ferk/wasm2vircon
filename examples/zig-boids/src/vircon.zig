@@ -186,6 +186,14 @@ pub fn selectRegion(region: i32) void {
 pub fn getSelectedRegion() i32 {
     return platform.vircon_gpu_get_selected_region();
 }
+/// Returns the remaining GPU pixel budget for the current frame.
+pub fn getGpuRemainingPixels() i32 {
+    return platform.vircon_gpu_get_remaining_pixels();
+}
+/// Returns the selected region's top-left texture coordinate.
+pub fn getRegionMinimum() Point {
+    return .{ .x = platform.vircon_gpu_get_region_min_x(), .y = platform.vircon_gpu_get_region_min_y() };
+}
 /// Sets the selected region's inclusive minimum texture coordinate.
 pub fn setRegionMinimum(x: i32, y: i32) void {
     platform.vircon_gpu_set_region_minimum(x, y);
@@ -387,17 +395,17 @@ var fraction_text: [2:0]u8 = .{ '0', '0' };
 pub fn printFixed2At(initial_x: i32, y: i32, value: f32) void {
     var x = initial_x;
     var hundredths: i32 = @intFromFloat(value * 100.0);
-    if (hundredths < 0) {
+    if (value < 0.0) {
         printAt(x, y, "-");
         x += 10;
-        hundredths = -hundredths;
     }
+    if (hundredths < 0) hundredths = -hundredths;
     const magnitude: u32 = @intCast(hundredths);
-    printUIntAt(x, y, magnitude / 100);
-    printAt(x + 20, y, ".");
+    x = printDigits(x, y, magnitude / 100);
+    printAt(x, y, ".");
     fraction_text[0] = @intCast('0' + (magnitude / 10) % 10);
     fraction_text[1] = @intCast('0' + magnitude % 10);
-    printAt(x + 30, y, &fraction_text);
+    printAt(x + 10, y, &fraction_text);
 }
 
 // ----
@@ -831,6 +839,9 @@ const platform = struct {
     extern "env" fn vircon_set_background_color(i32) void;
     extern "env" fn vircon_end_frame() void;
     extern "env" fn vircon_gpu_get_selected_texture() i32;
+    extern "env" fn vircon_gpu_get_remaining_pixels() i32;
+    extern "env" fn vircon_gpu_get_region_min_x() i32;
+    extern "env" fn vircon_gpu_get_region_min_y() i32;
     extern "env" fn vircon_gpu_select_texture(i32) void;
     extern "env" fn vircon_gpu_get_selected_region() i32;
     extern "env" fn vircon_gpu_select_region(i32) void;

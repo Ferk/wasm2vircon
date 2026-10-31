@@ -1,19 +1,16 @@
-# C++ Boids
+# C++ Boids benchmarks
 
-This self-contained freestanding C++ example implements the same interactive
-O(N²) flocking benchmark as [`../c-boids`](../c-boids), using the public
-header-only Vircon32 API. It does not use the C++ standard library, dynamic
-allocation, exceptions, RTTI, or constructors with runtime side effects.
+This freestanding C++ example implements the Boids, BunnyMark, and Alpha
+Swarm workloads from the [C benchmark](../c-boids). Workload state, rendering,
+and the benchmark controller are ordinary C++ code; no textures or sounds
+are required. The source files keep the workloads separate from the controller.
 
-`src/main.cpp` owns the cartridge entry, input, timing, and status display.
-`src/boids.cpp` owns flock state, the simulation, workload changes, and rendering.
-The explicit `vircon_main` export is C-linked so the Wasm entry name remains
-stable despite normal C++ name mangling.
-
-Gamepad 0 **up** adds ten boids and **down** removes ten, with a range of
-10–150. The HUD reports active boids, the simulation update-rate estimate, and
-the previous frame's CPU usage as a percentage of Vircon32's 250,000-cycle
-display-frame budget.
+Use **L/R** to switch workloads, **up/down** to change the count in batches,
+and **left/right** to change it by one. Holding a direction repeats using the
+frame counter. **Start** runs the same six one-second cases as the C ROM and
+then returns to interactive mode. The HUD shows the completed-frame FPS and
+CPU/GPU usage. The optional [benchmark test](../test/README.md) collects and
+compares the language tours with v32sim.
 
 ## Requirements
 
@@ -41,3 +38,11 @@ The final cartridge is `build/CppBoids.v32`. To use a specific compiler build:
 cmake -S . -B build -DWASM2VIRCON_EXECUTABLE=/path/to/wasm2vircon
 cmake --build build --target v32
 ```
+
+The cartridge configuration is at the top of `CMakeLists.txt`: it lists the
+sources, headers, include directories, compiler options, textures, and sounds.
+The build generates `CppBoids.rom.xml` and converts any listed PNG or WAV
+resources using the official tools. Those converters are needed only when the
+corresponding resource list is nonempty. Set `VIRCON_CXX_COMPILER` or
+`WASM2VIRCON_INCLUDE_DIR` when the defaults do not locate your compiler or
+public header.

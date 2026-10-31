@@ -66,10 +66,22 @@ fn initializeBoid(index: usize) void {
 
 /// Initializes the visible starting workload.
 pub fn initialize() void {
+    boidCount().* = initial_boid_count;
+    random_state_storage[0] = 1;
     var index: i32 = 0;
     while (index < boidCount().*) : (index += 1) {
         initializeBoid(@intCast(index));
     }
+}
+
+/// Changes the workload count and initializes newly enabled boids.
+pub fn setCount(requested: i32) void {
+    const target = @max(0, @min(max_boid_count, requested));
+    while (boidCount().* < target) {
+        initializeBoid(@intCast(boidCount().*));
+        boidCount().* += 1;
+    }
+    boidCount().* = target;
 }
 
 /// Adds one fixed batch without exceeding the benchmark's fixed capacity.

@@ -62,6 +62,8 @@ namespace boids {
 // Initializes the initial visible benchmark workload.
 void initialize()
 {
+    random_state = 1;
+    active_boid_count = initial_boid_count;
     for (int index = 0; index < active_boid_count; ++index)
         initialize_boid(index);
 }
@@ -175,3 +177,15 @@ void draw()
 }
 
 } // namespace boids
+
+// Expose the common controller interface using the C++ workload state.
+void reset_boids() { boids::initialize(); }
+void set_boid_count(int count) {
+    if (count < 0) count = 0;
+    if (count > max_boid_count) count = max_boid_count;
+    while (active_boid_count < count) initialize_boid(active_boid_count++);
+    active_boid_count = count;
+}
+int get_boid_count() { return boids::count(); }
+void update_boids() { boids::update(); }
+void draw_boids() { boids::draw(); }

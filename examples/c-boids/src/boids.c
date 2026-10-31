@@ -1,12 +1,10 @@
+/* The flocking workload; input, timing, and presentation live in benchmark.c. */
 #include <vircon.h>
 
 #include "boids.h"
 
-#define CYCLES_PER_FRAME 250000
-
 #define MAX_BOID_COUNT     150
 #define INITIAL_BOID_COUNT 50
-#define BOID_COUNT_STEP    10
 
 #define WIDTH  640.0f
 #define HEIGHT 360.0f
@@ -34,7 +32,7 @@ typedef struct
 } Boid;
 
 
-Boid boids[MAX_BOID_COUNT];
+static Boid boids[MAX_BOID_COUNT];
 static int boid_count = INITIAL_BOID_COUNT;
 
 
@@ -44,7 +42,7 @@ static int boid_count = INITIAL_BOID_COUNT;
 
 static unsigned int random_state = 1;
 
-unsigned int random_u32()
+static unsigned int random_u32(void)
 {
     random_state =
         random_state * 1664525u + 1013904223u;
@@ -53,7 +51,7 @@ unsigned int random_u32()
 }
 
 
-float random_float(float min, float max)
+static float random_float(float min, float max)
 {
     unsigned int value = random_u32() & 0xFFFF;
 
@@ -77,34 +75,28 @@ static void initialize_boid(int index)
 }
 
 /* Initialize the visible starting workload. */
-void initialize_boids(void)
+void reset_boids(void)
 {
     int index;
 
+    random_state = 1;
+    boid_count = INITIAL_BOID_COUNT;
     for (index = 0; index < boid_count; ++index)
         initialize_boid(index);
 }
 
-/* Adds one fixed batch, stopping at the benchmark's fixed capacity. */
-void increase_boid_count(void)
+/* Changes the count and initializes any newly enabled boids. */
+void set_boid_count(int count)
 {
-    int target = boid_count + BOID_COUNT_STEP;
-
-    if (target > MAX_BOID_COUNT)
-        target = MAX_BOID_COUNT;
-    while (boid_count < target) {
+    if (count < 0)
+        count = 0;
+    if (count > MAX_BOID_COUNT)
+        count = MAX_BOID_COUNT;
+    while (boid_count < count) {
         initialize_boid(boid_count);
         ++boid_count;
     }
-}
-
-/* Removes one batch while retaining at least one visible simulated boid. */
-void decrease_boid_count(void)
-{
-    if (boid_count > BOID_COUNT_STEP)
-        boid_count -= BOID_COUNT_STEP;
-    else
-        boid_count = 10;
+    boid_count = count;
 }
 
 /* Returns the active workload rather than the array's maximum capacity. */
@@ -118,7 +110,7 @@ int get_boid_count(void)
    Update one simulation step
    --------------------------------------------------------- */
 
-void update_boids()
+void update_boids(void)
 {
     for(int i = 0; i < boid_count; i++)
     {
@@ -285,62 +277,4 @@ void draw_boids(void)
 
     set_drawing_scale(1.0f, 1.0f);
     set_multiply_color(color_white);
-}
-
-/* Runs the complete interactive benchmark. Input, timing and presentation
- * live beside the simulation so main.c remains only the cartridge entry. */
-void run_boids(void)
-{
-    int update_start_frame;
-    int update_frames;
-    int up_pressed;
-    int down_pressed;
-    int previous_up_pressed = 0;
-    int previous_down_pressed = 0;
-    float frames_per_update;
-    int cpu_percent = 0;
-
-    initialize_boids();
-
-    for (;;) {
-        int start_frame = get_frame_counter();
-        int start_cycles = get_cycle_counter();
-
-        /* Change workload once per press rather than every held frame. */
-        select_gamepad(0);
-        /* Input ports may use signed nonzero transition states. */
-        up_pressed = gamepad_up() > 0;
-        down_pressed = gamepad_down() > 0;
-        if (up_pressed && !previous_up_pressed)
-            increase_boid_count();
-        else if (down_pressed && !previous_down_pressed)
-            decrease_boid_count();
-        previous_up_pressed = up_pressed;
-        previous_down_pressed = down_pressed;
-
-        update_start_frame = get_frame_counter();
-        update_boids();
-        /* A sub-frame update still occupies one displayed frame. */
-        update_frames = get_frame_counter() - update_start_frame + 1;
-        frames_per_update = (float)frames_per_second / (float)update_frames;
-
-        /* Retain the previous flock while an O(N^2) update spans a frame. */
-        clear_screen(color_black);
-        draw_boids();
-        print_at(10, 10, "Boids:");
-        print_uint_at(80, 10, (unsigned)get_boid_count());
-        print_at(120, 10, "(up/down +/-10)");
-        print_at(10, 30, "FPS:");
-        print_fixed_2_at(60, 30, frames_per_update);
-        print_at(10, 50, "CPU:");
-        print_uint_at(60, 50, (unsigned)cpu_percent);
-        print_at(90, 50, "%");
-
-        /* The value is displayed on the following frame, after all current
-         * simulation, drawing, and HUD work has been measured. */
-        cpu_percent =
-            ((get_frame_counter() - start_frame) * CYCLES_PER_FRAME +
-             get_cycle_counter() - start_cycles) * 100 / CYCLES_PER_FRAME;
-        end_frame();
-    }
 }

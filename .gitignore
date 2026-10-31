@@ -1,10 +1,14 @@
 /build/
 
 /CMakeFiles/
+/Testing/
 CMakeCache.txt
 cmake_*.cmake
+CTestTestfile.cmake
+DartConfiguration.tcl
 Makefile
 
 *.rom.xml
 *obj
 wasm2vircon
+wasm2vircon-*

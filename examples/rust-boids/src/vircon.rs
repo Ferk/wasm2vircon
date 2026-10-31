@@ -37,6 +37,36 @@ unsafe extern "C" {
     fn input_gamepad_up() -> i32;
     #[link_name = "vircon_input_gamepad_down"]
     fn input_gamepad_down() -> i32;
+    #[link_name = "vircon_gpu_get_remaining_pixels"]
+    fn gpu_remaining() -> i32;
+    #[link_name = "vircon_gpu_get_region_min_x"]
+    fn gpu_region_min_x() -> i32;
+    #[link_name = "vircon_gpu_get_region_min_y"]
+    fn gpu_region_min_y() -> i32;
+    #[link_name = "vircon_gpu_set_region_minimum"]
+    fn gpu_region_min(x: i32, y: i32);
+    #[link_name = "vircon_gpu_set_region_maximum"]
+    fn gpu_region_max(x: i32, y: i32);
+    #[link_name = "vircon_gpu_set_region_hotspot"]
+    fn gpu_hotspot(x: i32, y: i32);
+    #[link_name = "vircon_gpu_set_active_blending"]
+    fn gpu_blend(mode: i32);
+    #[link_name = "vircon_gpu_set_drawing_angle"]
+    fn gpu_angle(value: f32);
+    #[link_name = "vircon_gpu_draw_region_rotozoomed"]
+    fn gpu_rotozoom();
+    #[link_name = "vircon_cpu_atan2"]
+    fn cpu_atan2(y: f32, x: f32) -> f32;
+    #[link_name = "vircon_input_gamepad_left"]
+    fn input_left() -> i32;
+    #[link_name = "vircon_input_gamepad_right"]
+    fn input_right() -> i32;
+    #[link_name = "vircon_input_gamepad_button_l"]
+    fn input_l() -> i32;
+    #[link_name = "vircon_input_gamepad_button_r"]
+    fn input_r() -> i32;
+    #[link_name = "vircon_input_gamepad_button_start"]
+    fn input_start() -> i32;
     #[link_name = "vircon_timer_get_frame_counter"]
     fn timer_get_frame_counter() -> i32;
     #[link_name = "vircon_timer_get_cycle_counter"]
@@ -44,33 +74,134 @@ unsafe extern "C" {
 }
 
 /// Clears the next displayed frame to a packed Vircon ABGR colour.
-pub fn clear_screen(color: i32) { unsafe { set_background_color(color); } }
+pub fn clear_screen(color: i32) {
+    unsafe {
+        set_background_color(color);
+    }
+}
 /// Waits for the next Vircon32 video frame.
-pub fn end_frame() { unsafe { wait_for_frame(); } }
+pub fn end_frame() {
+    unsafe {
+        wait_for_frame();
+    }
+}
 /// Selects an application texture, or -1 for the BIOS texture.
-pub fn select_texture(texture: i32) { unsafe { gpu_select_texture(texture); } }
+pub fn select_texture(texture: i32) {
+    unsafe {
+        gpu_select_texture(texture);
+    }
+}
 /// Selects a region in the active texture.
-pub fn select_region(region: i32) { unsafe { gpu_select_region(region); } }
+pub fn select_region(region: i32) {
+    unsafe {
+        gpu_select_region(region);
+    }
+}
 /// Sets the coordinate used by the next GPU drawing command.
-pub fn set_drawing_point(x: i32, y: i32) { unsafe { gpu_set_drawing_point(x, y); } }
+pub fn set_drawing_point(x: i32, y: i32) {
+    unsafe {
+        gpu_set_drawing_point(x, y);
+    }
+}
 /// Sets the drawing multiply colour.
-pub fn set_multiply_color(color: i32) { unsafe { gpu_set_multiply_color(color); } }
+pub fn set_multiply_color(color: i32) {
+    unsafe {
+        gpu_set_multiply_color(color);
+    }
+}
 /// Sets the typed floating-point scale used by zoomed drawing.
-pub fn set_drawing_scale(x: f32, y: f32) { unsafe { gpu_set_drawing_scale(x, y); } }
+pub fn set_drawing_scale(x: f32, y: f32) {
+    unsafe {
+        gpu_set_drawing_scale(x, y);
+    }
+}
 /// Draws the selected texture region.
-pub fn draw_region() { unsafe { gpu_draw_region(); } }
+pub fn draw_region() {
+    unsafe {
+        gpu_draw_region();
+    }
+}
 /// Draws the selected texture region with the selected scale.
-pub fn draw_region_zoomed() { unsafe { gpu_draw_region_zoomed(); } }
+pub fn draw_region_zoomed() {
+    unsafe {
+        gpu_draw_region_zoomed();
+    }
+}
 /// Chooses the gamepad used by subsequent input reads.
-pub fn select_gamepad(gamepad: i32) { unsafe { input_select_gamepad(gamepad); } }
+pub fn select_gamepad(gamepad: i32) {
+    unsafe {
+        input_select_gamepad(gamepad);
+    }
+}
 /// Returns whether the selected gamepad's up direction is pressed.
-pub fn gamepad_up() -> bool { unsafe { input_gamepad_up() > 0 } }
+pub fn gamepad_up() -> bool {
+    unsafe { input_gamepad_up() > 0 }
+}
 /// Returns whether the selected gamepad's down direction is pressed.
-pub fn gamepad_down() -> bool { unsafe { input_gamepad_down() > 0 } }
+pub fn gamepad_down() -> bool {
+    unsafe { input_gamepad_down() > 0 }
+}
 /// Returns the current video-frame counter.
-pub fn frame_counter() -> i32 { unsafe { timer_get_frame_counter() } }
+pub fn frame_counter() -> i32 {
+    unsafe { timer_get_frame_counter() }
+}
 /// Returns the CPU cycle counter within the current display frame.
-pub fn cycle_counter() -> i32 { unsafe { timer_get_cycle_counter() } }
+pub fn cycle_counter() -> i32 {
+    unsafe { timer_get_cycle_counter() }
+}
+
+/// Read the remaining GPU pixel budget.
+pub fn gpu_remaining_pixels() -> i32 {
+    unsafe { gpu_remaining() }
+}
+/// Read the selected texture region's top-left coordinates.
+pub fn region_minimum() -> (i32, i32) {
+    unsafe { (gpu_region_min_x(), gpu_region_min_y()) }
+}
+/// Define a texture region and its hotspot.
+pub fn define_region(x: i32, y: i32) {
+    unsafe {
+        gpu_region_min(x, y);
+        gpu_region_max(x + 9, y + 19);
+        gpu_hotspot(x + 5, y + 10);
+    }
+}
+/// Configure blending for subsequent drawing.
+pub fn set_blending(mode: i32) {
+    unsafe { gpu_blend(mode) }
+}
+/// Set the rotation angle for subsequent drawing.
+pub fn set_angle(value: f32) {
+    unsafe { gpu_angle(value) }
+}
+/// Draw a rotated, scaled region.
+pub fn draw_rotozoom() {
+    unsafe { gpu_rotozoom() }
+}
+/// Compute the angle of a finite vector.
+pub fn atan2(y: f32, x: f32) -> f32 {
+    unsafe { cpu_atan2(y, x) }
+}
+/// Read directional and button states.
+pub fn gamepad_left() -> bool {
+    unsafe { input_left() > 0 }
+}
+/// Read the right direction.
+pub fn gamepad_right() -> bool {
+    unsafe { input_right() > 0 }
+}
+/// Read the left shoulder button.
+pub fn gamepad_l() -> bool {
+    unsafe { input_l() > 0 }
+}
+/// Read the right shoulder button.
+pub fn gamepad_r() -> bool {
+    unsafe { input_r() > 0 }
+}
+/// Read the Start button.
+pub fn gamepad_start() -> bool {
+    unsafe { input_start() > 0 }
+}
 
 /// Draws a byte string as CP-1252 BIOS-font glyphs.
 pub fn print_at(initial_x: i32, initial_y: i32, text: &[u8]) {
@@ -94,27 +225,38 @@ pub fn print_at(initial_x: i32, initial_y: i32, text: &[u8]) {
 /// Recursively draws decimal digits and returns the next x coordinate.
 fn print_digits(x: i32, y: i32, value: u32) -> i32 {
     let quotient = value / 10;
-    let next_x = if quotient != 0 { print_digits(x, y, quotient) } else { x };
+    let next_x = if quotient != 0 {
+        print_digits(x, y, quotient)
+    } else {
+        x
+    };
     let digit = [b'0' + (value - quotient * 10) as u8];
     print_at(next_x, y, &digit);
     next_x + 10
 }
 
 /// Draws an unsigned decimal value without requiring formatting support.
-pub fn print_uint_at(x: i32, y: i32, value: u32) { let _ = print_digits(x, y, value); }
+pub fn print_uint_at(x: i32, y: i32, value: u32) {
+    let _ = print_digits(x, y, value);
+}
 
 /// Draws a floating-point value with two decimal places without formatting.
 pub fn print_fixed_2_at(initial_x: i32, y: i32, value: f32) {
     let mut x = initial_x;
     let mut hundredths = (value * 100.0) as i32;
-    if hundredths < 0 {
+    if value < 0.0 {
         print_at(x, y, b"-");
         x += 10;
+    }
+    if hundredths < 0 {
         hundredths = -hundredths;
     }
     let magnitude = hundredths as u32;
-    print_uint_at(x, y, magnitude / 100);
-    print_at(x + 20, y, b".");
-    let fraction = [b'0' + ((magnitude / 10) % 10) as u8, b'0' + (magnitude % 10) as u8];
-    print_at(x + 30, y, &fraction);
+    x = print_digits(x, y, magnitude / 100);
+    print_at(x, y, b".");
+    let fraction = [
+        b'0' + ((magnitude / 10) % 10) as u8,
+        b'0' + (magnitude % 10) as u8,
+    ];
+    print_at(x + 10, y, &fraction);
 }

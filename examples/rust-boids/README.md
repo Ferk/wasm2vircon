@@ -1,18 +1,16 @@
-# Rust Boids
+# Rust Boids benchmarks
 
-A self-contained freestanding Rust port of the boids benchmark. It has no
-Cargo dependencies and uses `#![no_std]` plus `#![no_main]`; `vircon_main` is
-the explicit C-ABI Wasm export selected by `wasm2vircon`.
+This freestanding Rust example implements the Boids, BunnyMark, and Alpha
+Swarm workloads from the [C benchmark](../c-boids). Workload state, rendering,
+and the benchmark controller are ordinary Rust code; no textures or sounds
+are required. The source files keep the workloads separate from the controller.
 
-`src/main.rs` owns entry, input, timing and the HUD. `src/boids.rs` owns
-flocking state, workload changes, simulation and drawing. `src/vircon.rs` is a
-small Rust-facing wrapper around the same hardware-like `env.*` imports used
-by the other examples; its text and decimal helpers are ordinary Rust code.
-
-Gamepad 0 **up** and **down** add or remove ten boids within a 10–150 range.
-The HUD reports the simulation update-rate estimate and the previous frame's
-CPU usage as a percentage of
-Vircon32's 250,000-cycle display-frame budget.
+Use **L/R** to switch workloads, **up/down** to change the count in batches,
+and **left/right** to change it by one. Holding a direction repeats using the
+frame counter. **Start** runs the same six one-second cases as the C ROM and
+then returns to interactive mode. The HUD shows the completed-frame FPS and
+CPU/GPU usage. The optional [benchmark test](../test/README.md) collects and
+compares the language tours with v32sim.
 
 ## Requirements
 
@@ -23,7 +21,6 @@ Vircon32's 250,000-cycle display-frame budget.
   rustup target add wasm32-unknown-unknown
   ```
 
-- CMake;
 - a prebuilt `wasm2vircon` executable on `PATH`; and
 - the official Vircon32 `assemble` and `packrom` tools on `PATH`.
 
@@ -36,8 +33,17 @@ build the ROM.
 From this directory, run:
 
 ```sh
-cmake -S . -B build
-cmake --build build
+cargo v32
 ```
 
-The resulting cartridge is `build/RustBoids.v32`.
+The resulting cartridge is `target/RustBoids.v32`. This Cargo alias invokes
+the small `xtask` build driver, which compiles the Wasm input and runs
+`wasm2vircon`, `assemble`, and `packrom` from `PATH`. It generates
+`target/RustBoids.rom.xml` and the intermediate assembly and binary there.
+
+To build only the Wasm input, use `cargo v32 --wasm-only`. Set
+`WASM2VIRCON_EXECUTABLE` to select a particular translator and
+`CARGO_TARGET_DIR` to choose a different output directory. Both the Wasm and
+ROM artifacts follow that target directory. The project name, Wasm filename,
+and entry export are constants near the top of `xtask/src/main.rs` when
+adapting the build for another cartridge.

@@ -106,9 +106,26 @@ func initializeBoid(index int32) {
 
 // initializeBoids initializes the visible starting workload.
 func initializeBoids() {
+	boidCount = initialBoidCount
+	randomState = 1
 	for index := int32(0); index < boidCount; index++ {
 		initializeBoid(index)
 	}
+}
+
+// setBoidCount initializes newly enabled boids and clamps the workload.
+func setBoidCount(requested int32) {
+	if requested < 0 {
+		requested = 0
+	}
+	if requested > maxBoidCount {
+		requested = maxBoidCount
+	}
+	for boidCount < requested {
+		initializeBoid(boidCount)
+		boidCount++
+	}
+	boidCount = requested
 }
 
 // increaseBoidCount adds one fixed batch without exceeding capacity.
@@ -242,23 +259,31 @@ func printDigits(x, y int32, value uint32) int32 {
 
 // printUIntAt prints a compact unsigned decimal value with the BIOS font.
 func printUIntAt(x, y int32, value uint32) {
+	previousTexture := virconGPUGetSelectedTexture()
+	virconGPUSelectTexture(-1)
 	printDigits(x, y, value)
+	virconGPUSelectTexture(previousTexture)
 }
 
 // printFixed2At prints a float with two decimal places without using fmt.
 func printFixed2At(initialX, y int32, value float32) {
 	x := initialX
 	hundredths := int32(value * 100.0)
-	if hundredths < 0 {
+	previousTexture := virconGPUGetSelectedTexture()
+	virconGPUSelectTexture(-1)
+	if value < 0.0 {
 		drawGlyph(x, y, '-')
 		x += 10
+	}
+	if hundredths < 0 {
 		hundredths = -hundredths
 	}
 	magnitude := uint32(hundredths)
-	printUIntAt(x, y, magnitude/100)
-	drawGlyph(x+20, y, '.')
-	drawGlyph(x+30, y, uint8('0'+(magnitude/10)%10))
-	drawGlyph(x+40, y, uint8('0'+magnitude%10))
+	x = printDigits(x, y, magnitude/100)
+	drawGlyph(x, y, '.')
+	drawGlyph(x+10, y, uint8('0'+(magnitude/10)%10))
+	drawGlyph(x+20, y, uint8('0'+magnitude%10))
+	virconGPUSelectTexture(previousTexture)
 }
 
 // drawBoids draws every boid as a small cyan BIOS-pixel square.

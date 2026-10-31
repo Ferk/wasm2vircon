@@ -10,18 +10,23 @@ cmake_minimum_required(VERSION 3.20)
 # ---------------------------------------------------------------------------
 
 set(project_name "CBoids")
-set(project_rom_title "C Boids")
+set(project_rom_title "Boids benchmarks (C)")
 set(project_rom_version "1.0")
 set(project_entry "main")
 
 set(project_sources
   src/main.c
+  src/benchmark.c
+  src/count_repeat.c
+  src/fps_counter.c
+  src/alpha_swarm.c
   src/boids.c
+  src/bunnies.c
 )
 
 # List project-owned headers so editing one triggers recompilation. The public
 # vircon.h dependency is added automatically below.
-set(project_headers)
+set(project_headers src/benchmark.h src/boids.h src/bunnies.h src/count_repeat.h src/fps_counter.h src/alpha_swarm.h)
 
 # These optional lists customize compilation without changing the pipeline.
 set(project_include_directories)

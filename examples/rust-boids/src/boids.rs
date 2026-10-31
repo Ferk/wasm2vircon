@@ -4,7 +4,6 @@ use crate::vircon;
 
 const MAX_BOID_COUNT: usize = 150;
 const INITIAL_BOID_COUNT: i32 = 50;
-const BOID_COUNT_STEP: i32 = 10;
 const WIDTH: f32 = 640.0;
 const HEIGHT: f32 = 360.0;
 const VIEW_RANGE: f32 = 60.0;
@@ -25,7 +24,12 @@ struct Boid {
     vy: f32,
 }
 
-const EMPTY_BOID: Boid = Boid { x: 0.0, y: 0.0, vx: 0.0, vy: 0.0 };
+const EMPTY_BOID: Boid = Boid {
+    x: 0.0,
+    y: 0.0,
+    vx: 0.0,
+    vy: 0.0,
+};
 static mut FLOCK: [Boid; MAX_BOID_COUNT] = [EMPTY_BOID; MAX_BOID_COUNT];
 static mut ACTIVE_BOID_COUNT: i32 = INITIAL_BOID_COUNT;
 static mut RANDOM_STATE: u32 = 1;
@@ -43,7 +47,9 @@ pub fn count() -> i32 {
 /// Advances the benchmark's deterministic local pseudo-random generator.
 fn random_u32() -> u32 {
     unsafe {
-        RANDOM_STATE = RANDOM_STATE.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        RANDOM_STATE = RANDOM_STATE
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
         RANDOM_STATE
     }
 }
@@ -67,6 +73,10 @@ fn initialize_boid(index: usize) {
 
 /// Initializes the visible starting workload.
 pub fn initialize() {
+    unsafe {
+        ACTIVE_BOID_COUNT = INITIAL_BOID_COUNT;
+        RANDOM_STATE = 1;
+    }
     let mut index = 0;
     while index < count() {
         initialize_boid(index as usize);
@@ -74,23 +84,17 @@ pub fn initialize() {
     }
 }
 
-/// Adds one batch without exceeding the fixed flock capacity.
-pub fn increase() {
-    let target = (count() + BOID_COUNT_STEP).min(MAX_BOID_COUNT as i32);
+/// Set the workload count and initialize newly enabled boids.
+pub fn set_count(requested: i32) {
+    let target = requested.clamp(0, MAX_BOID_COUNT as i32);
     while count() < target {
         initialize_boid(count() as usize);
-        unsafe { ACTIVE_BOID_COUNT += 1; }
-    }
-}
-
-/// Removes one batch while retaining a visible flock.
-pub fn decrease() {
-    unsafe {
-        if ACTIVE_BOID_COUNT > BOID_COUNT_STEP {
-            ACTIVE_BOID_COUNT -= BOID_COUNT_STEP;
-        } else {
-            ACTIVE_BOID_COUNT = 10;
+        unsafe {
+            ACTIVE_BOID_COUNT += 1;
         }
+    }
+    unsafe {
+        ACTIVE_BOID_COUNT = target;
     }
 }
 
@@ -145,10 +149,18 @@ pub fn update() {
             }
             current.vx += avoid_x * AVOID_FACTOR;
             current.vy += avoid_y * AVOID_FACTOR;
-            if current.x < MARGIN { current.vx += TURN_FACTOR; }
-            if current.x > WIDTH - MARGIN { current.vx -= TURN_FACTOR; }
-            if current.y < MARGIN { current.vy += TURN_FACTOR; }
-            if current.y > HEIGHT - MARGIN { current.vy -= TURN_FACTOR; }
+            if current.x < MARGIN {
+                current.vx += TURN_FACTOR;
+            }
+            if current.x > WIDTH - MARGIN {
+                current.vx -= TURN_FACTOR;
+            }
+            if current.y < MARGIN {
+                current.vy += TURN_FACTOR;
+            }
+            if current.y > HEIGHT - MARGIN {
+                current.vy -= TURN_FACTOR;
+            }
             let speed_squared = current.vx * current.vx + current.vy * current.vy;
             if speed_squared > MAX_SPEED * MAX_SPEED {
                 current.vx *= 0.9;

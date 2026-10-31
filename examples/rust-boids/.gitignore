@@ -14,8 +14,8 @@ Makefile
 *.wasm
 *.o
 
+/.cargo
 /target/
 /cargo-target/
-/.cargo/
 /xtask/
 

@@ -35,8 +35,12 @@ build driver used by the cartridge:
   system, Make, or another equivalent tool.
 
 Each supplied example names its exact frontend and build-driver requirements
-in its own README. The C/C++, TinyGo, and Rust examples use CMake; the Zig
-example uses `zig build` directly.
+in its own README. The C/C++ and TinyGo examples use CMake, the Zig example
+uses `zig build`, and the Rust example uses `cargo v32`.
+
+To build the benchmark ROMs and collect optional v32sim measurements, run `cmake -P examples/test/benchmark.cmake`.
+See the [benchmark test README](examples/test/README.md) for requirements,
+output files, and options.
 
 C++ projects that use the standard library additionally need a Wasm-targeting
 Clang/libc++ SDK such as wasi-sdk. Native host libc++/libstdc++ headers are not

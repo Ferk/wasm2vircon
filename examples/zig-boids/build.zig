@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
 
     const compile = b.addSystemCommand(&.{
         b.graph.zig_exe, "build-exe", source_path, "-target", "wasm32-freestanding",
-        "-O", "ReleaseFast", "-fno-entry", entry_export, "-fstrip",
+        "-O", "ReleaseFast", "-fno-entry", entry_export,
         b.fmt("-femit-bin={s}", .{wasm_path}),
     });
     wasm.dependOn(&compile.step);
