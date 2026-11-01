@@ -14,7 +14,7 @@ compares the language tours with v32sim.
 
 ## Requirements
 
-- Zig, including its bundled `wasm32-freestanding` target support;
+- Zig 0.17.0 (tested), including its bundled `wasm32-freestanding` target support;
 - a prebuilt `wasm2vircon` executable on `PATH`; and
 - the official Vircon32 `assemble` and `packrom` tools on `PATH`.
 

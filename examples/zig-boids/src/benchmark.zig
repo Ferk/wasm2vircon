@@ -178,8 +178,8 @@ pub fn run() noreturn {
             continue;
         }
         if ((l and !pl) or (r and !pr)) {
-            const x: i32 = @intFromEnum(m);
-            m = @enumFromInt(@mod(x + (if (r and !pr) @as(i32, 1) else -1), 3));
+            const x: i32 = @backingInt(m);
+            m = @fromBackingInt(@intCast(@mod(x + (if (r and !pr) @as(i32, 1) else -1), 3)));
             reset(m);
             cpu = 0;
             gpu = 0;

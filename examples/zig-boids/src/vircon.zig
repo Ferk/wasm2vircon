@@ -720,7 +720,7 @@ pub fn cardSignatureMatches(signature: *const GameSignature) bool {
 }
 /// Returns whether the standard card signature is entirely zero.
 pub fn cardIsEmpty() bool {
-    const empty: GameSignature = [_]i32{0} ** game_signature_words;
+    const empty: GameSignature = @splat(0);
     return cardSignatureMatches(&empty);
 }
 /// Copies little-endian card words into an ordinary byte-addressed Zig buffer.
