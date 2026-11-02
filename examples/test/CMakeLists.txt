@@ -4,7 +4,7 @@ project(vircon_example_benchmarks NONE)
 include(CTest)
 
 # Keep the benchmark opt-in and independent from the compiler's test suite.
-set(BENCHMARK_EXAMPLES "c-boids;cpp-boids;zig-boids;rust-boids;tinygo-boids" CACHE STRING
+set(BENCHMARK_EXAMPLES "c-boids;cpp-boids;zig-boids;rust-boids;tinygo-boids;as-boids" CACHE STRING
   "Semicolon-separated example names")
 option(BENCHMARK_ENABLE_V32SIM "Run benchmark tours when v32sim is available" ON)
 option(BENCHMARK_REQUIRE_ALL "Fail if any selected example cannot be built" OFF)

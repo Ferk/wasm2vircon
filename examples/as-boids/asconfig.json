@@ -1,0 +1,19 @@
+{
+  "entries": ["src/index.ts"],
+  "options": {
+    "runtime": "stub",
+    "initialMemory": 4,
+    "maximumMemory": 4,
+    "noExportMemory": true,
+    "disable": ["nontrapping-f2i", "bulk-memory"],
+    "debug": true
+  },
+  "targets": {
+    "release": {
+      "outFile": "build/as-boids.wasm",
+      "optimizeLevel": 3,
+      "shrinkLevel": 0,
+      "noAssert": true
+    }
+  }
+}

@@ -24,7 +24,7 @@ if(NOT DEFINED ENABLE_V32SIM)
   set(ENABLE_V32SIM ON)
 endif()
 if(NOT DEFINED EXAMPLES OR EXAMPLES STREQUAL "")
-  set(EXAMPLES c-boids cpp-boids zig-boids rust-boids tinygo-boids)
+  set(EXAMPLES c-boids cpp-boids zig-boids rust-boids tinygo-boids as-boids)
 endif()
 
 set(wasm2vircon_was_explicit FALSE)
@@ -60,11 +60,23 @@ find_program(GIT_EXECUTABLE NAMES git)
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(ENABLE_V32SIM)
   find_program(V32SIM_EXECUTABLE NAMES v32sim)
-  find_file(V32SIM_BIOS NAMES BiosWithoutLogo.v32
+  find_file(V32SIM_BIOS NAMES BiosWithoutLogo.v32 BiosWithoutLogoDebug.v32 debuggerBIOS.v32 StandardBios.v32
     HINTS /usr/local/Vircon32/Emulator/Bios /usr/local/share/vircon32)
 endif()
 
-set(known_examples c-boids cpp-boids zig-boids rust-boids tinygo-boids)
+if(NOT ENABLE_V32SIM)
+  message(STATUS "Benchmark instruction profiling disabled; collecting static metrics only")
+elseif(NOT V32SIM_EXECUTABLE OR NOT V32SIM_BIOS)
+  message(STATUS "Benchmark instruction profiling unavailable; collecting static metrics only")
+  message(STATUS "  V32SIM_EXECUTABLE=${V32SIM_EXECUTABLE}")
+  message(STATUS "  V32SIM_BIOS=${V32SIM_BIOS}")
+  message(STATUS "Pass -DV32SIM_EXECUTABLE=... and -DV32SIM_BIOS=... before -P to enable benchmark tours")
+else()
+  message(STATUS "Benchmark simulator: ${V32SIM_EXECUTABLE}")
+  message(STATUS "Benchmark BIOS: ${V32SIM_BIOS}")
+endif()
+
+set(known_examples c-boids cpp-boids zig-boids rust-boids tinygo-boids as-boids)
 foreach(example IN LISTS EXAMPLES)
   if(NOT example IN_LIST known_examples)
     message(FATAL_ERROR "unknown optimization-baseline example: ${example}")
@@ -174,11 +186,13 @@ endfunction()
 
 # Runs a required build/translation command with captured actionable output.
 function(run_checked description)
+  message(STATUS "${description}")
   execute_process(
     COMMAND ${ARGN}
     RESULT_VARIABLE result
     OUTPUT_VARIABLE output
-    ERROR_VARIABLE error)
+    ERROR_VARIABLE error
+    ECHO_OUTPUT_VARIABLE ECHO_ERROR_VARIABLE)
   if(NOT result EQUAL 0)
     message(FATAL_ERROR "${description} failed (${result})\nstdout:\n${output}\nstderr:\n${error}")
   endif()
@@ -287,8 +301,8 @@ endfunction()
 function(print_benchmark_summary)
   get_property(rows GLOBAL PROPERTY BENCHMARK_ROWS)
   set(summary "\nBenchmark results\n")
-  string(APPEND summary "  Example       Language   ASM instructions   Program words   Max frame (words)\n")
-  string(APPEND summary "  ------------  --------  -----------------  -------------  -----------------\n")
+  string(APPEND summary "  Example         Language        ASM instructions  Program words  Max frame (words)\n")
+  string(APPEND summary "  --------------  --------------  ----------------  -------------  -----------------\n")
   foreach(row IN LISTS rows)
     string(REPLACE "|" ";" columns "${row}")
     list(GET columns 0 example)
@@ -296,9 +310,9 @@ function(print_benchmark_summary)
     list(GET columns 2 instructions)
     list(GET columns 3 words)
     list(GET columns 4 frame)
-    pad_column(example_col "${example}" 12 left)
-    pad_column(language_col "${language}" 8 left)
-    pad_column(instructions_col "${instructions}" 17 right)
+    pad_column(example_col "${example}" 14 left)
+    pad_column(language_col "${language}" 14 left)
+    pad_column(instructions_col "${instructions}" 16 right)
     pad_column(words_col "${words}" 13 right)
     pad_column(frame_col "${frame}" 17 right)
     string(APPEND summary "  ${example_col}  ${language_col}  ${instructions_col}  ${words_col}  ${frame_col}\n")
@@ -328,11 +342,9 @@ endfunction()
 function(profile_benchmarks example rom_file output_metric)
   set(${output_metric} "not_available" PARENT_SCOPE)
   if(NOT ENABLE_V32SIM)
-    message(STATUS "Benchmark instruction profile disabled")
     return()
   endif()
   if(NOT V32SIM_EXECUTABLE OR NOT EXISTS "${V32SIM_EXECUTABLE}" OR NOT V32SIM_BIOS OR NOT EXISTS "${V32SIM_BIOS}")
-    message(STATUS "Benchmark instruction profile unavailable: set V32SIM_EXECUTABLE and V32SIM_BIOS")
     return()
   endif()
   execute_process(COMMAND "${V32SIM_EXECUTABLE}" --help RESULT_VARIABLE help_status OUTPUT_VARIABLE help)
@@ -401,6 +413,7 @@ endfunction()
 
 set(collected_count 0)
 foreach(example IN LISTS EXAMPLES)
+  message(STATUS "Processing ${example}")
   set(example_dir "${REPOSITORY_ROOT}/examples/${example}")
   set(example_build_dir "${OUTPUT_DIR}/work/${example}")
   set(language "")
@@ -422,10 +435,24 @@ foreach(example IN LISTS EXAMPLES)
   elseif(example STREQUAL "zig-boids")
     set(language "Zig")
     set(project_file "zig-boids")
+  elseif(example STREQUAL "as-boids")
+    set(language "AssemblyScript")
+    set(project_file "as-boids")
   endif()
 
   if(BUILD_EXAMPLES)
-    if(example STREQUAL "zig-boids")
+    if(example STREQUAL "as-boids")
+      find_program(NODE_EXECUTABLE NAMES node)
+      if(NOT NODE_EXECUTABLE OR NOT EXISTS "${example_dir}/node_modules/assemblyscript/bin/asc.js")
+        skip_example("${example}" "requires Node.js and local AssemblyScript dependencies; run npm ci in examples/as-boids")
+        continue()
+      endif()
+      run_checked("${example} Wasm build"
+        "${NODE_EXECUTABLE}" "${example_dir}/build.mjs"
+        --wasm-only --out-dir "${example_build_dir}")
+      set(wasm_file "${example_build_dir}/${project_file}.wasm")
+    elseif(example STREQUAL "zig-boids")
+      message(STATUS "${example} Wasm build (Zig may compile its toolchain cache on the first run)")
       execute_process(
         COMMAND "${CMAKE_COMMAND}" -E env
           "ZIG_GLOBAL_CACHE_DIR=${example_build_dir}/zig-global-cache"
@@ -433,7 +460,8 @@ foreach(example IN LISTS EXAMPLES)
           zig build wasm --cache-dir "${example_build_dir}/zig-cache"
           --global-cache-dir "${example_build_dir}/zig-global-cache"
         WORKING_DIRECTORY "${example_dir}"
-        RESULT_VARIABLE build_result OUTPUT_VARIABLE build_output ERROR_VARIABLE build_error)
+        RESULT_VARIABLE build_result OUTPUT_VARIABLE build_output ERROR_VARIABLE build_error
+        ECHO_OUTPUT_VARIABLE ECHO_ERROR_VARIABLE)
       string(STRIP "${build_error}" build_error_trimmed)
       string(TOLOWER "${build_error_trimmed}" build_error_lower)
       if(NOT build_result STREQUAL "0" AND build_error_lower MATCHES "^(no such file or directory|the system cannot find the file specified)\\.?$")
@@ -447,11 +475,13 @@ foreach(example IN LISTS EXAMPLES)
       # Delegate the frontend build to the example's Cargo task. Its target
       # directory is isolated so this run cannot reuse stale Wasm output.
       set(rust_target "${example_build_dir}/cargo-target")
+      message(STATUS "${example} Wasm build")
       execute_process(
         COMMAND "${CMAKE_COMMAND}" -E env "CARGO_TARGET_DIR=${rust_target}"
           cargo v32 --wasm-only
         WORKING_DIRECTORY "${example_dir}"
-        RESULT_VARIABLE build_result OUTPUT_VARIABLE build_output ERROR_VARIABLE build_error)
+        RESULT_VARIABLE build_result OUTPUT_VARIABLE build_output ERROR_VARIABLE build_error
+        ECHO_OUTPUT_VARIABLE ECHO_ERROR_VARIABLE)
       string(STRIP "${build_error}" build_error_trimmed)
       string(TOLOWER "${build_error_trimmed}" build_error_lower)
       if(NOT build_result STREQUAL "0" AND build_error_lower MATCHES "^(no such file or directory|the system cannot find the file specified)\\.?$")
@@ -462,10 +492,12 @@ foreach(example IN LISTS EXAMPLES)
       endif()
       set(wasm_file "${rust_target}/wasm32-unknown-unknown/release/rust-boids.wasm")
     else()
+      message(STATUS "${example} CMake configuration")
       execute_process(
         COMMAND "${CMAKE_COMMAND}" -S "${example_dir}" -B "${example_build_dir}"
           "-DWASM2VIRCON_EXECUTABLE=${WASM2VIRCON_EXECUTABLE}"
-        RESULT_VARIABLE configure_result OUTPUT_VARIABLE configure_output ERROR_VARIABLE configure_error)
+        RESULT_VARIABLE configure_result OUTPUT_VARIABLE configure_output ERROR_VARIABLE configure_error
+        ECHO_OUTPUT_VARIABLE ECHO_ERROR_VARIABLE)
       if(NOT configure_result STREQUAL "0")
         if(configure_error MATCHES "Could not find [A-Za-z0-9_]+[ \t\r\n]+using the following names")
           skip_example("${example}" "${CMAKE_MATCH_0}")

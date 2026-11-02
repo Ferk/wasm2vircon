@@ -42,7 +42,7 @@ def main():
     finished = False
     checksum = 0
     print(f"\n{args.label} benchmark tour (v32sim):", flush=True)
-    print("  Case          Count      FPS     GPU%      CPU%", flush=True)
+    print("  Case         Count      FPS     GPU%      CPU%", flush=True)
     result_file = open(args.results, "w", newline="", encoding="utf-8") if args.results else None
     writer = csv.writer(result_file) if result_file else None
     if writer:

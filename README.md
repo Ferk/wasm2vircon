@@ -26,7 +26,7 @@ The rest of the requirements depend on the source-language frontend and the
 build driver used by the cartridge:
 
 - a compiler/toolchain that emits a compatible freestanding Wasm module—for
-  example Clang plus `wasm-ld` for C/C++, TinyGo, Zig, or Rust;
+  example Clang plus `wasm-ld` for C/C++, TinyGo, Zig, Rust, or AssemblyScript;
 - the official Vircon32 `assemble` and `packrom` tools, regardless of source
   language;
 - `png2vircon` and `wav2vircon` only when the cartridge uses PNG textures or
@@ -36,7 +36,8 @@ build driver used by the cartridge:
 
 Each supplied example names its exact frontend and build-driver requirements
 in its own README. The C/C++ and TinyGo examples use CMake, the Zig example
-uses `zig build`, and the Rust example uses `cargo v32`.
+uses `zig build`, the Rust example uses `cargo v32`, and the
+[AssemblyScript example](examples/as-boids) uses `npm run build`.
 
 To build the benchmark ROMs and collect optional v32sim measurements, run `cmake -P examples/test/benchmark.cmake`.
 See the [benchmark test README](examples/test/README.md) for requirements,

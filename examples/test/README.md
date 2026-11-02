@@ -20,8 +20,8 @@ waits for the next display frame before starting its timer. Each case then
 runs for at least 60 display frames, so setup cannot consume part of its
 one-second measurement window.
 
-The default selection includes C, C++, Zig, Rust, and TinyGo. Each example
-requires its own language toolchain, `wasm2vircon`, and the official
+The default selection includes C, C++, Zig, Rust, TinyGo, and AssemblyScript.
+Each example requires its own language toolchain, `wasm2vircon`, and the official
 `assemble` and `packrom` tools. A recent
 `v32sim` and a Vircon32 BIOS enable the tour; Python 3 enables its live
 per-case output. Without the simulator, its batch mode, or a BIOS, CTest still
@@ -45,6 +45,7 @@ Replace the example paths with files on your system. Each example's build
 checks its own frontend dependencies. Set `BENCHMARK_REQUIRE_ALL=ON` to fail
 when an example's required executable is missing, or set
 `BENCHMARK_ENABLE_V32SIM=OFF` to collect static metrics only.
+
 An existing build directory retains its previous `BENCHMARK_EXAMPLES` setting;
 set it explicitly or use a fresh build directory to select the new default.
 
@@ -64,3 +65,8 @@ cmake -DEXAMPLES=c-boids -P examples/test/benchmark.cmake
 That form writes to `build/optimization-baseline/` by default and accepts
 `-DOUTPUT_DIR=...` to preserve multiple runs for comparison. Both forms use
 the same runner and workload.
+
+In script mode the options are `EXAMPLES` and `ENABLE_V32SIM`; the
+`BENCHMARK_EXAMPLES` and `BENCHMARK_ENABLE_V32SIM` names apply to the CTest
+configuration above. CTest cache settings do not carry over to a separate
+`cmake -P` invocation.
